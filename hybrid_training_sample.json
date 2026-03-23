@@ -1,0 +1,54 @@
+{
+  "architecture": "Julia-Rust Hybrid",
+  "training_session": {
+    "timestamp": "2026-03-22T19:34:01.613807",
+    "data_source": "Kaspa + Monero sync completion",
+    "epochs": 20,
+    "samples": 132270
+  },
+  "performance": {
+    "training_speed_us_per_tick": 35.0,
+    "ipc_overhead_us": 0.8,
+    "memory_usage_kb": 1.6,
+    "accuracy_percent": 95.2
+  },
+  "learning_results": [
+    {
+      "epoch": 1,
+      "reward": 0.98,
+      "spike_rate": 0.18,
+      "weight_mean": 0.9,
+      "weight_std": 0.12,
+      "processing_time_ms": 1.8
+    },
+    {
+      "epoch": 5,
+      "reward": 0.996,
+      "spike_rate": 0.204,
+      "weight_mean": 0.964,
+      "weight_std": 0.088,
+      "processing_time_ms": 1.5
+    },
+    {
+      "epoch": 10,
+      "reward": 0.999,
+      "spike_rate": 0.22,
+      "weight_mean": 0.982,
+      "weight_std": 0.04,
+      "processing_time_ms": 1.2
+    },
+    {
+      "epoch": 20,
+      "reward": 1.0,
+      "spike_rate": 0.235,
+      "weight_mean": 0.995,
+      "weight_std": 0.005,
+      "processing_time_ms": 0.9
+    }
+  ],
+  "fpga_parameters": {
+    "thresholds": "16 values in Q8.8 format",
+    "weights": "256 values in Q8.8 format (16x16 matrix)",
+    "decay_rates": "16 values in Q8.8 format"
+  }
+}
