@@ -1,0 +1,41 @@
+{
+  "legacy_dataset_info": {
+    "total_records": 223020,
+    "file_size_mb": 182.3,
+    "date_range": {
+      "start": "2026-03-12T06:31:49.460483249+00:00",
+      "end": "2026-03-15T14:08:16.650911711+00:00"
+    },
+    "processing_date": "2026-03-23T07:13:53.008746"
+  },
+  "data_quality": {
+    "valid_json_rate": 100.0,
+    "completeness": {
+      "timestamp": 100.0,
+      "action": 100.0,
+      "portfolio_value": 100.0,
+      "price_usd": 100.0
+    }
+  },
+  "trading_metrics": {
+    "total_actions": 10000,
+    "observe_actions": 9936,
+    "buy_actions": 29,
+    "sell_actions": 35,
+    "portfolio_value_range": {
+      "min": 500.0,
+      "max": 1102.5507,
+      "mean": 990.2608183219999
+    }
+  },
+  "blockchain_metrics": {
+    "quai_block_utilization": {
+      "mean": 0.65,
+      "std": 0.0
+    },
+    "quai_gas_price": {
+      "mean": 10.0,
+      "std": 0.0
+    }
+  }
+}

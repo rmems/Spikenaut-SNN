@@ -1,0 +1,122 @@
+{
+  "citation": "",
+  "description": "",
+  "features": {
+    "timestamp": {
+      "dtype": "timestamp[ns]",
+      "_type": "Value"
+    },
+    "blockchain": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "event": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "blocks_accepted": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "block_rate": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "telemetry": {
+      "gpu_temp_c": {
+        "dtype": "float64",
+        "_type": "Value"
+      },
+      "hashrate_mh": {
+        "dtype": "float64",
+        "_type": "Value"
+      },
+      "power_w": {
+        "dtype": "float64",
+        "_type": "Value"
+      },
+      "qubic_epoch_progress": {
+        "dtype": "float64",
+        "_type": "Value"
+      },
+      "qubic_tick_trace": {
+        "dtype": "float64",
+        "_type": "Value"
+      },
+      "reward_hint": {
+        "dtype": "float64",
+        "_type": "Value"
+      }
+    },
+    "timestamp_unix": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "hour_of_day": {
+      "dtype": "int64",
+      "_type": "Value"
+    },
+    "day_of_week": {
+      "dtype": "int64",
+      "_type": "Value"
+    },
+    "hashrate_normalized": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "power_efficiency": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "thermal_efficiency": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "spike_hashrate": {
+      "dtype": "int64",
+      "_type": "Value"
+    },
+    "spike_power": {
+      "dtype": "int64",
+      "_type": "Value"
+    },
+    "spike_temp": {
+      "dtype": "int64",
+      "_type": "Value"
+    },
+    "spike_qubic": {
+      "dtype": "int64",
+      "_type": "Value"
+    },
+    "composite_reward": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "target_hashrate_change": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "target_power_change": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "current_height": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "total_height": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "sync_percent": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "remaining_blocks": {
+      "dtype": "float64",
+      "_type": "Value"
+    }
+  },
+  "homepage": "",
+  "license": ""
+}

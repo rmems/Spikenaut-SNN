@@ -1,0 +1,28 @@
+{
+  "name": "spikenaut_snn_v2_complete",
+  "version": "2.0.0",
+  "created": "2026-03-23T07:08:00.040674",
+  "description": "Complete Spikenaut SNN v2 dataset with multi-format support",
+  "contents": {
+    "dataset": "Hugging Face compatible dataset",
+    "parameters": "FPGA Q8.8 and PyTorch parameters",
+    "examples": "Jupyter notebook tutorials",
+    "scripts": "Data conversion and processing scripts",
+    "documentation": "Complete README and parameter docs"
+  },
+  "formats": [
+    "huggingface",
+    "pytorch",
+    "fpga_mem",
+    "json",
+    "parquet"
+  ],
+  "features": [
+    "spike_encodings",
+    "temporal_features",
+    "forecast_targets",
+    "multi_format_parameters",
+    "fpga_ready",
+    "comprehensive_documentation"
+  ]
+}

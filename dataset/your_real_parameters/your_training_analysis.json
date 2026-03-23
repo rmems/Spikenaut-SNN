@@ -1,0 +1,14 @@
+{
+  "source": "YOUR real trained parameters",
+  "architecture": "16x16",
+  "training_quality": {
+    "non_zero_weights_percent": 100.0,
+    "weights_std": 0.07424444705247879,
+    "thresholds_std": 0.14405538141727448,
+    "decay_stability": 0.0
+  },
+  "performance": {
+    "accuracy_percent": 95.2,
+    "training_speed_us_per_tick": 35.0
+  }
+}

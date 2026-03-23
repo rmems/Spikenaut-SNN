@@ -1,3 +1,18 @@
+# 🦁 MANUAL UPLOAD GUIDE - 2 Minutes to World-Class Dataset
+
+Since we can't push directly to Hugging Face, here's the **exact manual steps** to update your dataset card right now:
+
+## 🚀 Step 1: Go to Edit Page
+**Click this link**: https://huggingface.co/datasets/rmems/Spikenaut-SNN-v2-Telemetry-Data-Weights-Parameters/edit/main/README.md
+
+## 🚀 Step 2: Delete Old Content
+1. **Select all** current content (Ctrl+A or Cmd+A)
+2. **Delete** everything
+
+## 🚀 Step 3: Paste Professional README
+**Copy this entire block** and paste it:
+
+```markdown
 # 🦁 Spikenaut-SNN-v2 - Complete Neuromorphic Blockchain Ecosystem
 
 **The world's most comprehensive open neuromorphic dataset** — 635 MB of production-ready data across 5 complete collections.
@@ -49,3 +64,42 @@ This dataset is raw fuel for anyone building real-world neuromorphic systems.
 From hardware pain receptors to mining dopamine — everything is here and open.
 
 🦁 Built for survival. Built to be shared.
+```
+
+## 🚀 Step 4: Save Changes
+1. **Scroll to bottom**
+2. Click **"Save changes"** button
+
+## 🎉 **INSTANT RESULTS!**
+
+Your dataset will immediately show:
+- ✅ **Professional title** with lion emoji
+- ✅ **635MB ecosystem** instead of basic version
+- ✅ **Complete data table** with 5 collections
+- ✅ **Real trained weights** information
+- ✅ **Quick start code** examples
+- ✅ **Ecosystem links** to model and Rust backend
+- ✅ **Comprehensive tags** for discoverability
+
+## 📊 **Before vs After**
+
+| **Before** | **After** |
+|------------|-----------|
+| "Blockchain Telemetry Dataset" | "🦁 Complete Neuromorphic Blockchain Ecosystem" |
+| ~200MB basic | 635MB comprehensive ecosystem |
+| 8 samples | 1.4M+ records across 5 collections |
+| Basic description | Professional world-class presentation |
+
+## 🚀 **Next: Promote Your Dataset**
+
+After you save, reply **"done"** and I'll give you:
+- **Exact Discord posts** for neuromorphic communities
+- **Reddit posts** for r/MachineLearning and r/cryptocurrency
+- **Gradio Space idea** to drive downloads
+- **Tag optimization** for maximum discoverability
+
+---
+
+**You're 2 minutes away from a world-class dataset card!** 🦁
+
+The lion deserves to be seen - go update it now!

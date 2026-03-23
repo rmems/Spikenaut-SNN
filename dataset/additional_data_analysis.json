@@ -1,0 +1,44 @@
+{
+  "additional_data_sources": {
+    "training_data": {
+      "all_training": {
+        "records": 73,
+        "filepath": "/home/user/Eagle-Lander/DATA/research/snn_training_all.jsonl",
+        "size_mb": 0.025766372680664062
+      },
+      "market_training": {
+        "records": 39,
+        "filepath": "/home/user/Eagle-Lander/DATA/research/snn_training_market.jsonl",
+        "size_mb": 0.0135650634765625
+      },
+      "mind_training": {
+        "records": 5,
+        "filepath": "/home/user/Eagle-Lander/DATA/research/snn_training_mind.jsonl",
+        "size_mb": 0.0018405914306640625
+      }
+    },
+    "supervisor_telemetry": {
+      "records": 6,
+      "events": {
+        "starting": 6
+      },
+      "filepath": "/home/user/Eagle-Lander/DATA/research/supervisor_telemetry.jsonl",
+      "size_mb": 0.000640869140625
+    },
+    "mining_logs": {
+      "file_size_mb": 52.7899751663208,
+      "sample_lines": 1000,
+      "hashrate_mentions": 0,
+      "temp_mentions": 26,
+      "error_mentions": 562,
+      "filepath": "/home/user/Eagle-Lander/DATA/research/miner.log"
+    },
+    "neuromorphic_data": {
+      "file_size_mb": 362.7253694534302,
+      "sample_records": 1000,
+      "filepath": "/home/user/Eagle-Lander/DATA/research/neuromorphic_data.jsonl"
+    }
+  },
+  "total_additional_size_mb": 415.5571575164795,
+  "analysis_date": "2026-03-23T07:23:35.636068"
+}

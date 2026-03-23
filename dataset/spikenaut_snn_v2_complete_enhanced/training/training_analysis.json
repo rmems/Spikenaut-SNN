@@ -1,0 +1,23 @@
+{
+  "training_datasets": {
+    "snn_training_all.jsonl": {
+      "records": 73,
+      "size_kb": 26.384765625,
+      "time_range": "2026-02-26 22:52:58.034645-06:00 to 2026-03-12 06:34:59.588891+00:00"
+    },
+    "snn_training_market.jsonl": {
+      "records": 39,
+      "size_kb": 13.890625,
+      "time_range": "2026-03-12 06:31:49.460483+00:00 to 2026-03-12 06:34:59.588891+00:00"
+    },
+    "snn_training_mind.jsonl": {
+      "records": 5,
+      "size_kb": 1.884765625,
+      "time_range": "2026-02-26 22:52:58.034645-06:00 to 2026-03-10 16:04:20.573922-05:00"
+    }
+  },
+  "total_records": 117,
+  "neuron_count": 16,
+  "integration_date": "2026-03-23T07:26:53.333352",
+  "description": "Real SNN training data with spike patterns, reward signals, and stimuli"
+}
