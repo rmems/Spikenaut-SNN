@@ -8,6 +8,46 @@ sdk_version: "4.44.1"
 app_file: app.py
 pinned: false
 license: gpl-3.0
+language:
+- en
+tags:
+- neuromorphic
+- spiking-neural-networks
+- snn
+- liquid-state-machine
+- leaky-integrate-and-fire
+- stdp
+- e-prop
+- hardware-aware-ai
+- fpga
+- q8-fixed-point
+- rust
+- julia
+- cuda
+- gpu-telemetry
+- blockchain
+- cryptocurrency
+- dynex
+- qubic
+- kaspa
+- monero
+- quai
+- ocean-protocol
+- verus
+- hft
+- time-series
+- bci
+- med-tech
+- neuromorphic-computing
+- spike-train
+- feature-extraction
+- real-time-inference
+datasets:
+- rmems/Spikenaut-SNN-v2-Telemetry-Data-Weights-Parameters
+metrics:
+- accuracy
+library_name: spikenaut
+pipeline_tag: feature-extraction
 ---
 
 <p align="center">
