@@ -14,7 +14,34 @@ license: gpl-3.0
   <img src="docs/logo.png" width="240" alt="Spikenaut">
 </p>
 
-**Official Rust backend**: [neuromod v0.2.1](https://crates.io/crates/neuromod) — now with lean mining efficiency rewards
+## Open Source Ecosystem
+
+All core libraries extracted from this project are published as standalone open-source packages:
+
+### Rust — crates.io
+| Crate | Description |
+|-------|-------------|
+| [![neuromod](https://img.shields.io/crates/v/neuromod)](https://crates.io/crates/neuromod) | Neuromodulator dynamics (dopamine, cortisol, acetylcholine, tempo) |
+| [![spikenaut-reward](https://img.shields.io/crates/v/spikenaut-reward)](https://crates.io/crates/spikenaut-reward) | Homeostatic reward computation for cyber-physical systems |
+| [![spikenaut-encoder](https://img.shields.io/crates/v/spikenaut-encoder)](https://crates.io/crates/spikenaut-encoder) | Sensor → spike train encoding (Poisson, temporal, predictive) |
+| [![spikenaut-backend](https://img.shields.io/crates/v/spikenaut-backend)](https://crates.io/crates/spikenaut-backend) | Pluggable SNN backend trait (Rust / ZMQ IPC) |
+| [![spikenaut-fpga](https://img.shields.io/crates/v/spikenaut-fpga)](https://crates.io/crates/spikenaut-fpga) | Q8.8 parameter export + UART spike readback for FPGA |
+| [![spikenaut-router](https://img.shields.io/crates/v/spikenaut-router)](https://crates.io/crates/spikenaut-router) | SNN-based sparse domain routing (Anti-Hallucination Layer) |
+
+### Julia — JuliaHub / General Registry
+| Package | Description |
+|---------|-------------|
+| [SpikenautLSM.jl](https://github.com/rmems/SpikenautLSM.jl) | GPU-accelerated sparse Liquid State Machine (cuSPARSE + OU-SDE) |
+| [SpikenautNero.jl](https://github.com/rmems/SpikenautNero.jl) | Multi-lobe relevance scoring with cross-inhibition |
+| [SpikenautDistill.jl](https://github.com/rmems/SpikenautDistill.jl) | Monte Carlo SNN training + FPGA distillation pipeline |
+| [SpikenautSignals.jl](https://github.com/rmems/SpikenautSignals.jl) | Streaming Hurst / Hawkes / GBM-surprise feature extraction |
+
+### SystemVerilog — GitHub
+| Repo | Description |
+|------|-------------|
+| [spikenaut-core-sv](https://github.com/rmems/spikenaut-core-sv) | Parameterized Q8.8 LIF + STDP IP cores |
+| [spikenaut-bridge-sv](https://github.com/rmems/spikenaut-bridge-sv) | UART neural-cortex protocol IP |
+| [spikenaut-soc-sv](https://github.com/rmems/spikenaut-soc-sv) | Complete reference SNN SoC for Basys3 / Artix-7 |
 
 ---
 
@@ -399,3 +426,4 @@ GPL-3.0 - See LICENSE file for details
 - **V1 Model:** [Spikenaut-SNN-v1](https://huggingface.co/rmems/Spikenaut-SNN-v1)
 - **V1 Dataset:** [Spikenaut-v1-Telemetry-Data](https://huggingface.co/datasets/rmems/Spikenaut-v1-Telemetry-Data)
 - **V2 Dataset:** [Spikenaut-v2-Telemetry-Data](https://huggingface.co/datasets/rmems/Spikenaut-v2-Telemetry-Data)
+- **GitHub (private core):** [Eagle-Lander](https://github.com/rmems/Eagle-Lander)
