@@ -10,7 +10,7 @@ pinned: false
 license: gpl-3.0
 ---
 
-**Official Rust backend**: [neuromod v0.2.0](https://crates.io/crates/neuromod) • [GitHub](https://github.com/rmems/neuromod)
+**Official Rust backend**: [neuromod v0.2.1](https://crates.io/crates/neuromod) — now with lean mining efficiency rewards
 
 ---
 # 🦁 Spikenaut v2 Pulse
