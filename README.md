@@ -224,15 +224,6 @@ end
 
 GPL-3.0 - See LICENSE file for details
 
----
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create feature branch (`git checkout -b hybrid-training`)
-3. Commit changes (`git commit -am 'Add Julia-Rust hybrid'`)
-4. Push to branch (`git push origin hybrid-training`)
-5. Open a Pull Request
 
 ---
 
@@ -279,7 +270,7 @@ GPL-3.0 - See LICENSE file for details
 ## 🎯 The 20-Year Mission
 
 1. **Phase 1 — Financial Sovereignty (Years 1-5):** Ghost money → live API trading
-2. **Phase 2 — The Neural Bridge (Years 5-10):** BCI headset, decode brain waves
+2. **Phase 2 — The Neural Bridge (Years 1-10):** BCI headset, decode brain waves
 3. **Phase 3 — Texas Med-Tech Revolution (Years 10-20+):** Open robotics manufacturing
 
 ---
