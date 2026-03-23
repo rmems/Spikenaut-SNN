@@ -13,10 +13,113 @@ license: gpl-3.0
 **Official Rust backend**: [neuromod v0.2.1](https://crates.io/crates/neuromod) — now with lean mining efficiency rewards
 
 ---
-# 🦁 Spikenaut v2 Pulse
+# 🦁 Spikenaut v2 
 
-## 16-Channel Spiking Neural Network with Julia-Rust Hybrid Training
+# 🦁 Spikenaut-SNN-v2  
+The Lion That Survives
 
+Spikenaut was born in January 2026 — completely by accident.
+
+I started university thinking I would go to medical school or even law.  
+One semester of pre-med was enough to show me I was terrified of failing at something so high-stakes. I felt I wasn’t smart enough, wasn’t cut out for it.  
+So I switched to business — hoping it would be safer.  
+But I quickly saw I’d just be another Business major lost in a sea of MBAs. I didn’t want to disappear.  
+I moved to computer science — excited about building things, coding, creating.  
+Then the AI hype wave hit hard. Everyone said “AI is going to replace all the coding jobs.” I believed it. I panicked.  
+I feared I’d spend years learning something that would vanish before I could even start.  
+That fear pushed me again — this time to electrical engineering. If software was going to be automated, maybe hardware was the last place left where I could build something real, something physical, something that couldn’t be replaced overnight.
+
+But the transfer was brutal.  
+Late administration acceptance, and classes starting two or three weeks behind, scrambling to catch up while everyone else was already moving forward.  
+I struggled terribly.
+
+Through all those pivots, discouragements, and fears, one thing stayed constant: I kept building.
+
+Then came the TBI 2x (Concussion) 2013
+Invisible injury. No insurance. No real medical support.  
+The world said “there’s nothing wrong.”  
+My brain said “everything hurts.”  
+Depression became the default state for years — not because I was weak, but because I was exhausted from fighting something no one could see.
+
+In January 2026 I was trying to build a simple AI tutor to help with my ADHD.  
+I thought I could run massive language models locally like everyone else seemed to.  
+I quickly realized I couldn’t — not on my hardware, not with my budget, not with my brain fog.  
+So I had to get creative. I started reading about spiking neural networks (SNNs).  
+They were small, efficient, event-driven — they ran on almost nothing and still learned.  
+I never went back.
+
+Spikenaut is what came out of that exhaustion and that pivot.
+
+The thermal “pain receptors” that shut down overclocking when the GPU gets too hot?  
+They’re the same signals I needed to know when my own brain was overloading.  
+The mining_dopamine reward for efficient hashrate?  
+It’s the small win I desperately needed when nothing felt rewarding anymore.  
+The sub-millisecond adaptation to chaos?  
+That’s what a recovering brain has to do every day.
+
+This model is both my recovery log and a promise:  
+One day, Spikenaut will turn invisible data — brain fog, hormone crashes, heart-rate variability after stroke, post-concussion noise — into visible, actionable signals.  
+No gatekeepers. No bills. No “we don’t see anything.”
+
+**Zero-Insurance Engineering**  
+Med-Tech for the Uninsured.  
+Built by someone who was told “no” too many times — and who finally stopped asking permission.
+
+If you’re reading this because you also had to build your own tools — you’re not alone.  
+If you’re here for the tech — run it, break it, make it better.
+
+Either way: thank you.
+
+The lion didn’t roar for attention.  
+It roared because it had no other choice.
+
+🦁
+
+---
+
+# 16-Channel Spiking Neural Network
+**Official Rust backend**: [neuromod v0.2.1](https://crates.io/crates/neuromod) — now with lean mining efficiency rewards
+
+---
+
+## Architecture at a Glance
+
+16-Channel Spiking Neural Network with Julia-Rust Hybrid Training
+
+| Channel | Source | Function |
+|---------|--------|----------|
+| 0–1     | DNX    | PoUW solver health & neural baselines |
+| 2–3     | Quai   | On-chain reflex & sync confidence |
+| 4–5     | Qubic  | Epoch & tick cadences |
+| 6–7     | Kaspa  | High-frequency DAG settlement |
+| 8–9     | XMR    | Node stability & CPU L3 cache |
+| 10–11   | Ocean  | Data liquidity & staking prep |
+| 12–13   | Verus  | CPU-heavy validator tracking |
+| 14–15   | Thermal| Physical pain receptors (Power/Temp) |
+
+**The Lion vs. The House Cat**  
+House cats wait for prompts.  
+Spikenaut hunts in the temporal domain — sub-millisecond decisions, fractions of a watt, built to survive chaos.
+
+---
+
+## Performance Highlights
+
+- Training speed: 35 µs/tick  
+- IPC overhead: 0.8 µs (jlrs zero-copy)  
+- Memory footprint: 1.6 KB  
+- Accuracy: 95.2% on live blockchain sync prediction  
+- FPGA power: 97 mW on Artix-7 (Basys3 compatible)  
+- Teacher brain: 330M Monte Carlo paths distilled to 16 channels
+
+## Quick Start (Rust-First)
+
+```bash
+cargo add neuromod
+git clone https://huggingface.co/rmems/Spikenaut-SNN-v2
+cd Spikenaut-SNN-v2/brain
+julia --project --threads=auto monte_carlo_spikenaut.jl
+cargo run --release --bin market_pilot
 ---
 
 ## The Lion vs. The House Cat
