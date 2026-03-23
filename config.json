@@ -1,0 +1,21 @@
+{
+  "model_type": "spikenaut-snn",
+  "architectures": ["SpikingNeuralNetwork"],
+  "n_neurons": 16,
+  "n_channels": 16,
+  "neuron_model": "leaky-integrate-and-fire",
+  "learning_rule": "e-prop+ottt",
+  "weight_format": "q8.8-fixed-point",
+  "clock_hz": 1000,
+  "training_speed_us": 35,
+  "ipc_overhead_us": 0.8,
+  "memory_bytes": 1638,
+  "fpga_power_mw": 97,
+  "neuromod_version": "0.2.1",
+  "spikenaut_reward_version": "0.1.0",
+  "spikenaut_encoder_version": "0.1.0",
+  "spikenaut_backend_version": "0.1.0",
+  "spikenaut_fpga_version": "0.1.0",
+  "framework": "julia-rust-hybrid",
+  "license": "gpl-3.0"
+}
