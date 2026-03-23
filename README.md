@@ -10,6 +10,10 @@ pinned: false
 license: gpl-3.0
 ---
 
+<p align="center">
+  <img src="docs/logo.png" width="240" alt="Spikenaut">
+</p>
+
 **Official Rust backend**: [neuromod v0.2.1](https://crates.io/crates/neuromod) — now with lean mining efficiency rewards
 
 ---
