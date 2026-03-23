@@ -1,0 +1,29 @@
+{
+  "language": [
+    "python",
+    "rust",
+    "julia"
+  ],
+  "license": "gpl-3.0",
+  "multilinguality": false,
+  "size_categories": [
+    "n<1K"
+  ],
+  "task_categories": [
+    "time-series-forecasting"
+  ],
+  "task_ids": [
+    "time-series-forecasting"
+  ],
+  "pretty_name": "Spikenaut SNN v2 - Fresh Blockchain Telemetry",
+  "description": "Fresh Kaspa and Monero blockchain telemetry data with Julia-Rust hybrid training results for Spikenaut v2 spiking neural network.",
+  "tags": [
+    "blockchain",
+    "neural-networks",
+    "spiking-neural-networks",
+    "kaspa",
+    "monero",
+    "telemetry",
+    "hybrid-computing"
+  ]
+}
