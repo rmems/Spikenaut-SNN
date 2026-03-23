@@ -13,7 +13,6 @@ license: gpl-3.0
 **Official Rust backend**: [neuromod v0.2.1](https://crates.io/crates/neuromod) — now with lean mining efficiency rewards
 
 ---
-# 🦁 Spikenaut v2 
 
 # 🦁 Spikenaut-SNN-v2  
 The Lion That Survives
