@@ -61,20 +61,26 @@ All core libraries extracted from this project are published as standalone open-
 ### Rust — crates.io
 | Crate | Description |
 |-------|-------------|
-| [![neuromod](https://img.shields.io/crates/v/neuromod)](https://crates.io/crates/neuromod) | Neuromodulator dynamics (dopamine, cortisol, acetylcholine, tempo) |
+| [![neuromod](https://img.shields.io/crates/v/neuromod)](https://crates.io/crates/neuromod) | LIF/Izhikevich neurons, STDP, neuromodulators (dopamine, cortisol, acetylcholine, tempo) |
 | [![spikenaut-reward](https://img.shields.io/crates/v/spikenaut-reward)](https://crates.io/crates/spikenaut-reward) | Homeostatic reward computation for cyber-physical systems |
 | [![spikenaut-encoder](https://img.shields.io/crates/v/spikenaut-encoder)](https://crates.io/crates/spikenaut-encoder) | Sensor → spike train encoding (Poisson, temporal, predictive) |
 | [![spikenaut-backend](https://img.shields.io/crates/v/spikenaut-backend)](https://crates.io/crates/spikenaut-backend) | Pluggable SNN backend trait (Rust / ZMQ IPC) |
 | [![spikenaut-fpga](https://img.shields.io/crates/v/spikenaut-fpga)](https://crates.io/crates/spikenaut-fpga) | Q8.8 parameter export + UART spike readback for FPGA |
 | [![spikenaut-router](https://img.shields.io/crates/v/spikenaut-router)](https://crates.io/crates/spikenaut-router) | SNN-based sparse domain routing (Anti-Hallucination Layer) |
+| [spikenaut-telemetry](https://github.com/rmems/spikenaut-telemetry) | Unified GPU/CPU/mining telemetry (NVML, k10temp, powercap, CSV/JSONL export) |
+| [spikenaut-ingest](https://github.com/rmems/spikenaut-ingest) | Multi-chain blockchain ingest with state-space interpolation to 10 Hz |
+| [spikenaut-spine](https://github.com/rmems/spikenaut-spine) | 120-byte packed ZMQ wire protocol for Rust↔Julia SNN communication |
+| [spikenaut-ghost](https://github.com/rmems/spikenaut-ghost) | Bio-inspired ghost trading engine: ATP energy metaphors, Kelly sizing, JSONL audit log |
 
 ### Julia — JuliaHub / General Registry
 | Package | Description |
 |---------|-------------|
 | [SpikenautLSM.jl](https://github.com/rmems/SpikenautLSM.jl) | GPU-accelerated sparse Liquid State Machine (cuSPARSE + OU-SDE) |
-| [SpikenautNero.jl](https://github.com/rmems/SpikenautNero.jl) | Multi-lobe relevance scoring with cross-inhibition |
+| [SpikenautNero.jl](https://github.com/rmems/SpikenautNero.jl) | Multi-lobe relevance scoring with cross-inhibition (NERO orchestrator) |
 | [SpikenautDistill.jl](https://github.com/rmems/SpikenautDistill.jl) | Monte Carlo SNN training + FPGA distillation pipeline |
 | [SpikenautSignals.jl](https://github.com/rmems/SpikenautSignals.jl) | Streaming Hurst / Hawkes / GBM-surprise feature extraction |
+| [SpikenautKelly.jl](https://github.com/rmems/SpikenautKelly.jl) | Half-Kelly position sizing: SNN confidence → optimal capital fraction |
+| [SpikenautExecution.jl](https://github.com/rmems/SpikenautExecution.jl) | Async trade pipeline: ZMQ SUB → confidence gate → Kelly → dYdX v4 REST |
 
 ### SystemVerilog — GitHub
 | Repo | Description |
@@ -301,8 +307,8 @@ python app.py
 ### Hybrid Training
 ```bash
 # Train with your blockchain data
-git clone https://github.com/rmems/Eagle-Lander
-cd Eagle-Lander
+# (Eagle-Lander is a private repository — use the published open-source crates instead)
+cargo add neuromod spikenaut-reward spikenaut-encoder spikenaut-telemetry spikenaut-ingest
 
 # Build with Julia support
 cargo build --release --features julia
@@ -466,4 +472,4 @@ GPL-3.0 - See LICENSE file for details
 - **V1 Model:** [Spikenaut-SNN-v1](https://huggingface.co/rmems/Spikenaut-SNN-v1)
 - **V1 Dataset:** [Spikenaut-v1-Telemetry-Data](https://huggingface.co/datasets/rmems/Spikenaut-v1-Telemetry-Data)
 - **V2 Dataset:** [Spikenaut-v2-Telemetry-Data](https://huggingface.co/datasets/rmems/Spikenaut-v2-Telemetry-Data)
-- **GitHub (private core):** [Eagle-Lander](https://github.com/rmems/Eagle-Lander)
+- **GitHub (private core):** Eagle-Lander (closed-source — the author's own private repository)
