@@ -70,7 +70,9 @@ All core libraries extracted from this project are published as standalone open-
 | [spikenaut-telemetry](https://github.com/rmems/spikenaut-telemetry) | Unified GPU/CPU/mining telemetry (NVML, k10temp, powercap, CSV/JSONL export) |
 | [spikenaut-ingest](https://github.com/rmems/spikenaut-ingest) | Multi-chain blockchain ingest with state-space interpolation to 10 Hz |
 | [spikenaut-spine](https://github.com/rmems/spikenaut-spine) | 120-byte packed ZMQ wire protocol for Rust↔Julia SNN communication |
-| [spikenaut-ghost](https://github.com/rmems/spikenaut-ghost) | Bio-inspired ghost trading engine: ATP energy metaphors, Kelly sizing, JSONL audit log |
+| [synapse-link](https://github.com/rmems/synapse-link) | UART / FPGA Serial I/O (formerly neuro-spike-bridge) |
+| [myelin-accelerator](https://github.com/rmems/myelin-accelerator) | CUDA spiking-network kernels (formerly neuro-spike-kernels) |
+| [soma-engine](https://github.com/rmems/soma-engine) | SNN Engine + Inference (formerly neuro-spike-core) |
 
 ### Julia — JuliaHub / General Registry
 | Package | Description |
@@ -88,6 +90,19 @@ All core libraries extracted from this project are published as standalone open-
 | [spikenaut-core-sv](https://github.com/rmems/spikenaut-core-sv) | Parameterized Q8.8 LIF + STDP IP cores |
 | [spikenaut-bridge-sv](https://github.com/rmems/spikenaut-bridge-sv) | UART neural-cortex protocol IP |
 | [spikenaut-soc-sv](https://github.com/rmems/spikenaut-soc-sv) | Complete reference SNN SoC for Basys3 / Artix-7 |
+
+---
+
+## 📸 Visual Proof: Silicon Pulse & FPGA Deployment
+
+![SNN Pulse v2](assets/snn_pulse_v2.png)
+*Behold the 'Silicon Heartbeat' — Behavioral simulation showing the 50 Hz temporal pulse and neural firing cadences.*
+
+![FPGA Hardware Deployment](assets/fpga_hardware_cat.jpg)
+*Real-world deployment on the Xilinx Artix-7 (Basys3) FPGA. Verified neural cortex protocol running on bare metal (Lion approved).*
+
+![Simulation Waveform Close-up](assets/snn_waveform_close.png)
+*Granular timing analysis of the asynchronous spike-train encoding.*
 
 ---
 
@@ -213,7 +228,12 @@ cargo run --release --bin market_pilot
 
 ---
 
-## 🚀 Major Update: Hybrid Julia-Rust Architecture
+## 🚀 Major Update: Hybrid Julia-Rust Architecture & "Clean Break" Refactor
+
+### "Clean Break" Refactor (v2.1)
+- **Extracted Mining**: Mining supervisor and binaries moved to standalone [theseus-mining](https://github.com/rmems/ship_of_theseus_rs/tree/main/BLOCKCHAIN/theseus-mining) repository.
+- **Purged Tutor Logic**: Removed legacy AI Tutor crates (`spike-cognitive`) and Bevy/Rapier3D dependencies to reduce core cognitive load and binary size.
+- **Validated Telemetry**: Dataset now only contains high-value, validated 7-crypto research data.
 
 ### Revolutionary Training Pipeline
 - **Rust Telemetry Layer**: 50 Hz data collection from Kaspa/Monero nodes
