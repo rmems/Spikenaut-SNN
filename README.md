@@ -95,17 +95,17 @@ All core libraries extracted from this project are published as standalone open-
 
 ## 📸 Visual Proof: Silicon Pulse & FPGA Deployment
 
-![SNN Pulse v2](https://huggingface.co/rmems/Spikenaut-SNN-v2/resolve/main/assets/snn_pulse_v2.jpeg)
-*Behold the 'Silicon Heartbeat' — Behavioral simulation showing the 50 Hz temporal pulse and neural firing cadences.*
+![First SNN Pulse](https://huggingface.co/rmems/Spikenaut-SNN-v2/resolve/main/assets/snn_pulse_v2.png)
+*The very first experience seeing neural spikes - Birth of Spikenaut v1.*
 
 ![Silicon Heartbeat](https://huggingface.co/rmems/Spikenaut-SNN-v2/resolve/main/assets/snn_heartbeat_sharp.png)
 *Close-up timing analysis of the asynchronous spike-train encoding (v2).*
 
+![Waveform Analysis](https://huggingface.co/rmems/Spikenaut-SNN-v2/resolve/main/assets/snn_waveform_close.png)
+*Detailed waveform visualization showing neural membrane potential dynamics.*
+
 ![FPGA Hardware Deployment](https://huggingface.co/rmems/Spikenaut-SNN-v2/resolve/main/assets/fpga_hardware_cat.jpg)
 *Real-world deployment on the Xilinx Artix-7 (Basys3) FPGA. Verified neural cortex protocol running on bare metal (Lion approved).*
-
-![First Day of SNN Creation](https://huggingface.co/rmems/Spikenaut-SNN-v2/resolve/main/assets/First_Day_Of_SNN_CREATION.png)
-*The beginning of the Spikenaut journey - First day of SNN creation.*
 
 ---
 
