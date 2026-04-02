@@ -95,8 +95,15 @@ All core libraries extracted from this project are published as standalone open-
 
 ## 📸 Visual Proof: Silicon Pulse & FPGA Deployment
 
+### V1 - First Neural Spikes (February 15, 2026)
+
+![SNN Direct Simulation](https://huggingface.co/rmems/Spikenaut-SNN-v2/resolve/main/assets/v1_snn_direct_sim.png)
+*The very first experience seeing neural spikes - Spikenaut v1 birth moment. Behavioral simulation showing the 50 Hz temporal pulse and neural firing cadences on Basys3 FPGA.*
+
 ![The Theseus Pulse](https://huggingface.co/rmems/Spikenaut-SNN-v2/resolve/main/assets/v1_theseus_pulse_waveform.png)
-*The very first experience seeing neural spikes - Spikenaut v1 birth moment (February 15, 2026). Vivado behavioral simulation showing clk, rst_n, v_potential, Silicon_Heartbeat, NEURAL_FIRING, GPU_VOLTAGE_SAG, spikes, current_stim, and step signals at 1,000,000 ns scale.*
+*Complete Vivado behavioral simulation showing clk, rst_n, v_potential, Silicon_Heartbeat, NEURAL_FIRING, GPU_VOLTAGE_SAG, spikes, current_stim, and step signals at 1,000,000 ns scale.*
+
+### FPGA Hardware Deployment
 
 ![FPGA Hardware Deployment](https://huggingface.co/rmems/Spikenaut-SNN-v2/resolve/main/assets/fpga_hardware_cat.jpg)
 *Real-world deployment on the Xilinx Artix-7 (Basys3) FPGA. Verified neural cortex protocol running on bare metal (Lion approved).*
