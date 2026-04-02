@@ -42,7 +42,6 @@ tags:
 - spike-train
 - feature-extraction
 - real-time-inference
-- systemverilog
 datasets:
 - rmems/Spikenaut-SNN-v2-Telemetry-Data-Weights-Parameters
 metrics:
@@ -96,11 +95,11 @@ All core libraries extracted from this project are published as standalone open-
 
 ## 📸 Visual Proof: Silicon Pulse & FPGA Deployment
 
-![First SNN Pulse](https://huggingface.co/rmems/Spikenaut-SNN-v2/resolve/main/assets/first_spike_pulse.png)
-*The very first experience seeing neural spikes - Spikenaut v1 birth moment.*
+![First SNN Simulation](https://huggingface.co/rmems/Spikenaut-SNN-v2/resolve/main/assets/v1_first_spike_simulation.png)
+*The very first experience seeing neural spikes - Spikenaut v1 birth moment (February 15, 2026). Behavioral simulation showing the 50 Hz temporal pulse and neural firing cadences on Basys3 FPGA.*
 
-![First Spike Detail](https://huggingface.co/rmems/Spikenaut-SNN-v2/resolve/main/assets/first_spike_detail.png)
-*Close-up timing analysis of the asynchronous spike-train encoding (v1).*
+![FPGA Waveform Analysis](https://huggingface.co/rmems/Spikenaut-SNN-v2/resolve/main/assets/v1_fpga_waveform.png)
+*Vivado simulation waveform showing SYSTEM_PULSE, CONSCIOUSNESS_WAKE, GPU_BIOMETRIC_FEED, Silicon_Heartbeat, and NEURAL_FIRING signals.*
 
 ![FPGA Hardware Deployment](https://huggingface.co/rmems/Spikenaut-SNN-v2/resolve/main/assets/fpga_hardware_cat.jpg)
 *Real-world deployment on the Xilinx Artix-7 (Basys3) FPGA. Verified neural cortex protocol running on bare metal (Lion approved).*
