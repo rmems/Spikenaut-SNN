@@ -1,1 +1,2 @@
 *.png filter=lfs diff=lfs merge=lfs -text
+assets/fpga_hardware_cat.jpg filter=lfs diff=lfs merge=lfs -text
