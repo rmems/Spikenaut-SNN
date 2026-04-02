@@ -42,6 +42,7 @@ tags:
 - spike-train
 - feature-extraction
 - real-time-inference
+- systemverilog
 datasets:
 - rmems/Spikenaut-SNN-v2-Telemetry-Data-Weights-Parameters
 metrics:
