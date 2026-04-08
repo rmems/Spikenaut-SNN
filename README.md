@@ -22,7 +22,7 @@ Primary Logic: Powered by my neuromod Rust crate.
 
 Methodology: "Measure twice, spike once." I have moved away from bulk AI-assisted data uploads to a manual, deterministic verification process to eliminate noisy or "bad" data.
 
-Hardware Integration: My Electrical Engineering background in Micro and Nano devices informs how I bridge this software with physical hardware, such as the Digilent Basys 3 FPGA.
+Hardware Integration: The Digilent Basys 3 FPGA.
 
 🛠 Project Roadmap
 [x] Initial Prototype (Dynex SNN)
