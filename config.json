@@ -11,11 +11,6 @@
   "ipc_overhead_us": 0.8,
   "memory_bytes": 1638,
   "fpga_power_mw": 97,
-  "neuromod_version": "0.2.1",
-  "spikenaut_reward_version": "0.1.0",
-  "spikenaut_encoder_version": "0.1.0",
-  "spikenaut_backend_version": "0.1.0",
-  "spikenaut_fpga_version": "0.1.0",
   "framework": "julia-rust-hybrid",
-  "license": "gpl-3.0"
+  "license": ["mit", "apache-2.0"]
 }

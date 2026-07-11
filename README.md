@@ -1,39 +1,191 @@
-Gemini said
-Spikenaut-SNN-v2: Neuromorphic Reservoir & Hybrid Architectures
-⚠️ Research Status: Ground Zero Rebuild (April 2026)
-I am currently taking this repository through a complete architectural reset. Following my initial prototype phase, I have moved back to a "Ground Zero" state to ensure absolute verification of every spiking neuron, synapse, and temporal parameter.
+---
+language:
+- python
+- rust
+- julia
+license:
+- mit
+- apache-2.0
+tags:
+- spiking-neural-networks
+- neuromorphic
+- fpga
+- q88-fixed-point
+- leaky-integrate-and-fire
+- e-prop
+- ottt
+pipeline_tag: other
+model_name: Spikenaut-SNN-v2
+---
 
-I realized I was moving too fast after my first successful prototype. To maintain the integrity of my research, I am now proceeding at a steadier, more deliberate pace. My current focus is centered on verifying telemetry integrity and ensuring my hardware-software baseline is bulletproof before scaling back into complex hybrid systems.
+# Spikenaut-SNN-v2
 
-🧠 Model & Research Description
-Spikenaut-SNN-v2 is my research-grade Spiking Neural Network (SNN) model designed for high-frequency data processing and autonomous decision-making in noisy environments.
+A 16-neuron Leaky-Integrate-and-Fire (LIF) Spiking Neural Network trained on live cryptocurrency mining, high-frequency trading, and blockchain sync node telemetry. Designed for Xilinx Artix-7 FPGA deployment at 97 mW.
 
-Core Research Objectives:
-Hardware-Driven Learning: Utilizing real-world telemetry from hardware—specifically my Dynex mining baseline—to drive STDP (Spike-Timing-Dependent Plasticity).
+## The Story
 
-Hybridization (SpikeLMo): Investigating the infusion of SNN logic into the OLMoE-7B (Mixture of Experts) architecture. I am exploring the use of SNNs as low-power, temporal "Neuromorphic Routers" to gate high-level LLM experts.
+In 2013, a severe concussion left me unable to process the world's data the way I used to. Without access to neuro-rehabilitation, I decided to build my own. As an Electrical Engineering student at Texas State University focusing on micro/nano devices, I started building what would become Spikenaut -- a neuromorphic system that learns from the raw signals of the machines I run every day.
 
-HFT Logic: Developing specialized 16-neuron Liquid State Machine (LSM) reservoirs tuned for high-frequency trading market micro-structures.
+The name comes from "spike" (neural firing) and "naut" (navigator). This model is the brain -- the trained neural weights that turn raw telemetry into decisions.
 
-🏗 System & Infrastructure
-This research is developed and trained locally on my Ship of Theseus workstation running Fedora 43. My codebase is organized under the Eagle-Lander framework.
+## Architecture
 
-Primary Logic: Powered by my neuromod Rust crate.
+| Spec | Value |
+|------|-------|
+| Neuron model | Leaky-Integrate-and-Fire (LIF) |
+| Neurons | 16 |
+| Input channels | 16 |
+| Weight format | Q8.8 fixed-point |
+| Learning rules | E-prop, OTTT, reward-modulated STDP |
+| Clock | 1 kHz (1ms resolution) |
+| Training speed | 35 us/tick |
+| Memory footprint | 1.6 KB |
+| FPGA power | 97 mW (25 mW dynamic, 72 mW static) |
+| FPGA target | Xilinx Artix-7 xc7a35tcpg236-1 (Basys3) |
 
-Methodology: "Measure twice, spike once." I have moved away from bulk AI-assisted data uploads to a manual, deterministic verification process to eliminate noisy or "bad" data.
+### 16-Channel Input Map
 
-Hardware Integration: The Digilent Basys 3 FPGA.
+| Channels | Data Source | Function |
+|----------|------------|----------|
+| 0-1 | DNX (Dynex) | PoUW solver health and neural baselines |
+| 2-3 | Quai | Live on-chain reflex and sync confidence |
+| 4-5 | Qubic | Epoch and tick cadence monitoring |
+| 6-7 | Kaspa | High-frequency DAG settlement tracking |
+| 8-9 | XMR (Monero) | Node stability and CPU L3 cache contention |
+| 10-11 | Ocean | Data liquidity and staking prep |
+| 12-13 | Verus | CPU-heavy validator tracking (AVX-512) |
+| 14-15 | Thermal | Pain receptors -- power and temperature |
 
-🛠 Project Roadmap
-[x] Initial Prototype (Dynex SNN)
+Channels 14-15 are the network's pain receptors. When the GPU crosses 85C, the SNN receives negative reward and learns to avoid states that could damage the hardware.
 
-[ ] CURRENT: Telemetry verification and baseline stabilization.
+## Merged v2 Parameters
 
-[ ] 16-neuron LSM reservoir tuning for HFT data.
+This model ships with a merged parameter set combining the best of three training sources:
 
-[ ] Prototype integration with OLMoE-7B MoE layers.
+| Parameter | Source | Values |
+|-----------|--------|--------|
+| Thresholds (16) | Real trained weights | Graduated 1.125 to 1.594 per neuron |
+| Decay rates (16) | Converted parameters | Graduated 0.80 to 0.95 per neuron |
+| Hidden weights (256) | Real trained weights | Range 0.75 to 1.04, 76 unique values |
+| Output weights (48) | Real trained weights | Signed: -0.164 to +0.258 (inhibitory + excitatory) |
 
-📜 License
-This model and its associated logic are released under the GNU General Public License v3.0 (GPL-3.0).
+### Q8.8 Fixed-Point Format
 
-This documentation and research summary were drafted by Gemini, a large language model built by Google, based on the specific research parameters and project history provided by Raul Montoya Cardenas
+All `.mem` files use Q8.8 fixed-point encoding. Each line is one 4-digit hex value:
+
+```
+Hex: 0100  →  Decimal: 256  →  Float: 256/256 = 1.0
+Hex: 00DA  →  Decimal: 218  →  Float: 218/256 = 0.852
+Hex: 00CC  →  Decimal: 204  →  Float: 204/256 = 0.797
+```
+
+Negative values use two's complement: `FFF9` = -0.027.
+
+## Files
+
+```
+dataset/merged_v2/
+├── parameters.mem              # 16 neuron thresholds (Q8.8 hex)
+├── parameters_decay.mem        # 16 decay rates (Q8.8 hex)
+├── parameters_weights.mem      # 16x16 weight matrix (Q8.8 hex)
+├── parameters_output_weights.mem # Output layer weights (signed Q8.8)
+└── snn_model.json              # Full model definition (float values)
+```
+
+## Usage
+
+### Python
+
+```python
+import json
+
+# Load model
+with open("dataset/merged_v2/snn_model.json") as f:
+    model = json.load(f)
+
+for i, neuron in enumerate(model["neurons"]):
+    print(f"Neuron {i}: threshold={neuron['threshold']}, decay={neuron['decay_rate']}")
+    print(f"  Weights: {neuron['weights']}")
+```
+
+### Verilog
+
+```verilog
+// Load thresholds from Q8.8 hex file
+reg [15:0] threshold_ram [0:15];
+initial $readmemh("dataset/merged_v2/parameters.mem", threshold_ram);
+
+// Load weights from Q8.8 hex file
+reg [15:0] weight_ram [0:255];
+initial $readmemh("dataset/merged_v2/parameters_weights.mem", weight_ram);
+```
+
+### Rust
+
+```rust
+use std::fs;
+
+fn load_q88(path: &str) -> Vec<f32> {
+    fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| u16::from_str_radix(l.trim(), 16).unwrap() as f32 / 256.0)
+        .collect()
+}
+
+let thresholds = load_q88("dataset/merged_v2/parameters.mem");
+let decay = load_q88("dataset/merged_v2/parameters_decay.mem");
+let weights = load_q88("dataset/merged_v2/parameters_weights.mem");
+```
+
+### Julia
+
+```julia
+function load_q88(path::String)
+    [parse(Int, line, base=16) / 256.0 for line in eachline(path) if !isempty(line)]
+end
+
+thresholds = load_q88("dataset/merged_v2/parameters.mem")
+decay = load_q88("dataset/merged_v2/parameters_decay.mem")
+weights = load_q88("dataset/merged_v2/parameters_weights.mem")
+```
+
+## Training Results
+
+| Metric | Value |
+|--------|-------|
+| Architecture | Julia-Rust hybrid |
+| Algorithm | E-prop + OTTT |
+| Accuracy | 95.2% |
+| Convergence | 20 epochs |
+| Training speed | 35 us/tick |
+| IPC overhead | 0.8 us |
+| Memory usage | 1.6 KB |
+| Training date | 2026-03-22 |
+| Data sources | Kaspa mainnet, Monero mainnet |
+
+## Known Limitations
+
+- **Monotonic hidden weight pattern**: The 256 hidden weights show a systematic linear ramp within each neuron (each weight increases by exactly 0x0001 Q8.8 ticks). This artifact is under investigation -- it may stem from the GPU-to-FPGA export pipeline or from telemetry data quality issues during training. The output weights do not show this pattern and appear correctly trained.
+
+- **Purely excitatory hidden layer**: All 256 hidden weights are positive. The network lacks inhibitory connections (negative weights) and recurrent feedback, which limits its capacity for noise suppression and temporal memory. A future training run should add ~4 inhibitory neurons and recurrent connections.
+
+## Hardware Baseline
+
+| Component | Spec |
+|-----------|------|
+| CPU | AMD Ryzen 9 9950X |
+| GPU | NVIDIA RTX 5080 (Blackwell SM_120) |
+| FPGA | Digilent Basys3 (Xilinx Artix-7 xc7a35tcpg236-1) |
+| FPGA Power | 97 mW total |
+| FPGA LUTs | 1,063 / 20,800 (5.11%) |
+| FPGA Registers | 1,091 / 41,600 (2.62%) |
+| Timing WNS | 3.727 ns (37.27% margin) |
+| OS | Fedora 43 |
+
+## License
+
+Dual-licensed under MIT and Apache-2.0. Developed independently by Raul Montoya Cardenas, Texas State University, Electrical Engineering (Spring 2026).
+
+*"The mind is not a vessel to be filled, but a fire to be kindled."* -- Plutarch
