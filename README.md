@@ -1,8 +1,6 @@
 ---
 language:
-- python
-- rust
-- julia
+- code
 license:
 - mit
 - apache-2.0
