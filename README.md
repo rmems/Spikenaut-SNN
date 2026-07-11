@@ -22,7 +22,7 @@ A 16-neuron Leaky-Integrate-and-Fire (LIF) Spiking Neural Network trained on liv
 
 ## The Story
 
-In 2013, a severe concussion left me unable to process the world's data the way I used to. Without access to neuro-rehabilitation, I decided to build my own. As an Electrical Engineering student at Texas State University focusing on micro/nano devices, I started building what would become Spikenaut -- a neuromorphic system that learns from the raw signals of the machines I run every day.
+In 2013, a severe concussion left me unable to process the world's data the way I used to. Without access to neuro-rehabilitation, I decided to build my own. As an AI Engineering student at Western Governors University focusing on micro/nano devices, I started building what would become Spikenaut -- a neuromorphic system that learns from the raw signals of the machines I run every day.
 
 The name comes from "spike" (neural firing) and "naut" (navigator). This model is the brain -- the trained neural weights that turn raw telemetry into decisions.
 
@@ -184,6 +184,6 @@ weights = load_q88("dataset/merged_v2/parameters_weights.mem")
 
 ## License
 
-Dual-licensed under MIT and Apache-2.0. Developed independently by Raul Montoya Cardenas, Texas State University, Electrical Engineering (Spring 2026).
+Dual-licensed under MIT and Apache-2.0. Developed independently by Raul Montoya Cardenas, Western Governors University, AI Engineering.
 
 *"The mind is not a vessel to be filled, but a fire to be kindled."* -- Plutarch
