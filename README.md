@@ -81,6 +81,7 @@ Negative values use two's complement: `FFF9` = -0.027.
 
 ## Files
 
+### Merged v2 (best-of-fusion)
 ```
 dataset/merged_v2/
 ├── parameters.mem              # 16 neuron thresholds (Q8.8 hex)
@@ -89,6 +90,30 @@ dataset/merged_v2/
 ├── parameters_output_weights.mem # Output layer weights (signed Q8.8)
 └── snn_model.json              # Full model definition (float values)
 ```
+
+### v1 Mining (original)
+```
+dataset/v1/
+├── parameters.mem              # 8 neuron thresholds (Q8.8 hex)
+├── parameters_weights.mem      # Weight matrix (Q8.8 hex)
+└── parameters_decay.mem        # Decay rates (Q8.8 hex)
+```
+
+### v1 FPGA (Basys3 deployment)
+```
+dataset/v1_fpga/
+├── parameters_v1_fpga.mem      # FPGA-optimized thresholds
+└── parameters_weights_v1_fpga.mem # FPGA-optimized weights
+```
+
+### v2 Per-Asset Variants
+```
+dataset/dynex_v2/               # Dynex PoUW-optimized
+dataset/quai_v2/                # Quai PoW+PoS-optimized
+dataset/hft_v2/                 # HFT trading-optimized
+dataset/multimodal_v2/          # Multi-asset fusion
+```
+Each contains: `parameters.mem`, `parameters_weights.mem`, `parameters_decay.mem`
 
 ## Usage
 
@@ -165,7 +190,7 @@ weights = load_q88("dataset/merged_v2/parameters_weights.mem")
 
 ## Known Limitations
 
-- **Monotonic hidden weight pattern**: The 256 hidden weights show a systematic linear ramp within each neuron (each weight increases by exactly 0x0001 Q8.8 ticks). This artifact is under investigation -- it may stem from the GPU-to-FPGA export pipeline or from telemetry data quality issues during training. The output weights do not show this pattern and appear correctly trained.
+- **Monotonic hidden weight pattern**: Root cause identified (2026-07-12) — NOT an export bug. Caused by degenerate training convergence: 8 uniform training samples + no inhibitory connections + identical E-prop/OTTT gradients. Fix: retrain with `qubic_ticks_snn.jsonl` (27K records) + add 4 inhibitory neurons (80:20 E:I ratio) + implement K-WTA sparsity. See [RM-43](https://linear.app/rpd-34/issue/RM-43).
 
 - **Purely excitatory hidden layer**: All 256 hidden weights are positive. The network lacks inhibitory connections (negative weights) and recurrent feedback, which limits its capacity for noise suppression and temporal memory. A future training run should add ~4 inhibitory neurons and recurrent connections.
 
@@ -185,5 +210,9 @@ weights = load_q88("dataset/merged_v2/parameters_weights.mem")
 ## License
 
 Dual-licensed under MIT and Apache-2.0. Developed independently by Raul Montoya Cardenas, Western Governors University, AI Engineering.
+
+## Related
+
+- **Telemetry Dataset**: [rmems/Spikenaut-SNN-Telemetry](https://huggingface.co/datasets/rmems/Spikenaut-SNN-Telemetry) — 953K+ training records
 
 *"The mind is not a vessel to be filled, but a fire to be kindled."* -- Plutarch
