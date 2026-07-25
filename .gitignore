@@ -1,1 +1,70 @@
+# Rust
+/target/
+actions-runner/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug
+*.log
+
+# Coverage reports
+lcov.info
+*.profraw
+*.profdata
+coverage/
+
+# Agent notes
+docs/reseach/
+
+# Local env overrides (contributors create their own, never tracked)
+.env.local
+
+# Generated per-run artifacts (tracked via .gitkeep only)
+/artifacts/*
+!/artifacts/.gitkeep
+
+# GitHub Actions runner
+/actions-runner/
+
+# Scripts
+/scripts/*
+configs/local_lineup.toml
+configs/local_gguf_lineup.toml
+configs/local_safetensors_lineup.toml
+configs/safetensors_lineup.toml
+.beads/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+
+# IDE/AI tool dirs
 .mimocode/
+.opencode/
+.cursor/
+.hermes/
+.kilo/
+.zed/
+.ai/
+.junie/
+.claude/
+.cursor/
+
+
+# Agent skills & MCP servers
+.beads/
+.swarm/
+
+# Codacy results
+codacy-results.sarif
