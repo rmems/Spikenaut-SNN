@@ -51,7 +51,7 @@ A 16-neuron Leaky-Integrate-and-Fire (LIF) Spiking Neural Network trained on liv
 
 Channels 14-15 are the network's pain receptors. When the GPU crosses 85C, the SNN receives negative reward and learns to avoid states that could damage the hardware.
 
-This is bound to change in the future, not sure how I am going to change the input format.
+This 16-channel map is the current v2 layout, not a fixed contract. The input format is expected to change: the replacement state contract -- including the rule that logical signals are decoupled from physical SNN input channels, so signals are never invented just to fill 16 slots -- is being defined in [#20](https://github.com/rmems/Spikenaut-SNN/issues/20).
 
 ## Merged v2 Parameters
 
