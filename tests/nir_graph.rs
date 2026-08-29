@@ -249,11 +249,16 @@ fn graph_parameters_match_the_q8_8_mem_artifacts() {
     let TensorData::F64(rs) = lif.r.data() else {
         panic!("expected an f64 r");
     };
-    for ((tau, r), decay) in taus
-        .iter()
-        .zip(rs)
-        .zip(read_q8_8_mem("parameters_decay.mem"))
-    {
+    // zip() stops at the shortest iterator, so without this the loop would run
+    // fewer times and still pass if any of the three were short — a test that
+    // silently checks less than it claims.
+    let decays = read_q8_8_mem("parameters_decay.mem");
+    assert_eq!(taus.len(), NEURON_COUNT, "one tau per neuron");
+    assert_eq!(rs.len(), NEURON_COUNT, "one resistance per neuron");
+    assert_eq!(decays.len(), NEURON_COUNT, "one decay per neuron");
+
+    let mut checked = 0usize;
+    for ((tau, r), decay) in taus.iter().zip(rs).zip(decays) {
         // tau encodes the stored decay exactly...
         assert!(
             ((-TIMESTEP_SECONDS / tau).exp() - decay).abs() < 1e-12,
@@ -261,7 +266,12 @@ fn graph_parameters_match_the_q8_8_mem_artifacts() {
         );
         // ...and r is derived from that same exact value.
         assert!((r - 1.0 / (1.0 - decay)).abs() < 1e-12);
+        checked += 1;
     }
+    assert_eq!(
+        checked, NEURON_COUNT,
+        "every neuron's decay must be checked"
+    );
 }
 
 /// NIR integrates `tau * dv/dt = (v_leak - v) + R*I`, so one step is
@@ -350,46 +360,134 @@ fn matches_a_hand_built_nir_graph() {
     assert_eq!(ours, reference);
 }
 
+/// Split a `Cargo.toml` into the two scopes the pin check needs: every line of
+/// every dependency table, and the names declared by the runtime
+/// `[dependencies]` table alone.
+///
+/// The two claims are different sizes, so one scope cannot serve both.
+///
+/// The wide scope is every dependency table there is: `[dependencies]`,
+/// `[dev-dependencies]`, `[build-dependencies]`, `[target.'cfg(..)'.dependencies]`
+/// and the `[dependencies.<name>]` table form. A `git =` or `path =` pin is
+/// forbidden in all of them, so that scan must not narrow.
+///
+/// The narrow scope is `[dependencies]` alone, in either spelling. Only that
+/// table has to read exactly `nir-rs`: issue #8 asks for registry resolution,
+/// not a ban on dev-dependencies, and a future test helper must not trip the
+/// check with a message about nir-rs.
+///
+/// Comments are stripped first, which also keeps `[lib] path` and the prose
+/// about this rule out of the scan; the manifest has no `#` inside a string, so
+/// cutting at the first one is exact.
+fn dependency_tables(manifest: &str) -> (Vec<&str>, Vec<String>) {
+    let mut section = String::new();
+    let mut pinned: Vec<&str> = Vec::new();
+    let mut runtime: Vec<String> = Vec::new();
+    for line in manifest.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if let Some(header) = line.strip_prefix('[') {
+            section = header.trim_end_matches(']').to_string();
+            // `[dependencies.nir-rs]` names its dependency in the header, so
+            // the body below carries no `name =` line to pick it up from.
+            if let Some(name) = section.strip_prefix("dependencies.") {
+                runtime.push(name.to_string());
+            }
+            continue;
+        }
+        if line.is_empty() || !section.contains("dependencies") {
+            continue;
+        }
+        pinned.push(line);
+        if section == "dependencies" {
+            runtime.push(line.split('=').next().unwrap_or("").trim().to_string());
+        }
+    }
+    (pinned, runtime)
+}
+
+/// The scope split above is only worth having if it actually holds on the
+/// manifests it was written for, and the shipped `Cargo.toml` exercises none of
+/// them: it has one table and one dependency.
+///
+/// Each case below is a manifest this repository does not have yet but could,
+/// and each one is a way the check could go wrong — silently missing a pin, or
+/// failing on something that is not a violation at all.
+#[test]
+fn the_dependency_scan_scopes_each_claim_correctly() {
+    // A git pin outside `[dependencies]` is still a git pin. Narrowing the
+    // scan to the runtime table would let all three of these through.
+    for table in [
+        "[dev-dependencies]",
+        "[build-dependencies]",
+        "[target.'cfg(unix)'.dependencies]",
+    ] {
+        let manifest = format!(
+            "[package]\nname = \"x\"\n\n{table}\nhelper = {{ git = \"https://example.invalid/h\" }}\n"
+        );
+        let (pinned, _) = dependency_tables(&manifest);
+        assert!(
+            pinned.join("\n").contains("git ="),
+            "a git pin in {table} must still be scanned, got: {pinned:?}"
+        );
+    }
+
+    // A registry dev-dependency is not a violation of issue #8. It must not
+    // reach the runtime-table assertion, which would report it as a stray
+    // dependency alongside nir-rs.
+    let manifest = "[dependencies]\nnir-rs = \"0.4.2\"\n\n[dev-dependencies]\nproptest = \"1\"\n";
+    let (pinned, runtime) = dependency_tables(manifest);
+    assert_eq!(runtime, ["nir-rs"], "dev-dependencies are not runtime ones");
+    assert!(
+        pinned.iter().any(|line| line.starts_with("proptest")),
+        "the wide scan still covers it: {pinned:?}"
+    );
+
+    // Rewriting the pin as a table is the same dependency spelled differently.
+    let manifest = "[dependencies.nir-rs]\nversion = \"0.4.2\"\n";
+    let (pinned, runtime) = dependency_tables(manifest);
+    assert_eq!(runtime, ["nir-rs"], "the table form declares nir-rs too");
+    assert!(
+        pinned.iter().any(|line| line.starts_with("version")),
+        "and its body is still scanned for pins: {pinned:?}"
+    );
+
+    // `[lib] path` is not a path pin. Only comment stripping and the section
+    // filter keep it out.
+    let manifest =
+        "[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\nnir-rs = \"0.4.2\" # not a path = pin\n";
+    let (pinned, runtime) = dependency_tables(manifest);
+    assert_eq!(runtime, ["nir-rs"]);
+    assert!(
+        !pinned.join("\n").contains("path ="),
+        "neither `[lib] path` nor a comment is a pin: {pinned:?}"
+    );
+}
+
 /// Acceptance criterion from issue #8: `nir-rs` resolves from crates.io, not
 /// from a git or sibling-path pin.
 #[test]
 fn nir_rs_resolves_from_crates_io() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
 
-    // Every dependency table, comments stripped. Scoping to `*dependencies*`
-    // sections keeps `[lib] path` and prose about the rule out of the check;
-    // the manifest has no `#` inside a string, so cutting at the first one is
-    // exact.
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("read Cargo.toml");
-    let mut in_dependencies = false;
-    let mut dependency_lines: Vec<&str> = Vec::new();
-    for line in manifest.lines() {
-        let line = line.split('#').next().unwrap_or("").trim();
-        if let Some(header) = line.strip_prefix('[') {
-            in_dependencies = header.trim_end_matches(']').contains("dependencies");
-        } else if in_dependencies && !line.is_empty() {
-            dependency_lines.push(line);
-        }
-    }
-    let dependencies = dependency_lines.join("\n");
+    let (pinned, runtime) = dependency_tables(&manifest);
+    let dependencies = pinned.join("\n");
 
     for forbidden in ["git =", "path =", "git=", "path="] {
         assert!(
             !dependencies.contains(forbidden),
-            "no dependency may be pinned with `{forbidden}`, found in:\n{dependencies}",
+            "no dependency in any table may be pinned with `{forbidden}`, found in:\n{dependencies}",
         );
     }
     // The allowed set is exact, so a third dependency (issue #9 added
-    // `axon-encoder`) or a rename still fails here.
-    let mut names: Vec<&str> = dependency_lines
-        .iter()
-        .map(|line| line.split('=').next().unwrap_or("").trim())
-        .collect();
+    // `axon-encoder`) or a rename still fails here. Sorted, so the manifest's
+    // declaration order is not part of the contract.
+    let mut names = runtime.clone();
     names.sort_unstable();
     assert_eq!(
         names,
         ["axon-encoder", "nir-rs"],
-        "unexpected dependency set:\n{dependencies}",
+        "`[dependencies]` must declare exactly axon-encoder and nir-rs, found: {names:?}",
     );
 
     let lock_path: PathBuf = root.join("Cargo.lock");
@@ -408,4 +506,76 @@ fn nir_rs_resolves_from_crates_io() {
         entry.contains(r#"version = "0.4."#),
         "nir-rs must resolve to 0.4.x, got:\n{entry}",
     );
+}
+
+/// A caller-built model with a non-finite threshold or weight must be rejected
+/// before it reaches the graph.
+///
+/// `SnnModel::neurons` and `Neuron::weights` are public, so a hand-built or
+/// post-load-mutated model never crosses the decode-time checks. The builder
+/// already re-validates decay rates and weight-row lengths for exactly this
+/// case; without the value checks a `NaN` threshold or weight would ride into
+/// the `Lif` / `Linear` tensors, and `validate_structure()` would not catch it
+/// because it only inspects graph structure.
+#[test]
+fn non_finite_public_parameters_are_rejected() {
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut model = spikenaut_snn::SnnModel::load_default().expect("load the shipped model");
+        model.neurons[2].threshold = bad;
+        let err = spikenaut_snn::build_lif_graph(&model)
+            .expect_err("a non-finite threshold must not reach the graph");
+        assert!(
+            format!("{err}").contains("neuron 2 threshold"),
+            "error should name the offending threshold, got: {err}"
+        );
+
+        let mut model = spikenaut_snn::SnnModel::load_default().expect("load the shipped model");
+        model.neurons[5].weights[7] = bad;
+        let err = spikenaut_snn::build_lif_graph(&model)
+            .expect_err("a non-finite weight must not reach the graph");
+        assert!(
+            format!("{err}").contains("neuron 5 weight 7"),
+            "error should name the offending weight, got: {err}"
+        );
+    }
+
+    // Out-of-range but finite is rejected too, and the shipped model still builds.
+    let mut model = spikenaut_snn::SnnModel::load_default().expect("load the shipped model");
+    model.neurons[0].weights[0] = 1e9;
+    assert!(spikenaut_snn::build_lif_graph(&model).is_err());
+    let model = spikenaut_snn::SnnModel::load_default().expect("load the shipped model");
+    assert!(spikenaut_snn::build_lif_graph(&model).is_ok());
+}
+
+/// A caller-built parameter that is in range but off the Q8.8 grid must be
+/// rejected, not copied into the graph.
+///
+/// Being inside `[-128, 127.99609375]` is not the same as being representable:
+/// Q8.8 holds multiples of `1/256`, so `0.1` has no code. Decoding snaps values
+/// onto the grid, but the public fields bypass that — and a graph built from an
+/// off-grid weight silently stops matching what the `.mem` artifacts can hold,
+/// which is the equivalence this crate exists to preserve.
+#[test]
+fn off_grid_public_parameters_are_rejected() {
+    for off_grid in [0.1, 1.0 / 3.0, 0.751] {
+        let mut model = spikenaut_snn::SnnModel::load_default().expect("load the shipped model");
+        model.neurons[4].weights[9] = off_grid;
+        let err = spikenaut_snn::build_lif_graph(&model)
+            .expect_err("an off-grid weight must not reach the graph");
+        let text = format!("{err}");
+        assert!(
+            text.contains("neuron 4 weight 9") && text.contains("not Q8.8-representable"),
+            "error should name the field and the reason, got: {text}"
+        );
+    }
+
+    // On-grid neighbours of the same magnitude are still accepted, so the check
+    // rejects off-grid values rather than simply anything unusual.
+    let mut model = spikenaut_snn::SnnModel::load_default().expect("load the shipped model");
+    model.neurons[4].weights[9] = 26.0 / 256.0;
+    assert!(spikenaut_snn::build_lif_graph(&model).is_ok());
+
+    // And the shipped artifact, whose values are all on the grid, still builds.
+    let model = spikenaut_snn::SnnModel::load_default().expect("load the shipped model");
+    assert!(spikenaut_snn::build_lif_graph(&model).is_ok());
 }

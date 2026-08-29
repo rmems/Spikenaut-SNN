@@ -229,10 +229,13 @@ impl SnnModel {
     ///   square weight matrix, or if a numeric field breaks its documented
     ///   invariant: every number must be finite and inside the Q8.8 range, and
     ///   `decay_rate` must lie in `(0, 1)`
+    /// - [`ModelError::Schema`] if the document or any neuron carries a member
+    ///   this decoder does not read; see [`reject_unknown_members`]
     ///
     /// Numbers are snapped onto the Q8.8 grid; see [`quantize_q8_8`].
     pub fn from_json_str(text: &str) -> Result<Self, ModelError> {
         let document = json::parse(text)?;
+        reject_unknown_members("the document", &document, &["neurons"])?;
         let entries = document
             .get("neurons")
             .ok_or_else(|| ModelError::Schema("missing top-level `neurons` key".into()))?
@@ -315,6 +318,9 @@ impl SnnModel {
                     neuron.weights.len()
                 )));
             }
+            for (column, &weight) in neuron.weights.iter().enumerate() {
+                check_q8_8(&format!("neuron {index} weight {column}"), weight)?;
+            }
             data.extend_from_slice(&neuron.weights);
         }
         Ok(Tensor::from_f64(vec![units, units], data)?)
@@ -332,6 +338,17 @@ fn require_merged_v2_width(model: &SnnModel) -> Result<(), ModelError> {
 }
 
 fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<Neuron, ModelError> {
+    reject_unknown_members(
+        &format!("neuron {index}"),
+        entry,
+        &[
+            "decay_rate",
+            "last_spike",
+            "membrane_potential",
+            "threshold",
+            "weights",
+        ],
+    )?;
     let field = |name: &str| -> Result<&Json, ModelError> {
         entry
             .get(name)
@@ -400,11 +417,56 @@ fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<N
     })
 }
 
+/// Reject an object that carries members this decoder does not read.
+///
+/// The graph builder stamps `Provenance::MERGED_V2` on whatever this decoder
+/// produces. Ignoring an unrecognised member would let a later revision of the
+/// artifact — a retrain that adds per-neuron output weights, say — decode
+/// partially and still ship under that stamp, describing a model the graph does
+/// not contain. Failing here makes the schema change visible at load time
+/// instead of silent in the graph.
+///
+/// `context` names the object for the error message. A non-object is an error
+/// too: every caller has already committed to reading members off it.
+fn reject_unknown_members(context: &str, value: &Json, known: &[&str]) -> Result<(), ModelError> {
+    let members = value.as_object().ok_or_else(|| {
+        ModelError::Schema(format!(
+            "{context} is not an object (found {})",
+            value.type_name()
+        ))
+    })?;
+    // `BTreeMap` iterates in key order, so the message is stable across runs.
+    let unknown: Vec<&str> = members
+        .keys()
+        .map(String::as_str)
+        .filter(|name| !known.contains(name))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(ModelError::Schema(format!(
+            "{context} carries unknown member(s) `{}`; this decoder reads only `{}`",
+            unknown.join("`, `"),
+            known.join("`, `"),
+        )));
+    }
+    Ok(())
+}
+
 /// Accept one stored number: it must be finite and Q8.8-representable, and it
 /// is snapped onto the grid before the caller ever sees it.
 ///
 /// `context` names the field for the error message.
 fn q8_8_field(context: &str, value: f64) -> Result<f64, ModelError> {
+    check_finite_and_in_range(context, value)?;
+    Ok(quantize_q8_8(value))
+}
+
+/// Check one number is finite and inside the Q8.8 range, saying nothing about
+/// whether it lands on the grid.
+///
+/// This is the decode pre-check: `snn_model.json` prints Q8.8 values at limited
+/// precision (`0.7539062` for `193/256`), so off-grid input is *expected* there
+/// and [`q8_8_field`] snaps it. Rejecting it would reject the shipped artifact.
+fn check_finite_and_in_range(context: &str, value: f64) -> Result<(), ModelError> {
     if !value.is_finite() {
         return Err(ModelError::Schema(format!(
             "{context} is {value}, expected a finite number"
@@ -415,7 +477,31 @@ fn q8_8_field(context: &str, value: f64) -> Result<f64, ModelError> {
             "{context} is {value}, outside the Q8.8 range [{Q8_8_MIN}, {Q8_8_MAX}]"
         )));
     }
-    Ok(quantize_q8_8(value))
+    Ok(())
+}
+
+/// Check one number is a value the Q8.8 grid can actually hold, **without**
+/// changing it.
+///
+/// This is the re-check for numbers arriving through the public [`SnnModel`]
+/// fields, which never cross the decode path. It is stricter than
+/// [`check_finite_and_in_range`] in one way and looser in another: being inside
+/// the range is not the same as being representable — the grid holds multiples
+/// of `1/256`, so `0.1` is in range with no code — but unlike [`q8_8_field`] it
+/// will not quantize, because silently rounding a caller's number would hand
+/// back a graph whose weights differ from the ones they set, with no error.
+pub(crate) fn check_q8_8(context: &str, value: f64) -> Result<(), ModelError> {
+    check_finite_and_in_range(context, value)?;
+    let scaled = value * Q8_8_SCALE;
+    if scaled.fract() != 0.0 {
+        return Err(ModelError::Schema(format!(
+            "{context} is {value}, which is not Q8.8-representable \
+             (nearest codes {}/256 and {}/256)",
+            scaled.floor(),
+            scaled.ceil()
+        )));
+    }
+    Ok(())
 }
 
 /// Accept a stored decay multiplier, enforcing the `(0, 1)` invariant that
@@ -730,6 +816,19 @@ mod tests {
                 r#"{"neurons": [{"decay_rate": 0.5, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0], "last_spike": 0}]}"#,
                 "expected a boolean",
             ),
+            (r#"[]"#, "the document is not an object (found array)"),
+            (
+                r#"{"neurons": [3]}"#,
+                "neuron 0 is not an object (found number)",
+            ),
+            (
+                r#"{"neurons": [{"decay_rate": 0.5, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0], "last_spike": false}], "output_weights": [[0.1]]}"#,
+                "the document carries unknown member(s) `output_weights`",
+            ),
+            (
+                r#"{"neurons": [{"decay_rate": 0.5, "inhibitory": true, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0], "last_spike": false}]}"#,
+                "neuron 0 carries unknown member(s) `inhibitory`",
+            ),
         ];
         for (text, expected) in cases {
             let err = SnnModel::from_json_str(text).unwrap_err();
@@ -739,6 +838,35 @@ mod tests {
                 "expected {message:?} to contain {expected:?}"
             );
         }
+    }
+
+    /// A member this decoder does not read must not pass silently, because the
+    /// builder stamps `Provenance::MERGED_V2` on what comes out.
+    ///
+    /// The retrain tracked by issues #2 and #3 is expected to add per-neuron
+    /// parameters — signed output weights, an excitatory/inhibitory flag. If a
+    /// revised artifact decoded by dropping them, the graph would keep claiming
+    /// to be the shipped model while describing strictly less of it. Loudly
+    /// refusing an unknown member is what makes that revision a visible schema
+    /// change rather than a silent truncation.
+    #[test]
+    fn an_unknown_member_is_never_dropped_silently() {
+        let shipped = std::fs::read_to_string(default_model_path()).unwrap();
+        SnnModel::from_json_str(&shipped).expect("the shipped artifact decodes");
+
+        // The same artifact, with one member the decoder does not read.
+        let widened = shipped.replacen(
+            r#""decay_rate""#,
+            r#""output_weight": 0.5, "decay_rate""#,
+            1,
+        );
+        assert_ne!(widened, shipped, "the fixture must actually differ");
+        let err = SnnModel::from_json_str(&widened).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unknown member(s) `output_weight`"),
+            "a widened artifact must be refused, got: {err}"
+        );
     }
 
     /// The stored decimals are truncated Q8.8 codes; decoding must restore the
