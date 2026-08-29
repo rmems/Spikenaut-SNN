@@ -1,7 +1,9 @@
 *.png filter=lfs diff=lfs merge=lfs -text
 assets/fpga_hardware_cat.jpg filter=lfs diff=lfs merge=lfs -text
 
-# FPGA memory images are line-ending sensitive to tooling and are pinned by
-# tools/verify_q88.py. Force LF so a Windows checkout (core.autocrlf) cannot
-# materialize CRLF and change the bytes of a semantically identical artifact.
+# FPGA $readmemh images are logical LF hex-word files, and tools/verify_q88.py
+# pins one of them. Keep them LF so a Windows core.autocrlf checkout cannot
+# rewrite the bytes of a semantically identical artifact. Defense in depth
+# only: the verifier hashes the canonical token sequence, not raw bytes, so
+# the pin holds either way.
 *.mem text eol=lf
