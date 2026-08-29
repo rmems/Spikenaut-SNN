@@ -115,7 +115,7 @@ The adapter accepts a variable number of legitimate source signals, so the raw f
 
 | Parameter | Source | Values |
 |-----------|--------|--------|
-| Thresholds (16) | Trained | Graduated 1.125 to 1.594 per neuron |
+| Thresholds (16) | Externally sourced | Graduated 1.125 to 1.594 per neuron |
 | Decay rates (16) | Converted | Graduated 0.80 to 0.95 per neuron |
 | Hidden weights (256) | Externally sourced — **degenerate, see below** | Range 0.75 to 1.04, 76 unique values |
 | Output weights (48) | **Randomly initialized — never trained** | Signed: -0.164 to +0.258 |
@@ -179,7 +179,7 @@ initial $readmemh("dataset/merged_v2/parameters_weights.mem", weight_ram);
 | Training date | 2026-03-22 |
 | Training data | `fresh_sync_data.jsonl` — **8 records**, Kaspa + Monero mainnet sessions |
 
-The 8-record training set is the root cause of the degenerate weights. Two of its six features (`qubic_epoch_progress`, `reward_hint`) are effectively constant — range 0.0009, standard deviation 0.000284 — while dominating spike encoding at 87.5% spike rate each. Monotonically converging sync data (0.999912 → 1.0) produces single-attractor weights.
+**Externally reported diagnosis, not established here.** [#2](https://github.com/rmems/Spikenaut-SNN/issues/2) attributes the ramp to the 8-record set: two of its six features (`qubic_epoch_progress`, `reward_hint`) are effectively constant — range 0.0009, standard deviation 0.000284 — while dominating spike encoding at 87.5% spike rate each, and monotonically converging sync data (0.999912 → 1.0) produces single-attractor weights. That is a plausible account, but since no training run in this repository links that dataset to the shipped matrix, the causal claim cannot be checked from here. What *is* verifiable from the artifact is the ramp itself.
 
 A replacement corpus, `qubic_ticks_snn.jsonl` (~27,430 records), and a data adapter are reported in [#2](https://github.com/rmems/Spikenaut-SNN/issues/2), but **neither is present in this repository or anywhere in its history** — treat both as external and currently uninspectable from the model card. The retrain has not happened, and the trainer needs fixing first ([#13](https://github.com/rmems/Spikenaut-SNN/issues/13)): it currently pins `W_MIN = 0`, row L1-normalizes, writes unsigned Q8.8, and emits no output-weight file.
 
