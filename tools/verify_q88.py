@@ -13,15 +13,20 @@ What it does
    compares it, value by value, against what the ``.mem`` files actually
    contain -- thresholds (16), decay rates (16), hidden weights (16x16=256).
 3. Checks the 48 signed output weights. ``snn_model.json`` carries no output
-   layer, so there is no float source to cross-validate against; instead the
-   signed section is checked for the properties a broken encoder would violate,
-   including two's-complement sign integrity.
+   layer and this tool does not invent one. The shipped file is pinned by
+   sha256 and the exact 48 hex words (computed from the file as shipped).
+   Sign-integrity and decode→re-encode stay as defense in depth; they are
+   not enough on their own (a well-formed FFF9→FFF8 swap still round-trips).
 4. Exits non-zero with a per-value report on any mismatch.
 
-``--self-test`` proves the checker can actually fail: it builds an output-weight
-file using a clamp-to-zero encoder (the concrete hazard described in issue #15
-for silicon-bridge's ``encode_q88``, where negatives collapse to 0) and asserts
-this verifier rejects it. A checker that cannot fail is worthless.
+This is the float→Q8.8 encoding half of issue #4. Passing here does not
+close #4: weight MSE / bit-identical export is not the close bar
+(Hamming-on-holdout is).
+
+``--self-test`` proves the checker can actually fail: clamp-to-zero output
+weights (issue #15), 1-LSB hidden-weight drift, truncated files, well-formed
+output-weight corruption against the pin, and ``report()`` with no residual
+data (the empty-``max`` crash). A checker that cannot fail is worthless.
 
 Standard library only. Run from anywhere::
 
@@ -32,6 +37,8 @@ Standard library only. Run from anywhere::
 from __future__ import annotations
 
 import argparse
+import hashlib
+import io
 import json
 import math
 import re
@@ -53,6 +60,24 @@ MEM_OUTPUT = DATA_DIR / "parameters_output_weights.mem"
 N_NEURONS = 16
 N_INPUTS = 16
 N_OUTPUT_WEIGHTS = 48
+
+# Pin of the shipped output-weight image. snn_model.json has no output layer,
+# so this is the independent reference — computed from the file as shipped,
+# not invented JSON floats. Update both pins together if the artifact is
+# intentionally replaced.
+#
+#   python3 -c "import hashlib; from pathlib import Path; p=Path('dataset/merged_v2/parameters_output_weights.mem'); print(hashlib.sha256(p.read_bytes()).hexdigest())"
+OUTPUT_WEIGHTS_SHA256 = (
+    "d6d3aff3c5eba76fd0206fbff377594d2c4a3c22f980e641257f4d2911405469"
+)
+OUTPUT_WEIGHTS_HEX: tuple[str, ...] = (
+    "FFF9", "001E", "FFFC", "0042", "000E", "0025", "FFE3", "0025",
+    "FFD9", "0007", "FFD6", "000C", "001A", "0018", "0009", "FFF0",
+    "FFE6", "FFF1", "FFF8", "0005", "FFEC", "0003", "0006", "FFF4",
+    "FFEE", "0017", "0000", "FFFD", "FFF2", "FFF8", "0024", "0004",
+    "0015", "FFF4", "FFFF", "001C", "001E", "FFE2", "FFFF", "FFEF",
+    "FFF5", "FFED", "FFF2", "0012", "FFEF", "0026", "0016", "FFF3",
+)
 
 # ---------------------------------------------------------------------------
 # Q8.8 codec
@@ -144,6 +169,11 @@ class MemEntry:
 
 class ParseError(Exception):
     pass
+
+
+def file_sha256(path: Path) -> str:
+    """sha256 of a file's exact on-disk bytes. Read-only; never writes."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def parse_mem(path: Path) -> list[MemEntry]:
@@ -316,12 +346,19 @@ def check_signed_section(
     source: str,
     entries: list[MemEntry],
     expected_count: int,
+    expected_hex: tuple[str, ...] | None = None,
+    expected_sha256: str | None = None,
+    mem_path: Path | None = None,
 ) -> SectionResult:
     """Check the signed output-weight section.
 
     snn_model.json has no output layer, so there is no float column to
-    cross-validate against. These are the invariants a broken encoder breaks:
+    cross-validate against. The shipped file is pinned by sha256 and the
+    exact 48 hex words. Sign-integrity and decode→re-encode stay as
+    defense in depth: they catch clamp-to-zero and broken codecs, but a
+    well-formed FFF9→FFF8 swap still round-trips.
 
+      * shipped-file pin (when ``expected_hex`` / ``expected_sha256`` given),
       * exact value count,
       * canonical round-trip: decode -> re-encode is bit-identical, so the
         float<->hex codec agrees with every word actually in the file,
@@ -339,6 +376,48 @@ def check_signed_section(
             f"expected {expected_count}"
         )
         failed = True
+
+    if expected_sha256 is not None:
+        if mem_path is None:
+            raise ValueError("expected_sha256 requires mem_path")
+        actual_sha = file_sha256(mem_path)
+        if actual_sha != expected_sha256:
+            notes.append(
+                f"SHIPPED-FILE PIN FAILURE: sha256 {actual_sha} "
+                f"!= {expected_sha256}"
+            )
+            failed = True
+        else:
+            notes.append(f"sha256 pin {actual_sha} matches shipped file")
+
+    if expected_hex is not None:
+        if len(expected_hex) != expected_count:
+            notes.append(
+                f"GOLD PIN LENGTH MISMATCH: gold has {len(expected_hex)} "
+                f"words, expected {expected_count}"
+            )
+            failed = True
+        n = min(len(entries), len(expected_hex))
+        for i in range(n):
+            actual = entries[i].text.upper()
+            want = expected_hex[i].upper()
+            if actual != want:
+                mismatches.append(
+                    Mismatch(
+                        index=i,
+                        label=f"output weight {i}",
+                        lineno=entries[i].lineno,
+                        source_float=decode_q88(int(want, 16)),
+                        expected_hex=want,
+                        actual_hex=actual,
+                    )
+                )
+        if len(entries) != len(expected_hex):
+            notes.append(
+                f"PIN LENGTH MISMATCH: file holds {len(entries)} values, "
+                f"gold pin has {len(expected_hex)}"
+            )
+            failed = True
 
     # Canonical round-trip: hex -> float -> hex must be the identical word.
     for entry in entries:
@@ -442,11 +521,25 @@ def verify_shipped() -> list[SectionResult]:
         ),
         check_signed_section(
             "output weights    (parameters_output_weights.mem)",
-            "signed two's-complement invariants; snn_model.json has no output layer",
+            "shipped-file sha256 + gold hex pin; snn_model.json has no output layer",
             parse_mem(MEM_OUTPUT),
             N_OUTPUT_WEIGHTS,
+            expected_hex=OUTPUT_WEIGHTS_HEX,
+            expected_sha256=OUTPUT_WEIGHTS_SHA256,
+            mem_path=MEM_OUTPUT,
         ),
     ]
+
+
+def worst_residual_lsb(results: list[SectionResult]) -> float:
+    """Max residual across sections that have one; 0.0 if none do.
+
+    An empty residual list must not raise — ``report()`` is called with
+    signed-only results (``max_residual_lsb`` is None) and in tests with
+    no sections at all. ``max()`` on an empty generator is a ValueError.
+    """
+    residuals = [r.max_residual_lsb for r in results if r.max_residual_lsb is not None]
+    return max(residuals) if residuals else 0.0
 
 
 def report(results: list[SectionResult], stream=sys.stdout) -> bool:
@@ -463,10 +556,7 @@ def report(results: list[SectionResult], stream=sys.stdout) -> bool:
     ok = all(r.ok for r in results)
 
     cross_checked = sum(r.count for r in results if r.max_residual_lsb is not None)
-    worst = max(
-        (r.max_residual_lsb for r in results if r.max_residual_lsb is not None),
-        default=0.0,
-    )
+    worst = worst_residual_lsb(results)
 
     if ok:
         print(
@@ -475,10 +565,13 @@ def report(results: list[SectionResult], stream=sys.stdout) -> bool:
             f"snn_model.json floats\n"
             f"    (worst |json - mem| residual {worst:.6f} LSB), and "
             f"{N_OUTPUT_WEIGHTS} signed output weights\n"
-            f"    verified for two's-complement sign integrity and canonical "
-            f"round-trip.\n"
-            f"    The export pipeline preserves the float weights exactly "
-            f"(issue #4).",
+            f"    pinned to the shipped-file sha256 / gold hex words, plus "
+            f"sign-integrity and\n"
+            f"    canonical round-trip (defense in depth).\n"
+            f"    This is the float→Q8.8 encoding half of issue #4; it is not "
+            f"a close of #4.\n"
+            f"    Hamming-on-holdout is the close bar, not weight MSE / "
+            f"bit-identical export.",
             file=stream,
         )
     else:
@@ -695,12 +788,139 @@ def self_test(stream=sys.stdout) -> bool:
         print("   ok: rejected on value count", file=stream)
         print("", file=stream)
 
+        # -- 6. report() must not crash when no section has residual data ------
+        #
+        # Amazon Q: max() over an empty generator of max_residual_lsb raises
+        # ValueError. The signed section has no residual; an empty results
+        # list has none either. Both must report 0.0, not crash.
+        print("6. report() survives an empty residual list", file=stream)
+        _require(
+            worst_residual_lsb([]) == 0.0,
+            "empty results must report 0.0 residual, not raise",
+        )
+        silent = io.StringIO()
+        empty_ok = report([], stream=silent)
+        _require(empty_ok, "empty report() should not fail or raise")
+        signed_only = [
+            check_signed_section(
+                "output weights (no residual)",
+                "pin + signed invariants",
+                parse_mem(MEM_OUTPUT),
+                N_OUTPUT_WEIGHTS,
+                expected_hex=OUTPUT_WEIGHTS_HEX,
+                expected_sha256=OUTPUT_WEIGHTS_SHA256,
+                mem_path=MEM_OUTPUT,
+            )
+        ]
+        _require(
+            all(r.max_residual_lsb is None for r in signed_only),
+            "signed-only section must carry no residual data (this is the crash path)",
+        )
+        _require(
+            worst_residual_lsb(signed_only) == 0.0,
+            "signed-only sections must report 0.0 residual, not raise",
+        )
+        silent = io.StringIO()
+        signed_ok = report(signed_only, stream=silent)
+        _require(signed_ok, "signed-only report() should pass and not raise")
+        checks += 5
+        print("   ok: empty and signed-only report() return 0.0 residual", file=stream)
+        print("", file=stream)
+
+        # -- 7. well-formed output-weight corruption is REJECTED (the pin) -----
+        #
+        # Sign-integrity + decode→re-encode accept any well-formed 48-word
+        # file with at least one high-bit word. The gold pin is what makes
+        # FFF9→FFF8 and "47 zeros + FFFF" fail.
+        print(
+            "7. well-formed output-weight corruption is REJECTED (shipped-file pin)",
+            file=stream,
+        )
+        gold = tuple(e.text.upper() for e in real)
+        _require(
+            gold == OUTPUT_WEIGHTS_HEX,
+            "gold tuple derived from the shipped file does not match the pin",
+        )
+        _require(
+            file_sha256(MEM_OUTPUT) == OUTPUT_WEIGHTS_SHA256,
+            "shipped output-weight sha256 does not match the pin",
+        )
+        _require(
+            len(gold) == N_OUTPUT_WEIGHTS,
+            f"shipped file has {len(gold)} words, expected {N_OUTPUT_WEIGHTS}",
+        )
+        _require(
+            gold[0] == "FFF9",
+            f"self-test expects shipped word 0 to be FFF9, got {gold[0]}",
+        )
+
+        mutated_words = [e.word for e in real]
+        mutated_words[0] = 0xFFF8
+        mut_path = tmp / "parameters_output_weights_fff8.mem"
+        _write_mem(mut_path, mutated_words)
+        unpinned_fff8 = check_signed_section(
+            "output weights (FFF9→FFF8, no pin)",
+            "sign-integrity + round-trip only",
+            parse_mem(mut_path),
+            N_OUTPUT_WEIGHTS,
+        )
+        _require(
+            unpinned_fff8.ok,
+            "sanity: FFF9→FFF8 still passes sign+round-trip; the pin is load-bearing",
+        )
+        pinned_fff8 = check_signed_section(
+            "output weights (FFF9→FFF8)",
+            "gold hex pin",
+            parse_mem(mut_path),
+            N_OUTPUT_WEIGHTS,
+            expected_hex=gold,
+        )
+        _require(
+            not pinned_fff8.ok,
+            "verifier ACCEPTED FFF9→FFF8 corruption against the gold pin",
+        )
+        _require(
+            len(pinned_fff8.mismatches) == 1 and pinned_fff8.mismatches[0].index == 0,
+            f"expected 1 mismatch at index 0, got {pinned_fff8.mismatches}",
+        )
+        checks += 6
+        print("   ok: FFF9→FFF8 rejected by gold pin, accepted without it", file=stream)
+
+        junk_path = tmp / "parameters_output_weights_junk.mem"
+        _write_mem(junk_path, [0] * 47 + [0xFFFF])
+        unpinned_junk = check_signed_section(
+            "output weights (47 zeros + FFFF, no pin)",
+            "sign-integrity + round-trip only",
+            parse_mem(junk_path),
+            N_OUTPUT_WEIGHTS,
+        )
+        _require(
+            unpinned_junk.ok,
+            "sanity: 47 zeros + FFFF still passes sign+round-trip; the pin is load-bearing",
+        )
+        pinned_junk = check_signed_section(
+            "output weights (47 zeros + FFFF)",
+            "gold hex pin",
+            parse_mem(junk_path),
+            N_OUTPUT_WEIGHTS,
+            expected_hex=gold,
+        )
+        _require(
+            not pinned_junk.ok,
+            "verifier ACCEPTED 47 zeros + one FFFF against the gold pin",
+        )
+        checks += 2
+        print("   ok: 47 zeros + FFFF rejected by gold pin, accepted without it", file=stream)
+        print("", file=stream)
+
     print(
         f"SELF-TEST PASSED: {checks} assertions. The verifier rejects "
         f"clamp-to-zero\n"
-        f"signed encoding, 1-LSB weight drift, and truncated memory images, "
-        f"and accepts\n"
-        f"the shipped artifacts.",
+        f"signed encoding, 1-LSB weight drift, truncated memory images, "
+        f"and well-formed\n"
+        f"output-weight corruption against the shipped-file pin; "
+        f"report() survives an\n"
+        f"empty residual list; and the shipped artifacts are accepted.",
         file=stream,
     )
     return True
@@ -721,7 +941,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "prove the checker can fail: assert it rejects clamp-to-zero signed "
-            "encoding, 1-LSB weight drift, and truncated files"
+            "encoding, 1-LSB weight drift, truncated files, and well-formed "
+            "output-weight corruption; and that report() survives no residuals"
         ),
     )
     args = parser.parse_args(argv)
