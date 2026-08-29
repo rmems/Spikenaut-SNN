@@ -328,9 +328,26 @@ def parse_mem(path: Path) -> list[MemEntry]:
 def load_model(path: Path) -> dict:
     """Load snn_model.json and assert it has the shape the checker assumes.
 
-    Every rejection route -- missing file, malformed JSON container, wrong
-    neuron count, missing or wrongly-sized fields, a nonnumeric scalar --
-    exits through ``ParseError``, which ``main()`` maps to exit code 2.
+    Most rejection routes -- missing file, malformed JSON container, wrong
+    neuron count, missing or wrongly-sized fields, a nonnumeric scalar, a
+    value whose Q8.8 scaling overflows -- raise ``ParseError``, which
+    ``main()`` maps to exit code 2. Two do not, and the difference is worth
+    keeping straight:
+
+      * A JSON *syntax* error comes out of ``json.loads`` as
+        ``json.JSONDecodeError``. Different type, still exit 2, because the
+        file could not be read as a model at all.
+      * A value that is a finite float but outside Q8.8 -- ``200.0`` for a
+        threshold -- passes every load-time check and only fails later, when
+        ``encode_q88`` tries to encode it. The section loops catch that
+        ``Q88RangeError`` themselves, record ``UNREPRESENTABLE at index N``,
+        and fail the section, so it exits **1**, not 2. That is the right
+        classification: the artifacts were read and checked, and a value
+        disagrees with the format. ``main()`` also lists ``Q88RangeError``,
+        as a backstop for any future path outside those loops.
+
+    So exit 2 means "could not check" and exit 1 means "checked, something
+    is wrong" -- and that split, not the exception type, is the contract.
 
     Two layers, both load-bearing:
 
@@ -1466,11 +1483,22 @@ def self_test(stream=sys.stdout) -> bool:
             "10. a CRLF-line-ending copy of the shipped file still verifies",
             file=stream,
         )
-        lf_bytes = MEM_OUTPUT.read_bytes()
-        crlf_bytes = lf_bytes.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        # Both fixtures are *constructed*, never assumed from the checkout.
+        # Reading the file and calling it the LF form is wrong on a CRLF
+        # checkout -- there the two fixtures come out identical and the
+        # negative control below fails, reporting a bug in the file that is
+        # really a bug in this test. Normalize to LF first, then build CRLF
+        # from it, so both forms exist whatever git handed us.
+        shipped_bytes = MEM_OUTPUT.read_bytes()
+        lf_bytes = shipped_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        crlf_bytes = lf_bytes.replace(b"\n", b"\r\n")
         _require(
-            b"\r\n" in crlf_bytes and crlf_bytes != lf_bytes,
+            b"\r\n" in crlf_bytes and b"\r" not in lf_bytes,
             "CRLF fixture is not actually CRLF -- this section would prove nothing",
+        )
+        _require(
+            crlf_bytes != lf_bytes,
+            "the two line-ending fixtures are identical -- the file has no newline",
         )
         _require(
             hashlib.sha256(crlf_bytes).hexdigest()
