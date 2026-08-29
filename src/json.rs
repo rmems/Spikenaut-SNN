@@ -9,8 +9,12 @@
 //! The grammar is complete (objects, arrays, strings with `\u` escapes and
 //! surrogate pairs, numbers, `true` / `false` / `null`) and strict: leading
 //! zeros, unescaped control characters, lone surrogates, trailing bytes and
-//! nesting deeper than [`MAX_DEPTH`] are all rejected. Numbers decode to `f64`,
-//! which is exact for the Q8.8 fixed-point values this model stores.
+//! nesting deeper than [`MAX_DEPTH`] are all rejected. Numbers decode to `f64`.
+//!
+//! `f64` represents every Q8.8 value exactly, but `snn_model.json` prints those
+//! values as truncated decimals, so the parser alone does not recover them.
+//! [`crate::model::quantize_q8_8`] snaps them back onto the grid at decode
+//! time.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -435,12 +439,19 @@ mod tests {
     }
 
     #[test]
-    fn preserves_q8_8_values_exactly() {
-        // Q8.8 fixed point is exact in binary floating point.
-        let value = parse("[0.7539062, 1.125, 0.796875]").unwrap();
+    fn q8_8_values_written_in_full_parse_exactly() {
+        // Q8.8 fixed point is dyadic, so it is exact in binary floating point.
+        let value = parse("[0.75390625, 1.125, 0.796875]").unwrap();
         let items = value.as_array().unwrap();
+        assert_eq!(items[0].as_f64(), Some(193.0 / 256.0));
         assert_eq!(items[1].as_f64(), Some(1.125));
         assert_eq!(items[2].as_f64(), Some(0.796875));
+
+        // The shipped file writes them truncated, which no parser can undo;
+        // `model::quantize_q8_8` restores the grid value at decode time.
+        let truncated = parse("0.7539062").unwrap().as_f64().unwrap();
+        assert_ne!(truncated, 193.0 / 256.0);
+        assert_eq!(crate::model::quantize_q8_8(truncated), 193.0 / 256.0);
     }
 
     #[test]
