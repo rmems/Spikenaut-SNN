@@ -1,0 +1,6 @@
+[toolchain]
+# nir-rs 0.4.2 declares rust-version = "1.97.1" (edition 2024).
+# Pin the same toolchain so a stale default toolchain fails loudly at
+# `rustup` resolution rather than deep inside dependency compilation.
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
