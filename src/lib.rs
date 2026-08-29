@@ -76,4 +76,4 @@ pub use graph::{
     Provenance, build_lif_graph, build_lif_graph_with_provenance, load_default_lif_graph,
     resistance_from_decay,
 };
-pub use model::{MERGED_V2_PROVENANCE, ModelError, Neuron, SnnModel, quantize_q8_8};
+pub use model::{MERGED_V2_PROVENANCE, ModelError, Neuron, SnnModel, is_q8_8, quantize_q8_8};
