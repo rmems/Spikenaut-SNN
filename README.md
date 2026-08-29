@@ -103,7 +103,27 @@ No learned SNN, LLM, FPGA controller, or online-training loop may disable or rai
 
 Channels 14-15 are the network's pain receptors. When the GPU crosses 85 °C, the SNN receives negative reward and learns to avoid states that could damage the hardware.
 
-**This map is the current v2 layout, not a fixed contract.** The replacement state contract is being defined in [#20](https://github.com/rmems/Spikenaut-SNN/issues/20), under one governing rule: logical state variables are *not* equivalent to physical SNN axons. Signals are never invented or duplicated just to fill 16 slots. Instead an explicit adapter sits between them:
+### The shipped weights were not trained on this map
+
+**The table above is the proposed v2 layout. It is not the map the shipped weights were trained against, and the two do not agree.** The encoder that produced the training stimuli — `dataset/generate_spike_data.py`, deleted in `50a2627` but recoverable from history — declares a different assignment:
+
+| Channels | Training-time signal | v2 layout says |
+|---|---|---|
+| 0-3 | `kaspa_hashrate`, `kaspa_power`, `kaspa_temp`, `kaspa_qubic` | DNX, Quai |
+| 4-7 | `monero_hashrate`, `monero_power`, `monero_temp`, `monero_qubic` | Qubic, Kaspa |
+| 8-11 | `qubic_hashrate`, `qubic_power`, `qubic_temp`, `qubic_qubic` | XMR, Ocean |
+| 12-15 | `thermal_stress`, `power_efficiency`, `network_health`, `composite_reward` | Verus, Thermal |
+
+Every column means something different. Feeding Kaspa hashrate into channel 6 as the v2 table directs lands it where the weights expect `monero_temp`. **Anyone reproducing or interpreting the shipped `merged_v2` weights must use the training-time map, not the table above.**
+
+Two further things follow from that encoder, both worth knowing before trusting the hidden weights:
+
+- `fresh_sync_data.jsonl` carries only `kaspa` and `monero` records, so **channels 8-11 were never driven by any data** — a quarter of the input width was dead for the entire run.
+- Channels 12-15 are derived from the same six telemetry fields feeding 0-11 (`thermal_stress` from `gpu_temp_c`, `network_health` and `composite_reward` from the two `qubic_*` fields), so they add no independent signal.
+
+That is a 16-wide input carrying at most six distinct measurements, four channels of which are constant zero. It is consistent with the degenerate ramp described below, though — like the ramp's cause — not a link this repository can demonstrate, since no training run here connects the dataset to the parameters.
+
+**The v2 map is a proposal, not a fixed contract.** The replacement state contract is being defined in [#20](https://github.com/rmems/Spikenaut-SNN/issues/20), under one governing rule: logical state variables are *not* equivalent to physical SNN axons. Signals are never invented or duplicated just to fill 16 slots. Instead an explicit adapter sits between them:
 
 ```text
 raw state → state adapter → encoder → fixed-width SNN stimuli
