@@ -1648,7 +1648,14 @@ def self_test(stream=sys.stdout) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point. Returns the process exit code, never raises.
+    """CLI entry point. Returns the process exit code.
+
+    It handles ``SelfTestFailure``, ``ParseError``, ``Q88RangeError`` and
+    ``json.JSONDecodeError``, and nothing else: there is no catch-all, so a
+    bug in the verifier surfaces as a traceback rather than as a clean
+    verdict on the artifacts. That is deliberate — a checker that swallows
+    its own defects and prints a verdict anyway is the failure this whole
+    tool exists to prevent.
 
     Exit codes are the contract this tool is consumed by:
     0 = everything verified, 1 = a value or invariant did not verify (or a
