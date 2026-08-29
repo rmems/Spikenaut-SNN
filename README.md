@@ -114,25 +114,31 @@ Channels 14-15 are the network's pain receptors. When the GPU crosses 85 °C, th
 | 8-11 | `qubic_hashrate`, `qubic_power`, `qubic_temp`, `qubic_qubic` | XMR, Ocean |
 | 12-15 | `thermal_stress`, `power_efficiency`, `network_health`, `composite_reward` | Verus, Thermal |
 
-Every column means something different. Feeding Kaspa hashrate into channel 6 as the v2 table directs lands it where the weights expect `monero_temp`. **Anyone reproducing or interpreting the shipped `merged_v2` weights must use the training-time map, not the table above.**
+Every column is assigned differently. But be careful how much this settles: it records what **this encoder** produced, and — as the provenance section below sets out — no training run in this repository links that encoder or `fresh_sync_data.jsonl` to the shipped matrix, which was imported from an external path. So this is the layout the historical encoder wrote, **not a verified statement of what the shipped weights expect**. Treat it as the best available hypothesis about the columns and the only one with code behind it; a traceable training artifact would be needed to promote it to fact. What can be said without qualification is that the two maps disagree in every column, so the v2 table above is not a safe guide either.
 
-Running that encoder's own normalization over the eight records it was given produces this, which is worth knowing before trusting the hidden weights:
+Running that encoder end to end over the eight records — including `create_spike_train`, which allocates `np.zeros(16)` per record and overwrites only the channels that event touches — gives the actual input matrix:
 
-| Channels | Normalized range over the 8 records | |
-|---|---|---|
-| 0-7 (kaspa, monero) | 0.30 – 1.00, each seen in only 4 of 8 records | live |
-| 3 `kaspa_qubic` | exactly 1.0000 in all 4 | constant |
-| **8-11 (qubic)** | **never driven — no `qubic` record exists** | **dead** |
-| **12 `thermal_stress`** | **always exactly 0** | **dead** |
-| 13 `power_efficiency` | 0.0000 – 0.0151 | near-dead |
-| 14 `network_health` | 0.90 – 1.00 | live |
-| 15 `composite_reward` | 0.9991 – 1.0000 | near-constant |
+| ch | name | normalized value, records 1-8 | |
+|---|---|---|---|
+| 0 | `kaspa_hashrate` | 0.420, 0.450, 0.480, 0.500, **0, 0, 0, 0** | live |
+| 1 | `kaspa_power` | 0.380, 0.403, 0.438, 0.458, **0, 0, 0, 0** | live |
+| 2 | `kaspa_temp` | 0.883, 0.850, 0.817, 0.783, **0, 0, 0, 0** | live |
+| 3 | `kaspa_qubic` | 1.0, 1.0, 1.0, 1.0, **0, 0, 0, 0** | binary flag |
+| 4-6 | `monero_*` | **0, 0, 0, 0**, then 0.30 – 0.70 | live |
+| 7 | `monero_qubic` | **0, 0, 0, 0**, 0.800, 0.900, 0.950, 1.000 | live |
+| **8-11** | `qubic_*` | **all zero — no `qubic` record exists** | **dead** |
+| **12** | `thermal_stress` | **all zero** | **dead** |
+| 13 | `power_efficiency` | 0, 0, 0.006, 0.015, 0, 0, 0, 0 | barely live |
+| 14 | `network_health` | 1.0 ×4, then 0.900, 0.950, 0.975, 1.000 | live |
+| 15 | `composite_reward` | 0.9991, then 1.0000 ×7 | near-constant |
+
+The zero-fill is the part that is easy to miss and changes the reading. Because a kaspa event never writes channels 4-11 and a monero event never writes 0-3 or 8-11, **every one of channels 0-7 is zero on half the records**. Channel 3 is the clearest case: `1,1,1,1,0,0,0,0` is not a constant input, it is a perfect kaspa/monero indicator. Channels 0-2 and 4-7 carry the same flag folded into their magnitude.
 
 **Five of sixteen channels are dead, not four.** Channels 8-11 have no source records at all. Channel 12 is dead for a different and more interesting reason: it is computed as `(gpu_temp_c - 40) / 6`, giving roughly 0.30-0.88, and then passed to `temporal_encoding(..., 'temp')`, which normalizes with `(value - 40) / 6` *again* and clips at zero. The double subtraction lands every record at zero. Channel 13 carries the same second normalization — `power_eff / 5` lands near 0.5, and the `'hashrate'` branch then subtracts exactly 0.5 — so six of the eight records clip to zero. It survives on records 3 and 4 alone, where `power_eff / 5` is 0.505806 and 0.515066 and genuinely clears the threshold. That residual activity is real signal squeezed through a wrong subtraction, not a rounding artifact.
 
 Channels 14 and 15 do carry signal that 0-11 do not: channels 0-11 read only `hashrate_mh`, `power_w`, `gpu_temp_c` and `qubic_tick_trace`, while 14 additionally consumes `qubic_epoch_progress` and 15 consumes `reward_hint`. Those two fields reach the network **only** through 14 and 15, so neither channel is redundant — a point that matters when deciding what to keep or repair in a retrain.
 
-What is left, then, is a 16-wide input in which five channels are dead, one is constant, two more are pinned near their ceiling, and any single record populates at most eight of the sixteen. That is consistent with the degenerate ramp described below, though — like the ramp's cause — not a link this repository can demonstrate, since no training run here connects the dataset to the parameters.
+What is left, then, is a 16-wide input in which five channels are always zero, one is near-constant, seven double as a blockchain flag, and any single record populates at most eight of the sixteen. That is consistent with the degenerate ramp described below, though — like the ramp's cause — not a link this repository can demonstrate, since no training run here connects the dataset to the parameters.
 
 **The v2 map is a proposal, not a fixed contract.** The replacement state contract is being defined in [#20](https://github.com/rmems/Spikenaut-SNN/issues/20), under one governing rule: logical state variables are *not* equivalent to physical SNN axons. Signals are never invented or duplicated just to fill 16 slots. Instead an explicit adapter sits between them:
 
