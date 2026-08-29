@@ -20,9 +20,9 @@ model_name: Spikenaut-SNN-v2
 
 # Spikenaut-SNN-v2
 
-A 16-neuron Leaky-Integrate-and-Fire (LIF) spiking neural network that learns a compact temporal representation of machine state from live hardware and node telemetry, targeting a Xilinx Artix-7 FPGA.
+A 16-neuron Leaky-Integrate-and-Fire (LIF) spiking neural network **designed to learn** a compact temporal representation of machine state from live hardware and node telemetry, targeting a Xilinx Artix-7 FPGA. That is the intended architecture; nothing here demonstrates that the shipped weights learned such a representation — see Status below.
 
-Spikenaut is the small-supervisor layer of a wider research program, **Artificial Interoception / Neuromorphic Supervisor** ([#7](https://github.com/rmems/Spikenaut-SNN/issues/7)). The name comes from "spike" (neural firing) and "naut" (navigator). This repository holds the brain — the trained weights and the export contract that turns raw telemetry into decisions.
+Spikenaut is the small-supervisor layer of a wider research program, **Artificial Interoception / Neuromorphic Supervisor** ([#7](https://github.com/rmems/Spikenaut-SNN/issues/7)). The name comes from "spike" (neural firing) and "naut" (navigator). This repository holds the model artifact — the shipped weight files and the Q8.8 export contract. Two caveats the name invites: the weights are not established as trained (Status, below), and there is no decision contract — nothing in this repository or its history defines what the three output rows mean.
 
 ## Status — read this first
 
@@ -102,7 +102,7 @@ No learned SNN, LLM, FPGA controller, or online-training loop may disable or rai
 | 12-13 | Verus | CPU-heavy validator tracking (AVX-512) |
 | 14-15 | Thermal | Pain receptors — power and temperature |
 
-Channels 14-15 are the network's pain receptors. When the GPU crosses 85 °C, the SNN receives negative reward and learns to avoid states that could damage the hardware.
+Channels 14-15 are *intended* as the network's pain receptors. **This is design intent, not shipped behaviour.** This repository contains nine files — four `.mem` artifacts, `snn_model.json`, `config.json` and documentation — and no code: there is no reward signal, no online weight update, and no runtime. The 85 °C threshold also belongs to `thalamic-relay`, a peer process listed below, not to the SNN. Wiring a thermal penalty into training is future work.
 
 ### The shipped weights were not trained on this map
 
