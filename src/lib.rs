@@ -14,10 +14,15 @@
 //! It has exactly two dependencies, [`nir_rs`] and [`axon_encoder`], both from
 //! crates.io.
 //!
-//! The loaded graph is the shipped `merged_v2` artifact
-//! ([`model::MERGED_V2_PROVENANCE`]): 16-neuron LIF with known training-path
-//! defects. It is not a post-exp-009 legal-encoder retrain and not the
-//! session-holdout 5-ch v3 encoder.
+//! The graph [`load_default_lif_graph`] returns is the shipped `merged_v2`
+//! artifact ([`model::MERGED_V2_PROVENANCE`]): 16-neuron LIF with known
+//! training-path defects. It is not a post-exp-009 legal-encoder retrain and
+//! not the session-holdout 5-ch v3 encoder.
+//!
+//! That claim is stamped into the graph metadata only by
+//! [`load_default_lif_graph`], which loads the artifact itself. Graphs built
+//! from a caller's own [`SnnModel`] are unlabelled unless the caller supplies a
+//! [`Provenance`]; see [Provenance](graph#provenance).
 //!
 //! # Example
 //!
@@ -67,5 +72,8 @@ pub mod json;
 pub mod model;
 
 pub use encode::{CHANNEL_COUNT, CHANNEL_MAP, NonFiniteFrame, TelemetryEncoder, TelemetrySource};
-pub use graph::{build_lif_graph, load_default_lif_graph, resistance_from_decay};
+pub use graph::{
+    Provenance, build_lif_graph, build_lif_graph_with_provenance, load_default_lif_graph,
+    resistance_from_decay,
+};
 pub use model::{MERGED_V2_PROVENANCE, ModelError, Neuron, SnnModel, quantize_q8_8};
