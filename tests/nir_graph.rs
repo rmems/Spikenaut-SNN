@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use nir_rs::types::{MetadataValue, TensorData};
 use nir_rs::{NirGraph, NirNode};
 use spikenaut_snn::graph::{
-    INPUT_NODE, LIF_NODE, LINEAR_NODE, OUTPUT_NODE, load_default_lif_graph,
+    INPUT_NODE, LIF_NODE, LINEAR_NODE, OUTPUT_NODE, Provenance, load_default_lif_graph,
 };
 use spikenaut_snn::model::{MERGED_V2_PROVENANCE, NEURON_COUNT, SnnModel, TIMESTEP_SECONDS};
 
@@ -145,6 +145,59 @@ fn changing_a_weight_changes_the_graph() {
     let changed = spikenaut_snn::build_lif_graph(&perturbed).expect("build the perturbed graph");
     assert_ne!(changed, baseline);
     assert_ne!(changed.get(LINEAR_NODE), baseline.get(LINEAR_NODE));
+}
+
+/// Provenance is a claim about which artifact the numbers came from, so only
+/// `load_default_lif_graph` — which loads the artifact itself — may stamp it.
+/// A perturbed or caller-built model used to come out labelled as the shipped
+/// `merged_v2` artifact, which is exactly the mislabelled-experiment failure
+/// the evidence discipline exists to prevent.
+#[test]
+fn only_the_shipped_artifact_is_labelled_as_the_shipped_artifact() {
+    let model = SnnModel::load_default().expect("load merged_v2");
+
+    // The one graph that may claim it.
+    let shipped = load_default_lif_graph().expect("build the 16-LIF graph");
+    assert_eq!(
+        shipped.metadata.get("provenance"),
+        Some(&MetadataValue::String(MERGED_V2_PROVENANCE.to_string())),
+    );
+
+    // A model the crate cannot vouch for gets no label — not a wrong one.
+    let mut perturbed = model.clone();
+    perturbed.neurons[0].weights[0] += 1.0 / 256.0;
+    for unlabelled in [
+        spikenaut_snn::build_lif_graph(&perturbed).expect("build the perturbed graph"),
+        spikenaut_snn::build_lif_graph(&model).expect("build from a caller-held model"),
+    ] {
+        assert_eq!(
+            unlabelled.metadata.get("provenance"),
+            None,
+            "only load_default_lif_graph may stamp the shipped provenance",
+        );
+        assert_eq!(unlabelled.metadata.get("source"), None);
+        // The build parameters are still recorded.
+        assert_eq!(
+            unlabelled.metadata.get("timestep_seconds"),
+            Some(&MetadataValue::F64(TIMESTEP_SECONDS)),
+        );
+    }
+
+    // A caller who knows the origin supplies their own label.
+    let labelled = spikenaut_snn::build_lif_graph_with_provenance(
+        &perturbed,
+        TIMESTEP_SECONDS,
+        Some(Provenance {
+            source: "exp-042/perturbed.json",
+            description: "one weight bumped by a single Q8.8 code; not the shipped artifact",
+        }),
+    )
+    .expect("build the labelled graph");
+    let Some(MetadataValue::String(stamp)) = labelled.metadata.get("provenance") else {
+        panic!("expected a provenance string");
+    };
+    assert_ne!(stamp, MERGED_V2_PROVENANCE);
+    assert!(stamp.contains("not the shipped artifact"));
 }
 
 /// Read a Q8.8 `.mem` artifact: one four-digit two's-complement hex code per

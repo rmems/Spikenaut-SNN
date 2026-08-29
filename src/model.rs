@@ -145,8 +145,15 @@ impl Neuron {
 ///
 /// # Errors
 ///
-/// Returns [`ModelError::Schema`] if `decay_rate` is outside `(0, 1)` or
-/// `timestep_seconds` is not finite and positive.
+/// Returns [`ModelError::Schema`] if `decay_rate` is outside `(0, 1)`, if
+/// `timestep_seconds` is not finite and positive, or if the two are finite but
+/// so extreme that `-dt / ln(decay_rate)` is not itself a finite positive
+/// number.
+///
+/// The last case is not hypothetical: `tau_from_decay(0.5, f64::MAX)` overflows
+/// to `inf`, and a subnormal timestep against the smallest on-grid decay rate
+/// (`1 / 256`) underflows to `0.0`. Both would put a meaningless time constant
+/// on a NIR `LIF` node, so the result is checked, not just the inputs.
 pub fn tau_from_decay(decay_rate: f64, timestep_seconds: f64) -> Result<f64, ModelError> {
     if !timestep_seconds.is_finite() || timestep_seconds <= 0.0 {
         return Err(ModelError::Schema(format!(
@@ -158,7 +165,14 @@ pub fn tau_from_decay(decay_rate: f64, timestep_seconds: f64) -> Result<f64, Mod
             "decay_rate must lie in (0, 1) to invert into a time constant, got {decay_rate}"
         )));
     }
-    Ok(-timestep_seconds / decay_rate.ln())
+    let tau = -timestep_seconds / decay_rate.ln();
+    if !(tau.is_finite() && tau > 0.0) {
+        return Err(ModelError::Schema(format!(
+            "decay_rate {decay_rate} at timestep {timestep_seconds} gives a time constant of \
+             {tau}, expected a finite positive number"
+        )));
+    }
+    Ok(tau)
 }
 
 /// The decoded `merged_v2` model.
@@ -284,12 +298,23 @@ impl SnnModel {
     ///
     /// # Errors
     ///
-    /// Returns [`ModelError::Nir`] if the tensor shape and data length disagree,
-    /// which decoding already rules out.
+    /// - [`ModelError::Schema`] if any unit's weight row is not exactly `units`
+    ///   long. Flattening discards the row boundaries, so a length check on the
+    ///   concatenation alone is not enough: rows of 3 and 1 also total 4 and
+    ///   would pass as a 2×2 tensor with one weight shifted into the wrong
+    ///   neuron. Decoding enforces this per row already; the check covers the
+    ///   hand-built and mutated [`SnnModel`] values the public fields allow.
+    /// - [`ModelError::Nir`] if `nir-rs` rejects the tensor.
     pub fn weight_tensor(&self) -> Result<Tensor, ModelError> {
         let units = self.len();
         let mut data = Vec::with_capacity(units * units);
-        for neuron in &self.neurons {
+        for (index, neuron) in self.neurons.iter().enumerate() {
+            if neuron.weights.len() != units {
+                return Err(ModelError::Schema(format!(
+                    "neuron {index} has {} weights, expected {units} (one per neuron)",
+                    neuron.weights.len()
+                )));
+            }
             data.extend_from_slice(&neuron.weights);
         }
         Ok(Tensor::from_f64(vec![units, units], data)?)
@@ -525,6 +550,74 @@ mod tests {
         assert_eq!(values, &[0.0, 1.0, 2.0, 1.0, 2.0, 3.0, 2.0, 3.0, 4.0]);
     }
 
+    /// Flattening throws away the row boundaries, so the total length is not a
+    /// sufficient check: rows of 3 and 1 also total 4 and would be accepted as
+    /// a 2×2 tensor with `4.0` shifted from unit 1 column 0 into column 1.
+    /// `SnnModel`'s fields are public, so decoding is not the only way in.
+    #[test]
+    fn weight_tensor_rejects_ragged_rows() {
+        let row = |weights: Vec<f64>| Neuron {
+            decay_rate: 0.5,
+            membrane_potential: 0.0,
+            threshold: 1.0,
+            last_spike: false,
+            weights,
+        };
+
+        let ragged = SnnModel {
+            neurons: vec![row(vec![1.0, 2.0, 3.0]), row(vec![4.0])],
+        };
+        // The corrupting case: 3 + 1 == 2 * 2, so the length check alone passes.
+        assert_eq!(
+            ragged
+                .neurons
+                .iter()
+                .map(|n| n.weights.len())
+                .sum::<usize>(),
+            ragged.len() * ragged.len(),
+        );
+        let err = ragged.weight_tensor().unwrap_err();
+        assert!(matches!(err, ModelError::Schema(_)), "{err}");
+        let message = err.to_string();
+        assert!(message.contains("neuron 0"), "{message}");
+        assert!(message.contains("3 weights"), "{message}");
+        assert!(message.contains("expected 2"), "{message}");
+
+        // A short row that does not sum to units² is caught too, and named.
+        let short = SnnModel {
+            neurons: vec![row(vec![1.0, 2.0]), row(vec![3.0])],
+        };
+        let message = short.weight_tensor().unwrap_err().to_string();
+        assert!(message.contains("neuron 1"), "{message}");
+
+        // Square rows still build.
+        let square = SnnModel {
+            neurons: vec![row(vec![1.0, 2.0]), row(vec![3.0, 4.0])],
+        };
+        let tensor = square.weight_tensor().unwrap();
+        assert_eq!(tensor.shape(), [2, 2]);
+        assert_eq!(tensor.data(), &TensorData::F64(vec![1.0, 2.0, 3.0, 4.0]));
+    }
+
+    /// A model mutated after decoding must not corrupt the matrix either.
+    #[test]
+    fn weight_tensor_rejects_a_mutated_row() {
+        let mut model = SnnModel::load_default().unwrap();
+        assert!(model.weight_tensor().is_ok());
+
+        // Move one weight from unit 3 to unit 4: the total is still 256.
+        let moved = model.neurons[3].weights.pop().unwrap();
+        model.neurons[4].weights.push(moved);
+        assert_eq!(
+            model.neurons.iter().map(|n| n.weights.len()).sum::<usize>(),
+            NEURON_COUNT * NEURON_COUNT,
+        );
+
+        let message = model.weight_tensor().unwrap_err().to_string();
+        assert!(message.contains("neuron 3"), "{message}");
+        assert!(message.contains("15 weights"), "{message}");
+    }
+
     #[test]
     fn tau_inverts_the_decay_multiplier() {
         let tau = tau_from_decay(0.5, TIMESTEP_SECONDS).unwrap();
@@ -541,6 +634,66 @@ mod tests {
         }
         assert!(tau_from_decay(0.5, 0.0).is_err());
         assert!(tau_from_decay(0.5, -1.0).is_err());
+        assert!(tau_from_decay(0.5, f64::NAN).is_err());
+        assert!(tau_from_decay(0.5, f64::INFINITY).is_err());
+    }
+
+    /// Both inputs can be finite and in range while the quotient is not. The
+    /// documented contract is that an uninvertible input errors, so a
+    /// non-finite `tau` must not escape as `Ok` — it would reach a NIR `LIF`
+    /// node as a meaningless time constant.
+    #[test]
+    fn tau_rejects_non_finite_results() {
+        // Overflow: -f64::MAX / ln(0.5) is about 1.44 * f64::MAX.
+        let err = tau_from_decay(0.5, f64::MAX).unwrap_err();
+        assert!(matches!(err, ModelError::Schema(_)));
+        assert!(err.to_string().contains("time constant"), "{err}");
+        assert!(tau_from_decay(0.5, 1e308).is_ok(), "1e308 still inverts");
+
+        // Underflow: a subnormal timestep against the smallest decay rate the
+        // Q8.8 grid can hold (1/256) divides away to exactly zero.
+        let smallest_on_grid = 1.0 / Q8_8_SCALE;
+        let subnormal: f64 = 5e-324;
+        assert!(subnormal > 0.0 && subnormal.is_finite());
+        let err = tau_from_decay(smallest_on_grid, subnormal).unwrap_err();
+        assert!(matches!(err, ModelError::Schema(_)));
+        assert!(err.to_string().contains("time constant"), "{err}");
+
+        // Nothing in between is rejected: every value that does invert into a
+        // finite positive tau still succeeds.
+        for dt in [1e-300, 1e-10, TIMESTEP_SECONDS, 1.0, 1e100] {
+            for decay in [1.0 / 256.0, 0.5, 0.796875, 0.94921875] {
+                let tau = tau_from_decay(decay, dt).unwrap();
+                assert!(tau.is_finite() && tau > 0.0, "tau({decay}, {dt}) = {tau}");
+            }
+        }
+    }
+
+    /// A non-finite `tau` must not reach the graph either.
+    #[test]
+    fn taus_seconds_rejects_extreme_timesteps() {
+        let model = SnnModel::load_default().unwrap();
+        assert!(model.taus_seconds(f64::MAX).is_err());
+        assert!(model.taus_seconds(TIMESTEP_SECONDS).is_ok());
+
+        // The shipped decays run 0.796875..=0.94921875, so `|ln(decay)|` is at
+        // most 0.227 and a subnormal timestep still divides to a nonzero
+        // subnormal — no underflow for this model.
+        assert!(model.taus_seconds(5e-324).is_ok());
+
+        // Underflow needs a decay far from 1. `1/256` is the smallest the Q8.8
+        // grid holds, so this is a decodable model, not an impossible one.
+        let fast = SnnModel {
+            neurons: vec![Neuron {
+                decay_rate: 1.0 / Q8_8_SCALE,
+                membrane_potential: 0.0,
+                threshold: 1.0,
+                last_spike: false,
+                weights: vec![0.0],
+            }],
+        };
+        assert!(fast.taus_seconds(5e-324).is_err());
+        assert!(fast.taus_seconds(TIMESTEP_SECONDS).is_ok());
     }
 
     #[test]
