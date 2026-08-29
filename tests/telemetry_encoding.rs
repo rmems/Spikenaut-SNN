@@ -24,6 +24,10 @@ const TICKS_PER_SECOND: usize = 1000;
 /// `0.2`, so the accumulator crosses 1.0 on every fifth tick.
 const TICKS_PER_SPIKE: usize = 5;
 
+/// The first thermal pain receptor: GPU power. Channel 15 is its temperature
+/// twin, so `PAIN_CHANNEL + 1` is the other half of the pair.
+const PAIN_CHANNEL: usize = 14;
+
 /// A 16-wide frame shaped like the documented channel map: each telemetry
 /// source drives its own channel pair at its own intensity, spanning the whole
 /// of [`INPUT_RANGE`] from an idle DNX feed to a saturated thermal reading.
@@ -97,7 +101,7 @@ fn one_second_of_ticks_reproduces_the_mapped_rates() {
 
     let mut totals = [0_usize; CHANNEL_COUNT];
     for _ in 0..TICKS_PER_SECOND {
-        let output = encoder.encode_step(&frame);
+        let output = encoder.encode_step(&frame).expect("a finite frame encodes");
         for (channel, count) in counts_per_channel(&output).into_iter().enumerate() {
             totals[channel] += count;
         }
@@ -141,7 +145,11 @@ fn a_saturated_frame_fires_every_fifth_tick() {
     );
 
     for tick in 1..=(TICKS_PER_SPIKE * 3) {
-        let fired = encoder.encode_step(&frame).spikes.len();
+        let fired = encoder
+            .encode_step(&frame)
+            .expect("a finite frame encodes")
+            .spikes
+            .len();
         let expected = if tick % TICKS_PER_SPIKE == 0 {
             CHANNEL_COUNT
         } else {
@@ -153,9 +161,23 @@ fn a_saturated_frame_fires_every_fifth_tick() {
     // A cold start is a cold start: the accumulators go back to zero.
     encoder.reset();
     for tick in 1..TICKS_PER_SPIKE {
-        assert!(encoder.encode_step(&frame).spikes.is_empty(), "tick {tick}");
+        assert!(
+            encoder
+                .encode_step(&frame)
+                .expect("a finite frame encodes")
+                .spikes
+                .is_empty(),
+            "tick {tick}",
+        );
     }
-    assert_eq!(encoder.encode_step(&frame).spikes.len(), CHANNEL_COUNT);
+    assert_eq!(
+        encoder
+            .encode_step(&frame)
+            .expect("a finite frame encodes")
+            .spikes
+            .len(),
+        CHANNEL_COUNT,
+    );
 }
 
 /// An invalid configuration comes back as an error, not a panic. `try_new` is
@@ -198,12 +220,224 @@ fn the_wrapper_matches_a_bare_rate_encoder() {
 
     for tick in 0..64 {
         assert_eq!(
-            wrapped.encode_step(&frame),
+            wrapped.encode_step(&frame).expect("a finite frame encodes"),
             bare.encode_step(&frame),
             "tick {tick}",
         );
     }
     assert_eq!(wrapped.as_rate_encoder(), &bare, "state must stay in step");
+}
+
+/// The reason the wrapper validates instead of trusting the encoder underneath.
+///
+/// Handed a raw `NaN`, `axon-encoder` 0.4.0 maps the channel to a 0 Hz rate for
+/// that step; a future 0.4.x could instead let it through into the accumulator,
+/// which is the poisoning this fix is about. Either way the observable result is
+/// the same and the assertion below holds: the bad channel drops *below* the
+/// [`BASE_RATE_HZ`] liveness floor, and the floor is non-zero precisely so a
+/// live-but-idle feed stays distinguishable from a dead one. Its healthy twin
+/// keeps firing, so nothing downstream can tell the frame was ever bad — on the
+/// thermal pain receptors, that is the hardware-protection input going dark in
+/// silence.
+#[test]
+fn a_raw_non_finite_sample_silently_drops_below_the_liveness_floor() {
+    let mut bare = RateEncoder::try_new(BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, DT_SECONDS)
+        .expect("shipped configuration");
+    let mut frame = [INPUT_RANGE.1; CHANNEL_COUNT];
+    frame[PAIN_CHANNEL] = f32::NAN;
+
+    let mut totals = [0_usize; CHANNEL_COUNT];
+    for _ in 0..TICKS_PER_SECOND {
+        let output = bare.encode_step(&frame);
+        for (channel, count) in counts_per_channel(&output).into_iter().enumerate() {
+            totals[channel] += count;
+        }
+    }
+
+    assert!(
+        (totals[PAIN_CHANNEL] as f32) < BASE_RATE_HZ,
+        "the poisoned channel fired {} times in a second, at or above the \
+         {BASE_RATE_HZ} Hz liveness floor",
+        totals[PAIN_CHANNEL],
+    );
+    assert!(
+        totals[PAIN_CHANNEL + 1] > 0,
+        "its healthy twin keeps firing, so nothing flags the frame",
+    );
+}
+
+/// The test that pins the fix: a rejected frame is a no-op.
+///
+/// A `NaN` or either infinity on a thermal channel comes back as an error that
+/// names it, and the encoder that saw it stays identical — state and output —
+/// to one that never did. The channel is *not* poisoned: it goes straight back
+/// to firing at its mapped rate on the next finite frame, with no `reset()`.
+#[test]
+fn a_rejected_frame_leaves_the_channel_working() {
+    for (bad_value, label) in [
+        (f32::NAN, "NaN"),
+        (f32::INFINITY, "+inf"),
+        (f32::NEG_INFINITY, "-inf"),
+    ] {
+        let mut victim = TelemetryEncoder::new().expect("shipped encoder");
+        let mut control = TelemetryEncoder::new().expect("shipped encoder");
+        let frame = telemetry_frame();
+
+        // Warm both to a mid-cycle, non-zero accumulator state, so "unchanged"
+        // is a real claim rather than "both still at a cold start".
+        for _ in 0..(TICKS_PER_SPIKE * 2 + 1) {
+            let expected = control.encode_step(&frame).expect("a finite frame encodes");
+            let actual = victim.encode_step(&frame).expect("a finite frame encodes");
+            assert_eq!(actual, expected, "{label}: warm-up");
+        }
+
+        let mut faulty = frame;
+        faulty[PAIN_CHANNEL] = bad_value;
+        let rejected = victim
+            .encode_step(&faulty)
+            .expect_err("a non-finite frame must be rejected");
+
+        assert_eq!(rejected.count(), 1, "{label}");
+        assert_eq!(rejected.first_channel(), PAIN_CHANNEL, "{label}");
+        assert!(rejected.contains(PAIN_CHANNEL), "{label}");
+        assert!(rejected.touches_pain_receptor(), "{label}");
+        assert!(
+            rejected
+                .to_string()
+                .contains(TelemetrySource::Thermal.label()),
+            "{label}: the error must name the source, got {rejected}",
+        );
+
+        // Nothing moved. `RateEncoder` compares its whole accumulator state, so
+        // this covers every channel, not just the offending one.
+        assert_eq!(
+            victim.as_rate_encoder(),
+            control.as_rate_encoder(),
+            "{label}: a rejected frame must not advance any accumulator",
+        );
+
+        // And the encoder still works, tick for tick, on the channel that
+        // carried the bad sample.
+        let mut totals = [0_usize; CHANNEL_COUNT];
+        for tick in 0..TICKS_PER_SECOND {
+            let expected = control.encode_step(&frame).expect("a finite frame encodes");
+            let actual = victim.encode_step(&frame).expect("a finite frame encodes");
+            assert_eq!(actual, expected, "{label}: tick {tick} after the rejection");
+            for (channel, count) in counts_per_channel(&actual).into_iter().enumerate() {
+                totals[channel] += count;
+            }
+        }
+
+        let expected_rate = expected_rate_hz(frame[PAIN_CHANNEL]);
+        assert!(
+            (totals[PAIN_CHANNEL] as f32 - expected_rate).abs() <= 1.0,
+            "{label}: channel {PAIN_CHANNEL} fired {} times after the rejection, \
+             expected ~{expected_rate} Hz — the accumulator was poisoned",
+            totals[PAIN_CHANNEL],
+        );
+    }
+}
+
+/// Rejection is atomic, not per-channel.
+///
+/// `RateEncoder::encode_step` walks channels in order and mutates each
+/// accumulator as it goes, so a validator that bailed out when it reached the
+/// bad channel would already have advanced every channel before it. Put the
+/// encoder one tick short of firing and reject a frame whose *last* channel is
+/// bad: if channels 0–14 had been advanced, they would fire a tick ahead of
+/// channel 15 and the population would split.
+#[test]
+fn a_rejected_frame_does_not_partially_advance_other_channels() {
+    let mut encoder = TelemetryEncoder::new().expect("shipped encoder");
+    let saturated = [INPUT_RANGE.1; CHANNEL_COUNT];
+
+    for tick in 1..TICKS_PER_SPIKE {
+        assert!(
+            encoder
+                .encode_step(&saturated)
+                .expect("a finite frame encodes")
+                .spikes
+                .is_empty(),
+            "tick {tick}",
+        );
+    }
+
+    let mut faulty = saturated;
+    faulty[CHANNEL_COUNT - 1] = f32::NAN;
+    let rejected = encoder
+        .encode_step(&faulty)
+        .expect_err("a non-finite frame must be rejected");
+    assert_eq!(rejected.first_channel(), CHANNEL_COUNT - 1);
+    assert_eq!(rejected.count(), 1);
+
+    // The fifth *finite* tick is still the one that fires, and all sixteen
+    // channels fire on it together.
+    let output = encoder
+        .encode_step(&saturated)
+        .expect("a finite frame encodes");
+    assert_eq!(
+        output.spikes.len(),
+        CHANNEL_COUNT,
+        "the rejected frame stole or granted a tick somewhere",
+    );
+    assert_eq!(
+        counts_per_channel(&output),
+        [1; CHANNEL_COUNT],
+        "every channel must fire exactly once, in phase",
+    );
+}
+
+/// One upstream fault usually takes out a whole source, so the error names every
+/// offending channel rather than stopping at the first.
+#[test]
+fn a_rejection_names_every_offending_channel() {
+    let mut encoder = TelemetryEncoder::new().expect("shipped encoder");
+    let mut frame = telemetry_frame();
+    frame[0] = f32::NAN;
+    frame[PAIN_CHANNEL] = f32::INFINITY;
+    frame[PAIN_CHANNEL + 1] = f32::NEG_INFINITY;
+
+    let rejected = encoder
+        .encode_step(&frame)
+        .expect_err("a non-finite frame must be rejected");
+    assert_eq!(
+        rejected.channels().collect::<Vec<_>>(),
+        [0, PAIN_CHANNEL, PAIN_CHANNEL + 1],
+    );
+    assert_eq!(rejected.count(), 3);
+    assert_eq!(rejected.first_channel(), 0);
+    assert!(rejected.touches_pain_receptor());
+
+    let message = rejected.to_string();
+    for source in [TelemetrySource::Dnx, TelemetrySource::Thermal] {
+        assert!(
+            message.contains(source.label()),
+            "{} must appear in {message}",
+            source.label(),
+        );
+    }
+}
+
+/// The stochastic path is an entry point too. It carries no accumulator to
+/// poison, but it would just as silently drop the channel from the draw.
+#[test]
+fn the_batch_path_rejects_non_finite_frames_too() {
+    let mut encoder = TelemetryEncoder::new().expect("shipped encoder");
+
+    for bad_value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let mut frame = telemetry_frame();
+        frame[PAIN_CHANNEL] = bad_value;
+        let rejected = encoder
+            .encode(&frame)
+            .expect_err("the stochastic path must validate too");
+        assert_eq!(rejected.first_channel(), PAIN_CHANNEL);
+        assert!(rejected.touches_pain_receptor());
+    }
+
+    let output = encoder
+        .encode(&telemetry_frame())
+        .expect("a finite frame encodes");
+    assert!(output.spikes.len() <= CHANNEL_COUNT);
 }
 
 /// Acceptance criterion from issue #9: `axon-encoder` resolves to 0.4.x from

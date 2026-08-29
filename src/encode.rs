@@ -27,7 +27,27 @@
 //!
 //! A frame is a `[f32; 16]` in [`INPUT_RANGE`] order-matched to that table.
 //! Normalising raw telemetry into that range is the caller's job; this module
-//! only clamps.
+//! only clamps, and it only clamps *finite* values.
+//!
+//! # Non-finite samples
+//!
+//! A sensor that emits `NaN` or an infinity gets its frame rejected whole, by
+//! every entry point, before any encoder state moves. See [`NonFiniteFrame`].
+//!
+//! Nothing is substituted, because there is no honest substitute. Zero is the
+//! worst of them: on channels 14–15 it reads as a cool, idle GPU, which is
+//! exactly the state the pain receptors exist to contradict. Silence is no
+//! better — [`BASE_RATE_HZ`] is non-zero precisely so that a live-but-idle feed
+//! stays distinguishable from a dead one, and a sample substituted away is a
+//! dead feed that does not look like one.
+//!
+//! So the frame comes back as an error naming the offending channels, the
+//! accumulators are left exactly as they were, and the next finite frame
+//! encodes normally on the same channel. Recovery needs no [`reset`], and a
+//! caller that ignores the result gets an `unused_must_use` warning rather than
+//! a quietly deaf thermal channel.
+//!
+//! [`reset`]: TelemetryEncoder::reset
 //!
 //! # Batch and streaming
 //!
@@ -45,6 +65,8 @@
 //! This is the encoder front end only. Wiring the spike train into the NIR
 //! graph, Q8.8 / FPGA mapping, and neuromodulator gain curves all belong to
 //! their own tickets. This module deliberately stays independent of `neuromod`.
+
+use std::fmt;
 
 use axon_encoder::Encoder;
 use axon_encoder::encoders::RateEncoder;
@@ -173,6 +195,127 @@ pub const CHANNEL_MAP: [TelemetrySource; CHANNEL_COUNT] = [
     TelemetrySource::Thermal,
 ];
 
+/// A telemetry frame rejected for carrying a value that is not finite.
+///
+/// Returned by [`TelemetryEncoder::encode_step`] and
+/// [`TelemetryEncoder::encode`] when any channel holds a `NaN`, a `+inf` or a
+/// `-inf`. The rejection is all-or-nothing: no channel's accumulator advanced
+/// and no spike was emitted, so the encoder is left in exactly the state it was
+/// in before the call and the next finite frame encodes normally.
+///
+/// It names every offending channel rather than just the first, because one
+/// upstream fault usually takes out a source's whole channel pair, and because
+/// [`touches_pain_receptor`](Self::touches_pain_receptor) is the question a
+/// caller actually has to answer: a missing thermal reading is a safety event,
+/// not a dropped sample.
+///
+/// # Example
+///
+/// ```
+/// use spikenaut_snn::encode::{CHANNEL_COUNT, TelemetryEncoder};
+///
+/// let mut encoder = TelemetryEncoder::new()?;
+/// let mut frame = [0.5_f32; CHANNEL_COUNT];
+/// frame[14] = f32::NAN;
+///
+/// let rejected = encoder.encode_step(&frame).unwrap_err();
+/// assert_eq!(rejected.channels().collect::<Vec<_>>(), [14]);
+/// assert!(rejected.touches_pain_receptor());
+/// assert_eq!(
+///     rejected.to_string(),
+///     "non-finite telemetry on channel 14 (Thermal); \
+///      the thermal pain receptors are affected",
+/// );
+/// # Ok::<(), axon_encoder::EncoderError>(())
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NonFiniteFrame {
+    /// Which channels were not finite, indexed in channel order. At least one
+    /// entry is always `true`.
+    offenders: [bool; CHANNEL_COUNT],
+}
+
+impl NonFiniteFrame {
+    /// The rejection for `frame`, or `None` if every channel is finite.
+    ///
+    /// Scans the whole frame up front, which is what makes rejection atomic:
+    /// [`RateEncoder`] walks channels in order and mutates each accumulator as
+    /// it goes, so bailing out part-way through a delegated call would leave
+    /// the earlier channels advanced by a frame that was never accepted.
+    fn from_frame(frame: &[f32; CHANNEL_COUNT]) -> Option<Self> {
+        let mut offenders = [false; CHANNEL_COUNT];
+        let mut rejected = false;
+        for (channel, &value) in frame.iter().enumerate() {
+            if !value.is_finite() {
+                offenders[channel] = true;
+                rejected = true;
+            }
+        }
+        rejected.then_some(Self { offenders })
+    }
+
+    /// The offending channel indices, ascending. Never empty.
+    pub fn channels(self) -> impl Iterator<Item = usize> {
+        self.offenders
+            .into_iter()
+            .enumerate()
+            .filter_map(|(channel, offending)| offending.then_some(channel))
+    }
+
+    /// The lowest offending channel index.
+    #[must_use]
+    pub fn first_channel(self) -> usize {
+        self.channels()
+            .next()
+            .expect("a rejection always names at least one channel")
+    }
+
+    /// How many channels were not finite. Always at least one.
+    #[must_use]
+    pub fn count(self) -> usize {
+        self.offenders
+            .iter()
+            .filter(|offending| **offending)
+            .count()
+    }
+
+    /// Whether `channel` was one of the offenders.
+    #[must_use]
+    pub fn contains(self, channel: usize) -> bool {
+        self.offenders.get(channel).copied().unwrap_or(false)
+    }
+
+    /// Whether the rejection touches a thermal pain receptor (channels 14–15).
+    ///
+    /// The escalation hook. Losing a market feed for a tick is a dropped
+    /// sample; losing a temperature reading is the hardware-protection input
+    /// going dark, and a caller should treat the two differently.
+    #[must_use]
+    pub fn touches_pain_receptor(self) -> bool {
+        self.channels()
+            .any(|channel| CHANNEL_MAP[channel].is_pain_receptor())
+    }
+}
+
+impl fmt::Display for NonFiniteFrame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("non-finite telemetry on channel")?;
+        if self.count() > 1 {
+            f.write_str("s")?;
+        }
+        for (position, channel) in self.channels().enumerate() {
+            let separator = if position == 0 { " " } else { ", " };
+            write!(f, "{separator}{channel} ({})", CHANNEL_MAP[channel].label())?;
+        }
+        if self.touches_pain_receptor() {
+            f.write_str("; the thermal pain receptors are affected")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for NonFiniteFrame {}
+
 /// A rate encoder fixed to this model's channel map and 1 kHz clock.
 ///
 /// A thin wrapper over `axon-encoder`'s [`RateEncoder`]. The wrapper exists for
@@ -191,10 +334,23 @@ pub const CHANNEL_MAP: [TelemetrySource; CHANNEL_COUNT] = [
 /// // Every channel saturated: 200 Hz at a 1 ms step is one spike every 5 ticks.
 /// let frame = [1.0_f32; CHANNEL_COUNT];
 /// for tick in 0..4 {
-///     assert!(encoder.encode_step(&frame).spikes.is_empty(), "tick {tick}");
+///     assert!(encoder.encode_step(&frame)?.spikes.is_empty(), "tick {tick}");
 /// }
-/// assert_eq!(encoder.encode_step(&frame).spikes.len(), CHANNEL_COUNT);
-/// # Ok::<(), axon_encoder::EncoderError>(())
+/// assert_eq!(encoder.encode_step(&frame)?.spikes.len(), CHANNEL_COUNT);
+///
+/// // A non-finite thermal sample is rejected by name, and costs nothing: the
+/// // accumulators never moved, so the cycle picks up exactly where it left off.
+/// let mut faulty = frame;
+/// faulty[14] = f32::NAN;
+/// let rejected = encoder.encode_step(&faulty).unwrap_err();
+/// assert_eq!(rejected.first_channel(), 14);
+/// assert!(rejected.touches_pain_receptor());
+///
+/// for tick in 0..4 {
+///     assert!(encoder.encode_step(&frame)?.spikes.is_empty(), "tick {tick}");
+/// }
+/// assert_eq!(encoder.encode_step(&frame)?.spikes.len(), CHANNEL_COUNT);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct TelemetryEncoder {
@@ -250,8 +406,22 @@ impl TelemetryEncoder {
     /// the accumulator crosses 1.0, so consecutive calls form a spike train at
     /// the channel's mapped rate. This is the mode that matches the hardware
     /// tick; see the [module docs](self#batch-and-streaming).
-    pub fn encode_step(&mut self, frame: &[f32; CHANNEL_COUNT]) -> EncodedOutput {
-        self.inner.encode_step(frame)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NonFiniteFrame`] if any channel holds a `NaN` or an infinity.
+    /// The whole frame is checked before the first accumulator is touched, so a
+    /// rejected frame is a no-op: no channel advanced, no spike was emitted,
+    /// and the next finite frame encodes normally. See the
+    /// [module docs](self#non-finite-samples) for why nothing is substituted.
+    pub fn encode_step(
+        &mut self,
+        frame: &[f32; CHANNEL_COUNT],
+    ) -> Result<EncodedOutput, NonFiniteFrame> {
+        match NonFiniteFrame::from_frame(frame) {
+            Some(rejected) => Err(rejected),
+            None => Ok(self.inner.encode_step(frame)),
+        }
     }
 
     /// Encode one frame as an independent Poisson draw (batch, stochastic).
@@ -260,14 +430,32 @@ impl TelemetryEncoder {
     /// `1 - exp(-rate_hz * dt_seconds)`. Carries no state between calls, so the
     /// spike count is random; use [`encode_step`](Self::encode_step) when the
     /// train has to follow the clock.
-    pub fn encode(&mut self, frame: &[f32; CHANNEL_COUNT]) -> EncodedOutput {
-        self.inner.encode(frame)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NonFiniteFrame`] on the same terms as
+    /// [`encode_step`](Self::encode_step). This path keeps no accumulator to
+    /// poison, but a channel silently dropped from the draw is just as
+    /// invisible here, so the frame is validated before any spike is drawn.
+    pub fn encode(
+        &mut self,
+        frame: &[f32; CHANNEL_COUNT],
+    ) -> Result<EncodedOutput, NonFiniteFrame> {
+        match NonFiniteFrame::from_frame(frame) {
+            Some(rejected) => Err(rejected),
+            None => Ok(self.inner.encode(frame)),
+        }
     }
 
     /// Clear the per-channel accumulators, returning the encoder to a cold start.
     ///
     /// Only affects [`encode_step`](Self::encode_step); the batch path is
     /// stateless.
+    ///
+    /// This is *not* the recovery path for a bad sample. A frame rejected as
+    /// [`NonFiniteFrame`] never reached the accumulators, so there is nothing
+    /// to clear; calling `reset` there would throw away the phase of the
+    /// fifteen healthy channels for no reason.
     pub fn reset(&mut self) {
         self.inner.reset();
     }
@@ -331,6 +519,66 @@ mod tests {
     fn shipped_configuration_is_valid() {
         let encoder = TelemetryEncoder::new().expect("shipped constants are a valid encoder");
         assert_eq!(encoder.dt_seconds(), DT_SECONDS);
+    }
+
+    #[test]
+    fn a_rejection_names_every_offending_channel() {
+        let mut frame = [0.5_f32; CHANNEL_COUNT];
+        frame[0] = f32::NAN;
+        frame[14] = f32::INFINITY;
+        frame[15] = f32::NEG_INFINITY;
+
+        let rejected = NonFiniteFrame::from_frame(&frame).expect("three channels are not finite");
+        assert_eq!(rejected.channels().collect::<Vec<_>>(), [0, 14, 15]);
+        assert_eq!(rejected.count(), 3);
+        assert_eq!(rejected.first_channel(), 0);
+        assert!(rejected.contains(14));
+        assert!(!rejected.contains(1));
+        assert!(
+            !rejected.contains(CHANNEL_COUNT),
+            "out of range is not an offender"
+        );
+        assert!(rejected.touches_pain_receptor());
+        assert_eq!(
+            rejected.to_string(),
+            "non-finite telemetry on channels 0 (DNX), 14 (Thermal), 15 (Thermal); \
+             the thermal pain receptors are affected",
+        );
+    }
+
+    #[test]
+    fn a_rejection_away_from_thermal_is_not_a_pain_event() {
+        let mut frame = [0.5_f32; CHANNEL_COUNT];
+        frame[3] = f32::NAN;
+
+        let rejected = NonFiniteFrame::from_frame(&frame).expect("channel 3 is not finite");
+        assert!(!rejected.touches_pain_receptor());
+        assert_eq!(
+            rejected.to_string(),
+            "non-finite telemetry on channel 3 (Quai)",
+        );
+    }
+
+    #[test]
+    fn a_finite_frame_is_not_a_rejection() {
+        // The edges of f32 are finite and must stay encodable; only NaN and the
+        // infinities are rejected.
+        let frame = [
+            f32::MIN,
+            f32::MAX,
+            -0.0,
+            0.0,
+            f32::MIN_POSITIVE,
+            1e30,
+            -1e30,
+            0.5,
+        ]
+        .into_iter()
+        .cycle()
+        .take(CHANNEL_COUNT)
+        .collect::<Vec<_>>();
+        let frame: [f32; CHANNEL_COUNT] = frame.try_into().expect("sixteen values");
+        assert_eq!(NonFiniteFrame::from_frame(&frame), None);
     }
 
     #[test]

@@ -66,6 +66,6 @@ pub mod graph;
 pub mod json;
 pub mod model;
 
-pub use encode::{CHANNEL_COUNT, CHANNEL_MAP, TelemetryEncoder, TelemetrySource};
+pub use encode::{CHANNEL_COUNT, CHANNEL_MAP, NonFiniteFrame, TelemetryEncoder, TelemetrySource};
 pub use graph::{build_lif_graph, load_default_lif_graph, resistance_from_decay};
 pub use model::{MERGED_V2_PROVENANCE, ModelError, Neuron, SnnModel, quantize_q8_8};
