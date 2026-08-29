@@ -9,6 +9,11 @@
 //!
 //! It has exactly one dependency, [`nir_rs`] from crates.io.
 //!
+//! The loaded graph is the shipped `merged_v2` artifact
+//! ([`model::MERGED_V2_PROVENANCE`]): 16-neuron LIF with known training-path
+//! defects. It is not a post-exp-009 legal-encoder retrain and not the
+//! session-holdout 5-ch v3 encoder.
+//!
 //! # Example
 //!
 //! ```
@@ -46,4 +51,4 @@ pub mod json;
 pub mod model;
 
 pub use graph::{build_lif_graph, load_default_lif_graph};
-pub use model::{ModelError, Neuron, SnnModel};
+pub use model::{MERGED_V2_PROVENANCE, ModelError, Neuron, SnnModel};

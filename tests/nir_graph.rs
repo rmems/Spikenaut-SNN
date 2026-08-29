@@ -5,10 +5,10 @@
 
 use std::path::{Path, PathBuf};
 
-use nir_rs::types::TensorData;
+use nir_rs::types::{MetadataValue, TensorData};
 use nir_rs::{NirGraph, NirNode};
 use spikenaut_snn::graph::{INPUT_NODE, LIF_NODE, OUTPUT_NODE, load_default_lif_graph};
-use spikenaut_snn::model::{NEURON_COUNT, SnnModel, TIMESTEP_SECONDS};
+use spikenaut_snn::model::{MERGED_V2_PROVENANCE, NEURON_COUNT, SnnModel, TIMESTEP_SECONDS};
 
 /// The 16-LIF graph is `Input → LIF → Output`: three nodes, two edges.
 #[test]
@@ -39,6 +39,12 @@ fn graph_has_three_nodes_and_two_edges() {
     graph
         .validate_structure()
         .expect("structurally valid graph");
+
+    assert_eq!(
+        graph.metadata.get("provenance"),
+        Some(&MetadataValue::String(MERGED_V2_PROVENANCE.to_string())),
+        "graph must stamp the shipped merged_v2 provenance",
+    );
 }
 
 /// Every node carries all 16 units, and every LIF parameter is a 16-element vector.

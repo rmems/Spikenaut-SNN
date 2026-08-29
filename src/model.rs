@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The `merged_v2` model as it is stored on disk.
+//! The shipped `merged_v2` model as it is stored on disk.
 //!
 //! [`SnnModel`] is a direct, validated decoding of
 //! `dataset/merged_v2/snn_model.json`: 16 leaky integrate-and-fire neurons,
 //! each with a decay rate, a firing threshold, a recurrent weight row, and the
 //! simulator state (membrane potential, last-spike flag) captured when the model
 //! was saved.
+//!
+//! [`SnnModel::load_default`] is that artifact, not a post-exp-009 legal-encoder
+//! retrain and not the session-holdout 5-ch v3 encoder. See
+//! [`MERGED_V2_PROVENANCE`].
 //!
 //! This module does no NIR mapping. See [`crate::graph`] for that.
 
@@ -29,6 +33,13 @@ pub const TIMESTEP_SECONDS: f64 = 1.0 / CLOCK_HZ;
 
 /// Path of the shipped model, relative to the repository root.
 pub const MODEL_RELATIVE_PATH: &str = "dataset/merged_v2/snn_model.json";
+
+/// Provenance stamp for the shipped `merged_v2` artifact loaded by this crate.
+///
+/// This is the repository file at [`MODEL_RELATIVE_PATH`], a 16-neuron LIF
+/// population with known training-path defects. It is not a post-exp-009
+/// legal-encoder retrain and not the session-holdout 5-ch v3 encoder.
+pub const MERGED_V2_PROVENANCE: &str = "shipped merged_v2 artifact: 16-neuron LIF; known training-path defects (monotonic hidden weights, lockstep); not a post-exp-009 legal-encoder retrain; not session-holdout 5-ch v3";
 
 /// Absolute path of the shipped `merged_v2` model in this checkout.
 ///
@@ -103,13 +114,20 @@ pub struct SnnModel {
 }
 
 impl SnnModel {
-    /// Decode the shipped model at [`default_model_path`].
+    /// Decode the shipped `merged_v2` model at [`default_model_path`].
+    ///
+    /// This is the repository artifact described by [`MERGED_V2_PROVENANCE`]:
+    /// 16-neuron LIF, known training-path defects, not a post-exp-009
+    /// legal-encoder retrain and not session-holdout 5-ch v3.
     ///
     /// # Errors
     ///
-    /// See [`SnnModel::from_path`].
+    /// See [`SnnModel::from_path`]. Also [`ModelError::Schema`] if the file
+    /// does not contain exactly [`NEURON_COUNT`] units.
     pub fn load_default() -> Result<Self, ModelError> {
-        Self::from_path(default_model_path())
+        let model = Self::from_path(default_model_path())?;
+        require_merged_v2_width(&model)?;
+        Ok(model)
     }
 
     /// Read and decode a model file.
@@ -213,6 +231,16 @@ impl SnnModel {
         }
         Ok(Tensor::from_f64(vec![units, units], data)?)
     }
+}
+
+fn require_merged_v2_width(model: &SnnModel) -> Result<(), ModelError> {
+    if model.len() != NEURON_COUNT {
+        return Err(ModelError::Schema(format!(
+            "shipped merged_v2 must have {NEURON_COUNT} neurons, got {}",
+            model.len()
+        )));
+    }
+    Ok(())
 }
 
 fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<Neuron, ModelError> {
@@ -357,6 +385,17 @@ mod tests {
         assert!(!model.neurons[0].last_spike);
         assert_eq!(model.thresholds().len(), NEURON_COUNT);
         assert_eq!(model.decay_rates().len(), NEURON_COUNT);
+        assert!(MERGED_V2_PROVENANCE.contains("shipped merged_v2 artifact"));
+        assert!(MERGED_V2_PROVENANCE.contains("not a post-exp-009 legal-encoder retrain"));
+    }
+
+    #[test]
+    fn shipped_loader_requires_sixteen_units() {
+        let stub = SnnModel::from_json_str(&stub_json(3)).unwrap();
+        let err = require_merged_v2_width(&stub).unwrap_err();
+        assert!(err.to_string().contains("must have 16 neurons"));
+        let shipped = SnnModel::from_path(default_model_path()).unwrap();
+        require_merged_v2_width(&shipped).unwrap();
     }
 
     #[test]

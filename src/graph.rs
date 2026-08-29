@@ -27,7 +27,9 @@ use nir_rs::nodes::{Input, Lif, Output};
 use nir_rs::types::{MetadataValue, Tensor};
 use nir_rs::{NirGraph, NirNode};
 
-use crate::model::{MODEL_RELATIVE_PATH, ModelError, SnnModel, TIMESTEP_SECONDS};
+use crate::model::{
+    MERGED_V2_PROVENANCE, MODEL_RELATIVE_PATH, ModelError, SnnModel, TIMESTEP_SECONDS,
+};
 
 /// Name of the graph's input node.
 pub const INPUT_NODE: &str = "input";
@@ -45,6 +47,10 @@ const MEMBRANE_RESISTANCE: f64 = 1.0;
 const RESTING_POTENTIAL: f64 = 0.0;
 
 /// Load the shipped `merged_v2` model and build its NIR graph.
+///
+/// The graph metadata records [`MERGED_V2_PROVENANCE`]: this is the
+/// repository's 16-neuron LIF artifact, not a post-exp-009 legal-encoder
+/// retrain and not session-holdout 5-ch v3.
 ///
 /// # Errors
 ///
@@ -130,6 +136,10 @@ pub fn build_lif_graph_with_timestep(
         MetadataValue::String(MODEL_RELATIVE_PATH.into()),
     );
     graph.metadata.insert(
+        "provenance".into(),
+        MetadataValue::String(MERGED_V2_PROVENANCE.into()),
+    );
+    graph.metadata.insert(
         "timestep_seconds".into(),
         MetadataValue::F64(timestep_seconds),
     );
@@ -192,6 +202,10 @@ mod tests {
         assert_eq!(
             graph.metadata.get("source"),
             Some(&MetadataValue::String(MODEL_RELATIVE_PATH.into()))
+        );
+        assert_eq!(
+            graph.metadata.get("provenance"),
+            Some(&MetadataValue::String(MERGED_V2_PROVENANCE.into()))
         );
         assert_eq!(
             graph.metadata.get("timestep_seconds"),
