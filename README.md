@@ -116,9 +116,9 @@ Channels 14-15 are the network's pain receptors. When the GPU crosses 85 °C, th
 
 Every column is assigned differently. But be careful how much this settles: it records what **this encoder** produced, and — as the provenance section below sets out — no training run in this repository links that encoder or `fresh_sync_data.jsonl` to the shipped matrix, which was imported from an external path. So this is the layout the historical encoder wrote, **not a verified statement of what the shipped weights expect**. Treat it as the best available hypothesis about the columns and the only one with code behind it; a traceable training artifact would be needed to promote it to fact. What can be said without qualification is that the two maps disagree in every column, so the v2 table above is not a safe guide either.
 
-Running that encoder end to end over the eight records — including `create_spike_train`, which allocates `np.zeros(16)` per record and overwrites only the channels that event touches — gives the actual input matrix:
+Running that encoder end to end over the eight records — including `create_spike_train`, which allocates `np.zeros(16)` per record and overwrites only the channels that event touches — gives its **`normalized_values` matrix**. This is the rate the encoder assigns each channel, not the spikes it emits; the distinction matters and is taken up below the table.
 
-| ch | name | normalized value, records 1-8 | |
+| ch | name | normalized value (0-1), records 1-8 | |
 |---|---|---|---|
 | 0 | `kaspa_hashrate` | 0.420, 0.450, 0.480, 0.500, **0, 0, 0, 0** | live |
 | 1 | `kaspa_power` | 0.380, 0.403, 0.438, 0.458, **0, 0, 0, 0** | live |
@@ -132,13 +132,19 @@ Running that encoder end to end over the eight records — including `create_spi
 | 14 | `network_health` | 1.0 ×4, then 0.900, 0.950, 0.975, 1.000 | live |
 | 15 | `composite_reward` | 0.9991, then 1.0000 ×7 | near-constant |
 
-The zero-fill is the part that is easy to miss and changes the reading. Because a kaspa event never writes channels 4-11 and a monero event never writes 0-3 or 8-11, **every one of channels 0-7 is zero on half the records**. Channel 3 is the clearest case: `1,1,1,1,0,0,0,0` is not a constant input, it is a perfect kaspa/monero indicator. Channels 0-2 and 4-7 carry the same flag folded into their magnitude.
+Two things about this table are easy to get wrong, and I got both wrong before review caught them.
+
+**It is rates, not spikes.** `temporal_encoding` turns a normalized value into `spike_rate = normalized * 100` Hz, then `spike_prob = spike_rate / 1000` per 1 ms tick, then draws `1 if np.random.random() < spike_prob else 0`. So the emitted `spike_vector` is a Bernoulli sample, and even a channel pinned at normalized `1.0` fires with probability **0.1** per tick. Channel 3 sitting at 1.0 across its four kaspa records yields roughly **0.4 expected spikes**, not four. Nothing here licenses a claim about the realized spike train.
+
+Worse for reproducibility: there is **no `np.random.seed` anywhere in the encoder**. The exact stimuli that trained the shipped weights are therefore unrecoverable even now that the encoder is, which is a harder limit than the missing dataset — a rerun reproduces the rates but never the spikes.
+
+**The zero-fill still holds, and holds for both representations.** A kaspa event never writes channels 4-11, a monero event never writes 0-3 or 8-11, so **every one of channels 0-7 is zero on half the records** — and a normalized 0 gives `spike_prob` 0, meaning those halves emit no spikes at all, deterministically. Channel 3 is the extreme case: `1,1,1,1,0,0,0,0` in rate terms, so it can only ever fire on a kaspa record, though on any given run it will mostly not fire at all. Asymmetric, not a clean flag. Channels 0-2 and 4-7 carry the same asymmetry folded into their magnitude.
 
 **Five of sixteen channels are dead, not four.** Channels 8-11 have no source records at all. Channel 12 is dead for a different and more interesting reason: it is computed as `(gpu_temp_c - 40) / 6`, giving roughly 0.30-0.88, and then passed to `temporal_encoding(..., 'temp')`, which normalizes with `(value - 40) / 6` *again* and clips at zero. The double subtraction lands every record at zero. Channel 13 carries the same second normalization — `power_eff / 5` lands near 0.5, and the `'hashrate'` branch then subtracts exactly 0.5 — so six of the eight records clip to zero. It survives on records 3 and 4 alone, where `power_eff / 5` is 0.505806 and 0.515066 and genuinely clears the threshold. That residual activity is real signal squeezed through a wrong subtraction, not a rounding artifact.
 
 Channels 14 and 15 do carry signal that 0-11 do not: channels 0-11 read only `hashrate_mh`, `power_w`, `gpu_temp_c` and `qubic_tick_trace`, while 14 additionally consumes `qubic_epoch_progress` and 15 consumes `reward_hint`. Those two fields reach the network **only** through 14 and 15, so neither channel is redundant — a point that matters when deciding what to keep or repair in a retrain.
 
-What is left, then, is a 16-wide input in which five channels are always zero, one is near-constant, seven double as a blockchain flag, and any single record populates at most eight of the sixteen. That is consistent with the degenerate ramp described below, though — like the ramp's cause — not a link this repository can demonstrate, since no training run here connects the dataset to the parameters.
+What is left, then, is a 16-wide input in which five channels are always zero — deterministically, in rates and spikes alike — one is near-constant, seven are silent on half the records, and any single record populates at most eight of the sixteen. That is consistent with the degenerate ramp described below, though — like the ramp's cause — not a link this repository can demonstrate, since no training run here connects the dataset to the parameters.
 
 **The v2 map is a proposal, not a fixed contract.** The replacement state contract is being defined in [#20](https://github.com/rmems/Spikenaut-SNN/issues/20), under one governing rule: logical state variables are *not* equivalent to physical SNN axons. Signals are never invented or duplicated just to fill 16 slots. Instead an explicit adapter sits between them:
 
