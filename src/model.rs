@@ -79,10 +79,17 @@ pub fn quantize_q8_8(value: f64) -> f64 {
 /// legal-encoder retrain and not the session-holdout 5-ch v3 encoder.
 pub const MERGED_V2_PROVENANCE: &str = "shipped merged_v2 artifact: 16-neuron LIF; known training-path defects (monotonic hidden weights, lockstep); not a post-exp-009 legal-encoder retrain; not session-holdout 5-ch v3";
 
-/// Absolute path of the shipped `merged_v2` model in this checkout.
+/// Embedded copy of `dataset/merged_v2/snn_model.json`.
 ///
-/// Resolved from `CARGO_MANIFEST_DIR`, which is the repository root, so callers
-/// and tests do not depend on the working directory.
+/// Compiled in so [`SnnModel::load_default`] does not resolve a
+/// `CARGO_MANIFEST_DIR` path at runtime.
+const SHIPPED_MODEL_JSON: &str = include_str!("../dataset/merged_v2/snn_model.json");
+
+/// Checkout path of the shipped `merged_v2` JSON.
+///
+/// This is a source-tree helper (`CARGO_MANIFEST_DIR` + [`MODEL_RELATIVE_PATH`]).
+/// Deployed binaries should use [`SnnModel::load_default`], which reads the
+/// embedded copy and does not depend on this path existing at runtime.
 #[must_use]
 pub fn default_model_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(MODEL_RELATIVE_PATH)
@@ -162,18 +169,22 @@ pub struct SnnModel {
 }
 
 impl SnnModel {
-    /// Decode the shipped `merged_v2` model at [`default_model_path`].
+    /// Decode the shipped `merged_v2` model from the embedded JSON.
     ///
     /// This is the repository artifact described by [`MERGED_V2_PROVENANCE`]:
     /// 16-neuron LIF, known training-path defects, not a post-exp-009
     /// legal-encoder retrain and not session-holdout 5-ch v3.
     ///
+    /// The bytes are compiled in (`include_str!`), so this does not depend on
+    /// a checkout path or `CARGO_MANIFEST_DIR` at runtime. [`default_model_path`]
+    /// remains available for source-tree tools.
+    ///
     /// # Errors
     ///
-    /// See [`SnnModel::from_path`]. Also [`ModelError::Schema`] if the file
-    /// does not contain exactly [`NEURON_COUNT`] units.
+    /// See [`SnnModel::from_json_str`]. Also [`ModelError::Schema`] if the
+    /// embedded document does not contain exactly [`NEURON_COUNT`] units.
     pub fn load_default() -> Result<Self, ModelError> {
-        let model = Self::from_path(default_model_path())?;
+        let model = Self::from_json_str(SHIPPED_MODEL_JSON)?;
         require_merged_v2_width(&model)?;
         Ok(model)
     }
@@ -483,6 +494,13 @@ mod tests {
         assert_eq!(model.decay_rates().len(), NEURON_COUNT);
         assert!(MERGED_V2_PROVENANCE.contains("shipped merged_v2 artifact"));
         assert!(MERGED_V2_PROVENANCE.contains("not a post-exp-009 legal-encoder retrain"));
+    }
+
+    #[test]
+    fn load_default_matches_the_checkout_file() {
+        let embedded = SnnModel::load_default().unwrap();
+        let from_file = SnnModel::from_path(default_model_path()).unwrap();
+        assert_eq!(embedded, from_file);
     }
 
     #[test]
