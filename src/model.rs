@@ -67,9 +67,42 @@ pub const Q8_8_MAX: f64 = 127.996_093_75;
 ///
 /// Q8.8 values are dyadic, hence exact in binary floating point: the snapped
 /// value round-trips through `f64` without further error.
+///
+/// # This rounds; it does not validate
+///
+/// The result is a Q8.8 code only when `value` is inside
+/// `[Q8_8_MIN, Q8_8_MAX]`. Outside it, the return is the nearest multiple of
+/// `1/256`, which is not a code the format can hold: `quantize_q8_8(128.0)` is
+/// `128.0`, one past the largest code, and a large enough input overflows the
+/// intermediate product to infinity. `NaN` stays `NaN`.
+///
+/// **It deliberately does not saturate.** Clamping 200.0 down to
+/// [`Q8_8_MAX`] would turn a wrong number into a plausible weight and lose the
+/// evidence that anything was wrong — the silent clamp-to-range failure that
+/// `tools/verify_q88.py` exists to catch. Letting the out-of-range value
+/// through unchanged is what lets the validators see it and refuse the model.
+///
+/// So this is the rounding half of the pair, and the caller owns the other
+/// half. Use [`is_q8_8`] to ask whether a value is representable before or
+/// after snapping; the decode path snaps first and range-checks the result,
+/// which is how a boundary code printed at seven digits still loads.
 #[must_use]
 pub fn quantize_q8_8(value: f64) -> f64 {
     (value * Q8_8_SCALE).round() / Q8_8_SCALE
+}
+
+/// Whether `value` is exactly representable as a Q8.8 code.
+///
+/// True when it is finite, within `[Q8_8_MIN, Q8_8_MAX]`, and lands on the
+/// `1/256` grid. This is the public counterpart to [`quantize_q8_8`], which
+/// rounds without judging: `is_q8_8(quantize_q8_8(v))` is the question worth
+/// asking of an arbitrary `v`, and answers false exactly when `v` is out of
+/// range rather than merely off-grid.
+#[must_use]
+pub fn is_q8_8(value: f64) -> bool {
+    value.is_finite()
+        && (Q8_8_MIN..=Q8_8_MAX).contains(&value)
+        && (value * Q8_8_SCALE).fract() == 0.0
 }
 
 /// Provenance stamp for the shipped `merged_v2` artifact loaded by this crate.
@@ -904,6 +937,53 @@ mod tests {
                 "expected {message:?} to contain {expected:?}"
             );
         }
+    }
+
+    /// `quantize_q8_8` rounds and does not saturate, and that is on purpose.
+    ///
+    /// Clamping an out-of-range input down to the nearest code would turn a
+    /// wrong number into a plausible weight and destroy the evidence — the
+    /// silent clamp-to-range failure `tools/verify_q88.py` was written to
+    /// catch. It would also disarm `q8_8_field`, which refuses a bad value
+    /// precisely *because* the snapped result is still out of range: under a
+    /// saturating quantizer, 200.0 would load as `Q8_8_MAX` and the model
+    /// would be silently wrong rather than loudly rejected.
+    ///
+    /// So this pins the behaviour against a well-meaning future fix.
+    #[test]
+    fn quantizing_never_silently_clamps_into_range() {
+        for out_of_range in [128.0_f64, 200.0, -128.5, -1000.0] {
+            let snapped = quantize_q8_8(out_of_range);
+            assert!(
+                !is_q8_8(snapped),
+                "{out_of_range} must not be rounded into a valid code, got {snapped}"
+            );
+            // And the decode path is what turns that into a refusal.
+            let err = q8_8_field("weight", out_of_range).unwrap_err();
+            assert!(
+                err.to_string().contains("outside the Q8.8 range"),
+                "unexpected error for {out_of_range}: {err}"
+            );
+        }
+
+        // The documented edges of the contract, stated so they cannot drift.
+        assert!(!is_q8_8(f64::NAN) && quantize_q8_8(f64::NAN).is_nan());
+        assert!(!is_q8_8(quantize_q8_8(f64::MAX)));
+        assert!(
+            quantize_q8_8(f64::MAX).is_infinite(),
+            "the product overflows"
+        );
+
+        // In range, it does exactly what the name says.
+        assert!(
+            is_q8_8(quantize_q8_8(0.7539062)),
+            "the printed form snaps on-grid"
+        );
+        assert!(
+            is_q8_8(Q8_8_MAX) && is_q8_8(Q8_8_MIN),
+            "both extremes are codes"
+        );
+        assert!(!is_q8_8(0.7539062), "off-grid before snapping");
     }
 
     /// The extreme Q8.8 codes must survive being printed.
