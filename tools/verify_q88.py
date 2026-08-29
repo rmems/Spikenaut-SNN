@@ -13,11 +13,14 @@ What it does
    compares it, value by value, against what the ``.mem`` files actually
    contain -- thresholds (16), decay rates (16), hidden weights (16x16=256).
 3. Checks the 48 signed output weights. ``snn_model.json`` carries no output
-   layer and this tool does not invent one. The shipped file is pinned by
-   sha256 and the exact 48 hex words (computed from the file as shipped).
-   Sign-integrity and decode→re-encode stay as defense in depth; they are
-   not enough on their own (a well-formed FFF9→FFF8 swap still round-trips).
-4. Exits non-zero with a per-value report on any mismatch.
+   layer and this tool does not invent one. The shipped file is pinned by the
+   sha256 of its *canonical token sequence* and the exact 48 hex words
+   (computed from the file as shipped). Sign-integrity and decode→re-encode
+   stay as defense in depth; they are not enough on their own (a well-formed
+   FFF9→FFF8 swap still round-trips).
+4. Exits non-zero with a per-value report on any mismatch. An empty or short
+   result set is a hard failure, never a pass: reporting a clean verification
+   having read nothing is worse than crashing, because it gets believed.
 
 This is the float→Q8.8 encoding half of issue #4. Passing here does not
 close #4: weight MSE / bit-identical export is not the close bar
@@ -26,9 +29,11 @@ close #4: weight MSE / bit-identical export is not the close bar
 ``--self-test`` proves the checker can actually fail: clamp-to-zero output
 weights (issue #15), 1-LSB hidden-weight drift, truncated files, well-formed
 output-weight corruption against the pin, malformed model JSON (a list/null
-top level or a null neuron must surface as ``ParseError``, not a traceback),
-and ``report()`` with no residual data (the empty-``max`` crash). A checker
-that cannot fail is worthless.
+top level, a null neuron, or a non-numeric threshold/decay/weight must surface
+as ``ParseError``, not a traceback), an empty or short result set (which must
+FAIL while ``worst_residual_lsb`` stays crash-safe), and a CRLF checkout of the
+output-weight image (which must still verify). A checker that cannot fail is
+worthless, and so is one that passes without reading anything.
 
 Standard library only. Run from anywhere::
 
@@ -63,14 +68,31 @@ N_NEURONS = 16
 N_INPUTS = 16
 N_OUTPUT_WEIGHTS = 48
 
+# verify_shipped() checks exactly these four sections. report() is given this
+# number so a section silently dropped upstream fails the run loudly instead
+# of quietly shrinking the verdict's scope.
+EXPECTED_SECTIONS = 4
+
 # Pin of the shipped output-weight image. snn_model.json has no output layer,
 # so this is the independent reference — computed from the file as shipped,
 # not invented JSON floats. Update both pins together if the artifact is
 # intentionally replaced.
 #
-#   python3 -c "import hashlib; from pathlib import Path; p=Path('dataset/merged_v2/parameters_output_weights.mem'); print(hashlib.sha256(p.read_bytes()).hexdigest())"
-OUTPUT_WEIGHTS_SHA256 = (
-    "d6d3aff3c5eba76fd0206fbff377594d2c4a3c22f980e641257f4d2911405469"
+# What is hashed (NOT the raw file bytes): the canonical token sequence, i.e.
+# every parsed 4-digit hex word, whitespace-stripped and upper-cased, joined
+# by a single "\n", with no trailing newline, ASCII-encoded. See
+# canonical_mem_digest(). Hashing raw bytes made the pin checkout-dependent —
+# a Windows checkout with core.autocrlf materializes the same 48 words with
+# CRLF endings, and a raw-byte hash then fails on a semantically identical
+# artifact. (.gitattributes also pins *.mem to LF as defense in depth.)
+#
+# Reproduce from the repo root:
+#
+#   python3 -c "import hashlib; from pathlib import Path; \
+#     w=[l.strip().upper() for l in Path('dataset/merged_v2/parameters_output_weights.mem').read_text(encoding='utf-8').splitlines() if l.strip()]; \
+#     print(hashlib.sha256(chr(10).join(w).encode('ascii')).hexdigest())"
+OUTPUT_WEIGHTS_CANON_SHA256 = (
+    "03e83737fb42cce90e2a9a23bf7404caf0d650cab5ea9864aebc634b7a98edcb"
 )
 OUTPUT_WEIGHTS_HEX: tuple[str, ...] = (
     "FFF9", "001E", "FFFC", "0042", "000E", "0025", "FFE3", "0025",
@@ -178,9 +200,57 @@ class ParseError(Exception):
     """
 
 
-def file_sha256(path: Path) -> str:
-    """sha256 of a file's exact on-disk bytes. Read-only; never writes."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def canonical_mem_digest(entries: list[MemEntry]) -> str:
+    """sha256 of the canonical token sequence of a parsed .mem image.
+
+    The digest covers exactly the hex words the tool actually read: each token
+    whitespace-stripped and upper-cased, joined by a single ``"\n"``, with no
+    trailing newline, ASCII-encoded. Blank lines, trailing whitespace, hex
+    letter case and CRLF-vs-LF line endings therefore do not move the digest,
+    while any change to a word, its value, or its position does.
+
+    This is deliberately not a hash of the file's raw bytes: those depend on
+    how the repository was checked out (Git's ``core.autocrlf`` on Windows
+    rewrites LF to CRLF), which would make the pin fail on a semantically
+    unchanged artifact. See OUTPUT_WEIGHTS_CANON_SHA256 for exactly what is
+    hashed and how to reproduce the pinned value.
+    """
+    canonical = "\n".join(entry.text.upper() for entry in entries)
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()
+
+
+def as_finite_float(value: object, where: str) -> float:
+    """Convert a JSON scalar to a finite float, or raise ParseError.
+
+    ``load_model()`` used to validate container *shape* only, so a model with
+    the right shape but a nonnumeric scalar (``"threshold": null``, an
+    object-valued weight) passed every check and then raised an uncaught
+    ``TypeError`` at the ``float()`` call -- a traceback instead of the
+    documented exit code 2. Every numeric field now routes through here.
+
+    Accepts only real numbers. Rejects ``None``, strings, dicts/lists, NaN and
+    the infinities -- and ``bool``, which must be tested first because ``bool``
+    subclasses ``int`` in Python, so ``isinstance(True, int)`` is True and an
+    unguarded check would silently encode ``True`` as the weight 1.0.
+
+    Raises:
+        ParseError: ``value`` is not a finite real number.
+
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ParseError(
+            f"{where}: expected a finite number, got "
+            f"{type(value).__name__} {value!r}"
+        )
+    try:
+        number = float(value)
+    except (OverflowError, ValueError) as exc:  # e.g. an int too large for float
+        raise ParseError(
+            f"{where}: {value!r} is not representable as a float ({exc})"
+        ) from exc
+    if not math.isfinite(number):
+        raise ParseError(f"{where}: expected a finite number, got {value!r}")
+    return number
 
 
 def parse_mem(path: Path) -> list[MemEntry]:
@@ -212,15 +282,23 @@ def load_model(path: Path) -> dict:
     """Load snn_model.json and assert it has the shape the checker assumes.
 
     Every rejection route -- missing file, malformed JSON container, wrong
-    neuron count, missing or wrongly-sized fields -- exits through
-    ``ParseError``, which ``main()`` maps to exit code 2. Shape is validated
-    before any field is read, so a top-level list/scalar or a ``null`` neuron
-    cannot leak an ``AttributeError``/``TypeError`` past that contract.
+    neuron count, missing or wrongly-sized fields, a nonnumeric scalar --
+    exits through ``ParseError``, which ``main()`` maps to exit code 2.
+
+    Two layers, both load-bearing:
+
+      * *shape*: validated before any field is read, so a top-level
+        list/scalar or a ``null`` neuron cannot leak an
+        ``AttributeError``/``TypeError`` past the contract.
+      * *scalar type*: every threshold, decay rate and weight must be a finite
+        real number (see ``as_finite_float``). Shape alone let
+        ``{"threshold": null}`` or an object-valued weight through, to blow up
+        later in ``float()`` with an uncaught ``TypeError``.
 
     Raises:
         ParseError: the file is missing, or its JSON does not match the
             expected ``{"neurons": [{threshold, decay_rate, weights[16]}, ...]}``
-            shape.
+            shape, or a numeric field is not a finite real number.
         json.JSONDecodeError: the file is not valid JSON at all.
 
     """
@@ -259,6 +337,13 @@ def load_model(path: Path) -> dict:
                 f"{path.name}: neuron {i} has {len(neuron['weights'])} weights, "
                 f"expected {N_INPUTS}"
             )
+        # Scalar types, not just container shape: the float() conversions
+        # downstream must never see a None, a bool, a string, a container, or
+        # a non-finite float.
+        as_finite_float(neuron["threshold"], f"{path.name}: neuron {i} 'threshold'")
+        as_finite_float(neuron["decay_rate"], f"{path.name}: neuron {i} 'decay_rate'")
+        for j, weight in enumerate(neuron["weights"]):
+            as_finite_float(weight, f"{path.name}: neuron {i} weight {j}")
     return model
 
 
@@ -314,6 +399,11 @@ class SectionResult:
     ``failed`` records section-level invariant breaks (wrong length, pin
     failure, lost sign) that are not tied to any single value, which is why
     it is tracked separately from ``mismatches``.
+
+    ``pinned_count`` is how many words this section actually compared against
+    a shipped-file pin (0 when no pin was supplied). ``report()`` counts it
+    rather than asserting a pin happened, so the summary can never claim a
+    check that was not run.
     """
 
     name: str
@@ -323,6 +413,7 @@ class SectionResult:
     notes: list[str]
     max_residual_lsb: float | None = None
     failed: bool = False
+    pinned_count: int = 0
 
     @property
     def ok(self) -> bool:
@@ -415,18 +506,19 @@ def check_signed_section(
     entries: list[MemEntry],
     expected_count: int,
     expected_hex: tuple[str, ...] | None = None,
-    expected_sha256: str | None = None,
-    mem_path: Path | None = None,
+    expected_canon_sha256: str | None = None,
 ) -> SectionResult:
     """Check the signed output-weight section.
 
     snn_model.json has no output layer, so there is no float column to
-    cross-validate against. The shipped file is pinned by sha256 and the
-    exact 48 hex words. Sign-integrity and decode→re-encode stay as
-    defense in depth: they catch clamp-to-zero and broken codecs, but a
-    well-formed FFF9→FFF8 swap still round-trips.
+    cross-validate against. The shipped file is pinned by the sha256 of its
+    canonical token sequence and by the exact 48 hex words. Sign-integrity
+    and decode→re-encode stay as defense in depth: they catch clamp-to-zero
+    and broken codecs, but a well-formed FFF9→FFF8 swap still round-trips.
 
-      * shipped-file pin (when ``expected_hex`` / ``expected_sha256`` given),
+      * shipped-file pin (when ``expected_hex`` / ``expected_canon_sha256``
+        is given); the sha covers the parsed tokens, not raw file bytes, so
+        it does not change with the checkout's line endings,
       * exact value count,
       * canonical round-trip: decode -> re-encode is bit-identical, so the
         float<->hex codec agrees with every word actually in the file,
@@ -445,18 +537,18 @@ def check_signed_section(
         )
         failed = True
 
-    if expected_sha256 is not None:
-        if mem_path is None:
-            raise ValueError("expected_sha256 requires mem_path")
-        actual_sha = file_sha256(mem_path)
-        if actual_sha != expected_sha256:
+    if expected_canon_sha256 is not None:
+        actual_sha = canonical_mem_digest(entries)
+        if actual_sha != expected_canon_sha256:
             notes.append(
-                f"SHIPPED-FILE PIN FAILURE: sha256 {actual_sha} "
-                f"!= {expected_sha256}"
+                f"SHIPPED-FILE PIN FAILURE: canonical-token sha256 {actual_sha} "
+                f"!= {expected_canon_sha256}"
             )
             failed = True
         else:
-            notes.append(f"sha256 pin {actual_sha} matches shipped file")
+            notes.append(
+                f"canonical-token sha256 pin {actual_sha} matches shipped file"
+            )
 
     if expected_hex is not None:
         if len(expected_hex) != expected_count:
@@ -544,6 +636,11 @@ def check_signed_section(
         mismatches=mismatches,
         notes=notes,
         failed=failed,
+        pinned_count=(
+            len(entries)
+            if expected_hex is not None or expected_canon_sha256 is not None
+            else 0
+        ),
     )
 
 
@@ -568,13 +665,22 @@ def verify_shipped() -> list[SectionResult]:
     model = load_model(MODEL_JSON)
     neurons = model["neurons"]
 
-    thresholds = [float(n["threshold"]) for n in neurons]
-    decays = [float(n["decay_rate"]) for n in neurons]
+    # load_model() has already rejected any nonnumeric field; going through
+    # as_finite_float() here too keeps the conversion itself inside the
+    # ParseError contract rather than relying on a check made elsewhere.
+    thresholds = [
+        as_finite_float(n["threshold"], f"neurons[{i}].threshold")
+        for i, n in enumerate(neurons)
+    ]
+    decays = [
+        as_finite_float(n["decay_rate"], f"neurons[{i}].decay_rate")
+        for i, n in enumerate(neurons)
+    ]
     hidden: list[float] = []
     hidden_labels: list[str] = []
     for i, neuron in enumerate(neurons):
         for j, weight in enumerate(neuron["weights"]):
-            hidden.append(float(weight))
+            hidden.append(as_finite_float(weight, f"neurons[{i}].weights[{j}]"))
             hidden_labels.append(f"neuron {i:2d} <- input {j:2d}")
 
     return [
@@ -601,12 +707,12 @@ def verify_shipped() -> list[SectionResult]:
         ),
         check_signed_section(
             "output weights    (parameters_output_weights.mem)",
-            "shipped-file sha256 + gold hex pin; snn_model.json has no output layer",
+            "shipped-file canonical sha256 + gold hex pin; "
+            "snn_model.json has no output layer",
             parse_mem(MEM_OUTPUT),
             N_OUTPUT_WEIGHTS,
             expected_hex=OUTPUT_WEIGHTS_HEX,
-            expected_sha256=OUTPUT_WEIGHTS_SHA256,
-            mem_path=MEM_OUTPUT,
+            expected_canon_sha256=OUTPUT_WEIGHTS_CANON_SHA256,
         ),
     ]
 
@@ -622,13 +728,26 @@ def worst_residual_lsb(results: list[SectionResult]) -> float:
     return max(residuals) if residuals else 0.0
 
 
-def report(results: list[SectionResult], stream=sys.stdout) -> bool:
+def report(
+    results: list[SectionResult],
+    stream=sys.stdout,
+    expected_sections: int | None = None,
+) -> bool:
     """Print the full per-section report and the verdict; return True if clean.
 
-    The OK line deliberately separates the values cross-validated against
-    snn_model.json floats from the output weights held only by the pin, so
-    the report never overstates what was actually proven. Accepts an empty
-    ``results`` list without raising.
+    An empty ``results`` list is a HARD FAILURE, never a pass. ``all([])`` is
+    True, so an unguarded verdict printed "OK: 0 Q8.8 values verified" -- plus
+    the claim that 48 output weights were pinned -- having read no artifact at
+    all. A verifier that reports a clean pass having checked nothing is worse
+    than one that crashes, because it is believed. Pass ``expected_sections``
+    to reject a short run too, where a section was dropped upstream.
+
+    The summary reports only what was actually verified: the cross-validated
+    count, the worst residual and the pinned-word count are all counted out of
+    ``results``, so no line can assert a check that did not run.
+
+    ``worst_residual_lsb`` stays empty-safe (a section may legitimately carry
+    no residual); the empty-set verdict is decided here, not there.
     """
     print("Q8.8 export verification", file=stream)
     print(f"repo root: {REPO_ROOT}", file=stream)
@@ -640,41 +759,77 @@ def report(results: list[SectionResult], stream=sys.stdout) -> bool:
 
     total_values = sum(r.count for r in results)
     total_mismatches = sum(len(r.mismatches) for r in results)
-    ok = all(r.ok for r in results)
-
     cross_checked = sum(r.count for r in results if r.max_residual_lsb is not None)
+    pinned = sum(r.pinned_count for r in results)
     worst = worst_residual_lsb(results)
 
-    if ok:
-        print(
-            f"OK: {total_values} Q8.8 values verified, 0 mismatches.\n"
-            f"    {cross_checked} of them cross-validated value-by-value against "
-            f"snn_model.json floats\n"
-            f"    (worst |json - mem| residual {worst:.6f} LSB), and "
-            f"{N_OUTPUT_WEIGHTS} signed output weights\n"
-            f"    pinned to the shipped-file sha256 / gold hex words, plus "
-            f"sign-integrity and\n"
-            f"    canonical round-trip (defense in depth).\n"
-            f"    This is the float→Q8.8 encoding half of issue #4; it is not "
-            f"a close of #4.\n"
-            f"    Hamming-on-holdout is the close bar, not weight MSE / "
-            f"bit-identical export.",
-            file=stream,
+    # Structural failures: the run itself did not happen, independent of
+    # whether the sections it did produce were individually clean.
+    structural: list[str] = []
+    if not results:
+        structural.append(
+            "NOTHING WAS CHECKED: 0 sections. all([]) is True, so an unguarded "
+            "verdict would report a clean pass having read no artifact."
         )
     else:
+        if expected_sections is not None and len(results) != expected_sections:
+            structural.append(
+                f"INCOMPLETE RUN: {len(results)} section(s), expected "
+                f"{expected_sections}. A section was dropped, so this verdict "
+                f"would cover less than the artifact set it claims."
+            )
+        if total_values == 0:
+            structural.append(
+                "NOTHING WAS CHECKED: sections were present but held 0 values."
+            )
+
+    ok = not structural and all(r.ok for r in results)
+
+    if ok:
+        lines = [f"OK: {total_values} Q8.8 values verified, 0 mismatches."]
+        if cross_checked:
+            lines.append(
+                f"    {cross_checked} of them cross-validated value-by-value "
+                f"against snn_model.json floats"
+            )
+            lines.append(
+                f"    (worst |json - mem| residual {worst:.6f} LSB)."
+            )
+        if pinned:
+            lines.append(
+                f"    {pinned} signed output weight(s) pinned to the "
+                f"shipped-file canonical-token sha256"
+            )
+            lines.append(
+                "    / gold hex words, plus sign-integrity and canonical "
+                "round-trip (defense in depth)."
+            )
+        lines.append(
+            "    This is the float→Q8.8 encoding half of issue #4; it is not "
+            "a close of #4."
+        )
+        lines.append(
+            "    Hamming-on-holdout is the close bar, not weight MSE / "
+            "bit-identical export."
+        )
+        print("\n".join(lines), file=stream)
+    else:
+        lines = ["FAILED:"]
+        lines.extend(f"        {reason}" for reason in structural)
         failed = [r.name.split("(")[0].strip() for r in results if not r.ok]
-        detail = (
-            f"{total_mismatches} value mismatch(es)"
-            if total_mismatches
-            else "no value mismatches, but a section-level invariant broke "
-            "(see notes above)"
-        )
-        print(
-            f"FAILED: {len(failed)} of {len(results)} section(s) did not "
-            f"verify -- {', '.join(failed)}.\n"
-            f"        {detail}.",
-            file=stream,
-        )
+        if failed:
+            detail = (
+                f"{total_mismatches} value mismatch(es)"
+                if total_mismatches
+                else "no value mismatches, but a section-level invariant broke "
+                "(see notes above)"
+            )
+            lines.append(
+                f"        {len(failed)} of {len(results)} section(s) did not "
+                f"verify -- {', '.join(failed)}."
+            )
+            lines.append(f"        {detail}.")
+        print("\n".join(lines), file=stream)
     return ok
 
 
@@ -708,11 +863,18 @@ def _write_mem(path: Path, words: list[int]) -> None:
     path.write_text("".join(f"{w:04X}\n" for w in words), encoding="utf-8")
 
 
+# Numbered scenarios self_test() must run. Counted and asserted at the end so
+# a section deleted or accidentally skipped fails loudly instead of silently
+# shrinking the suite.
+SELF_TEST_SECTIONS = 10
+
+
 def self_test(stream=sys.stdout) -> bool:
     """Prove this checker actually rejects real regressions."""
     print("Q8.8 verifier self-test", file=stream)
     print("", file=stream)
     checks = 0
+    sections_run = 0
 
     # -- 1. codec unit vectors (the examples documented in README.md) ---------
     print("1. Q8.8 codec unit vectors", file=stream)
@@ -740,19 +902,32 @@ def self_test(stream=sys.stdout) -> bool:
         checks += 2
     print(f"   ok: {len(vectors)} vectors decode and round-trip", file=stream)
     print("", file=stream)
+    sections_run += 1
 
     # -- 2. the shipped artifacts must pass ----------------------------------
     print("2. shipped artifacts verify", file=stream)
     shipped = verify_shipped()
     _require(
+        len(shipped) == EXPECTED_SECTIONS,
+        f"verify_shipped() returned {len(shipped)} sections, expected "
+        f"{EXPECTED_SECTIONS} -- a section was dropped",
+    )
+    _require(
         all(r.ok for r in shipped),
         "the shipped .mem files do not verify -- see the default (non-self-test) run",
     )
-    print(
-        f"   ok: {sum(r.count for r in shipped)} values, 0 mismatches", file=stream
+    _require(
+        report(shipped, stream=io.StringIO(), expected_sections=EXPECTED_SECTIONS),
+        "the shipped artifacts did not survive the full report() verdict",
     )
-    checks += 1
+    print(
+        f"   ok: {len(shipped)} sections, {sum(r.count for r in shipped)} values, "
+        f"0 mismatches",
+        file=stream,
+    )
+    checks += 3
     print("", file=stream)
+    sections_run += 1
 
     with tempfile.TemporaryDirectory(prefix="q88-selftest-") as tmpdir:
         tmp = Path(tmpdir)
@@ -839,6 +1014,7 @@ def self_test(stream=sys.stdout) -> bool:
             file=stream,
         )
         print("", file=stream)
+        sections_run += 1
 
         # -- 4. the JSON-backed path must fail too when data drifts ----------
         print("4. a single corrupted hidden weight is REJECTED", file=stream)
@@ -871,6 +1047,7 @@ def self_test(stream=sys.stdout) -> bool:
         print("   ok: rejected, 1 mismatch at the corrupted index", file=stream)
         print(corrupted.mismatches[0].render(), file=stream)
         print("", file=stream)
+        sections_run += 1
 
         # -- 5. truncated file is REJECTED -----------------------------------
         print("5. a truncated .mem is REJECTED", file=stream)
@@ -886,20 +1063,72 @@ def self_test(stream=sys.stdout) -> bool:
         checks += 1
         print("   ok: rejected on value count", file=stream)
         print("", file=stream)
+        sections_run += 1
 
-        # -- 6. report() must not crash when no section has residual data ------
+        # -- 6. an empty/short result set FAILS; residuals stay crash-safe ----
         #
-        # Amazon Q: max() over an empty generator of max_residual_lsb raises
-        # ValueError. The signed section has no residual; an empty results
-        # list has none either. Both must report 0.0, not crash.
-        print("6. report() survives an empty residual list", file=stream)
+        # Two distinct concerns that the previous version conflated, and got
+        # backwards in the second case:
+        #
+        #   * Amazon Q: max() over an empty generator of max_residual_lsb
+        #     raises ValueError. worst_residual_lsb() must return 0.0 for an
+        #     empty list and for signed-only sections. Still true, still tested.
+        #   * Codex: report([]) returned SUCCESS -- all([]) is True -- printing
+        #     "OK: 0 Q8.8 values verified" plus the claim that 48 output
+        #     weights were pinned, having read nothing. The old section 6
+        #     asserted that pass and so enshrined the bug. An empty (or short)
+        #     result set is now a hard failure.
+        print(
+            "6. empty/short results FAIL; empty residual list stays crash-safe",
+            file=stream,
+        )
         _require(
             worst_residual_lsb([]) == 0.0,
-            "empty results must report 0.0 residual, not raise",
+            "empty results must report 0.0 residual, not raise "
+            "(the max()-on-empty crash must stay fixed)",
         )
         silent = io.StringIO()
         empty_ok = report([], stream=silent)
-        _require(empty_ok, "empty report() should not fail or raise")
+        _require(
+            not empty_ok,
+            "report([]) returned SUCCESS -- a verifier that reports a clean "
+            "pass having checked nothing is a false-confidence failure",
+        )
+        empty_text = silent.getvalue()
+        _require(
+            "OK:" not in empty_text,
+            f"report([]) failed but still printed an OK line: {empty_text!r}",
+        )
+        _require(
+            "pinned" not in empty_text,
+            "report([]) claimed output weights were pinned, having read nothing",
+        )
+        checks += 4
+
+        # A short run -- a section dropped upstream -- must fail too, even
+        # though every section it does contain verifies cleanly.
+        _require(
+            shipped[0].ok,
+            "sanity: the first shipped section must itself verify, or the "
+            "short-run assertion below would prove nothing",
+        )
+        silent = io.StringIO()
+        short_run_ok = report(
+            shipped[:1], stream=silent, expected_sections=EXPECTED_SECTIONS
+        )
+        _require(
+            not short_run_ok,
+            f"report() accepted 1 of {EXPECTED_SECTIONS} sections as a clean run",
+        )
+        _require(
+            "INCOMPLETE RUN" in silent.getvalue(),
+            f"short run was rejected, but not as an incomplete run: "
+            f"{silent.getvalue()!r}",
+        )
+        checks += 3
+
+        # The signed-only path (max_residual_lsb is None) must still pass and
+        # must still report 0.0 rather than raising.
         signed_only = [
             check_signed_section(
                 "output weights (no residual)",
@@ -907,8 +1136,7 @@ def self_test(stream=sys.stdout) -> bool:
                 parse_mem(MEM_OUTPUT),
                 N_OUTPUT_WEIGHTS,
                 expected_hex=OUTPUT_WEIGHTS_HEX,
-                expected_sha256=OUTPUT_WEIGHTS_SHA256,
-                mem_path=MEM_OUTPUT,
+                expected_canon_sha256=OUTPUT_WEIGHTS_CANON_SHA256,
             )
         ]
         _require(
@@ -922,9 +1150,20 @@ def self_test(stream=sys.stdout) -> bool:
         silent = io.StringIO()
         signed_ok = report(signed_only, stream=silent)
         _require(signed_ok, "signed-only report() should pass and not raise")
-        checks += 5
-        print("   ok: empty and signed-only report() return 0.0 residual", file=stream)
+        _require(
+            "cross-validated" not in silent.getvalue(),
+            f"signed-only report() claimed a float cross-validation that never "
+            f"happened: {silent.getvalue()!r}",
+        )
+        checks += 4
+        print(
+            "   ok: report([]) and a 1-of-4-section run both FAIL; "
+            "worst_residual_lsb([]) returns 0.0;\n"
+            "       signed-only run passes and claims only the pin",
+            file=stream,
+        )
         print("", file=stream)
+        sections_run += 1
 
         # -- 7. well-formed output-weight corruption is REJECTED (the pin) -----
         #
@@ -941,8 +1180,8 @@ def self_test(stream=sys.stdout) -> bool:
             "gold tuple derived from the shipped file does not match the pin",
         )
         _require(
-            file_sha256(MEM_OUTPUT) == OUTPUT_WEIGHTS_SHA256,
-            "shipped output-weight sha256 does not match the pin",
+            canonical_mem_digest(real) == OUTPUT_WEIGHTS_CANON_SHA256,
+            "shipped output-weight canonical-token sha256 does not match the pin",
         )
         _require(
             len(gold) == N_OUTPUT_WEIGHTS,
@@ -1011,6 +1250,7 @@ def self_test(stream=sys.stdout) -> bool:
         checks += 2
         print("   ok: 47 zeros + FFFF rejected by gold pin, accepted without it", file=stream)
         print("", file=stream)
+        sections_run += 1
 
         # -- 8. malformed model JSON exits through ParseError -----------------
         #
@@ -1061,17 +1301,182 @@ def self_test(stream=sys.stdout) -> bool:
             file=stream,
         )
         print("", file=stream)
+        sections_run += 1
+
+        # -- 9. nonnumeric scalar fields exit through ParseError --------------
+        #
+        # Codex: load_model() validated container shape but not scalar type,
+        # so a model with the right shape and {"threshold": null} -- or an
+        # object-valued weight -- passed every check and then raised an
+        # uncaught TypeError at float(), tracebacking instead of honoring the
+        # documented exit-code-2 parse-error contract.
+        #
+        # bool is the subtle one: it subclasses int, so isinstance(True, int)
+        # is True and a naive numeric guard would silently encode True as 1.0.
+        print(
+            "9. nonnumeric threshold/decay/weight values are REJECTED as ParseError",
+            file=stream,
+        )
+
+        # Positive controls first: the guard must not reject valid numbers,
+        # including a JSON integer, or it would just be breaking the tool.
+        _require(
+            as_finite_float(1, "int") == 1.0,
+            "as_finite_float rejected a valid JSON integer",
+        )
+        _require(
+            as_finite_float(-0.02734375, "float") == -0.02734375,
+            "as_finite_float rejected a valid JSON float",
+        )
+        checks += 2
+
+        bad_scalars = [
+            ("null threshold", "threshold", None),
+            ("string threshold", "threshold", "0.5"),
+            ("object threshold", "threshold", {"value": 0.5}),
+            ("bool threshold", "threshold", True),
+            ("nan threshold", "threshold", float("nan")),
+            ("posinf threshold", "threshold", float("inf")),
+            ("null decay", "decay_rate", None),
+            ("list decay", "decay_rate", [0.9]),
+            ("bool decay", "decay_rate", False),
+            ("neginf decay", "decay_rate", float("-inf")),
+        ]
+        bad_weights = [
+            ("null weight", None),
+            ("object weight", {"w": 0.1}),
+            ("string weight", "0.1"),
+            ("bool weight", True),
+            ("nan weight", float("nan")),
+        ]
+
+        def _reject(label: str, payload: object, bad_path: Path) -> None:
+            """Assert load_model(bad_path) raises ParseError, nothing else."""
+            bad_path.write_text(json.dumps(payload), encoding="utf-8")
+            try:
+                load_model(bad_path)
+            except ParseError:
+                return
+            except Exception as exc:  # TypeError from float() = the bug
+                raise SelfTestFailure(
+                    f"{label}: load_model raised {type(exc).__name__}({exc}), "
+                    f"expected ParseError"
+                ) from exc
+            raise SelfTestFailure(
+                f"{label}: load_model ACCEPTED a nonnumeric field"
+            )
+
+        for label, field, payload in bad_scalars:
+            broken = json.loads(json.dumps(good_model))
+            broken["neurons"][2][field] = payload
+            _reject(label, broken, tmp / f"model_{label.replace(' ', '_')}.json")
+            checks += 1
+        for label, payload in bad_weights:
+            broken = json.loads(json.dumps(good_model))
+            broken["neurons"][5]["weights"][7] = payload
+            _reject(label, broken, tmp / f"model_{label.replace(' ', '_')}.json")
+            checks += 1
+
+        print(
+            f"   ok: {len(bad_scalars)} bad thresholds/decays and "
+            f"{len(bad_weights)} bad weights all raise ParseError\n"
+            f"       (null, string, object/list, bool, NaN, +-inf); "
+            f"valid ints and floats still accepted",
+            file=stream,
+        )
+        print("", file=stream)
+        sections_run += 1
+
+        # -- 10. a CRLF checkout of the shipped file still verifies -----------
+        #
+        # Codex: the pin used to hash the file's raw bytes. On a Windows
+        # checkout with Git's core.autocrlf, the same 48 words materialize
+        # with CRLF endings, so the hash failed on a semantically unchanged
+        # artifact. The pin now hashes the canonical token sequence instead
+        # (and .gitattributes pins *.mem to LF as defense in depth).
+        print(
+            "10. a CRLF-line-ending copy of the shipped file still verifies",
+            file=stream,
+        )
+        lf_bytes = MEM_OUTPUT.read_bytes()
+        crlf_bytes = lf_bytes.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        _require(
+            b"\r\n" in crlf_bytes and crlf_bytes != lf_bytes,
+            "CRLF fixture is not actually CRLF -- this section would prove nothing",
+        )
+        _require(
+            hashlib.sha256(crlf_bytes).hexdigest()
+            != hashlib.sha256(lf_bytes).hexdigest(),
+            "negative control: a raw-byte hash must differ across line endings, "
+            "otherwise this section is not testing the reported bug",
+        )
+        crlf_path = tmp / "parameters_output_weights_crlf.mem"
+        crlf_path.write_bytes(crlf_bytes)
+        crlf_entries = parse_mem(crlf_path)
+        _require(
+            len(crlf_entries) == N_OUTPUT_WEIGHTS,
+            f"CRLF copy parsed to {len(crlf_entries)} words, expected "
+            f"{N_OUTPUT_WEIGHTS}",
+        )
+        _require(
+            canonical_mem_digest(crlf_entries) == OUTPUT_WEIGHTS_CANON_SHA256,
+            "the canonical-token pin is still line-ending dependent",
+        )
+        crlf_result = check_signed_section(
+            "output weights (CRLF checkout)",
+            "shipped-file canonical sha256 + gold hex pin",
+            crlf_entries,
+            N_OUTPUT_WEIGHTS,
+            expected_hex=OUTPUT_WEIGHTS_HEX,
+            expected_canon_sha256=OUTPUT_WEIGHTS_CANON_SHA256,
+        )
+        _require(
+            crlf_result.ok,
+            f"a CRLF copy of the shipped output weights failed verification: "
+            f"{crlf_result.notes}",
+        )
+        checks += 5
+
+        # Same idea one step further: lower-case words with padding around
+        # them are the same artifact, and canonicalization must say so.
+        noisy_path = tmp / "parameters_output_weights_noisy.mem"
+        noisy_path.write_text(
+            "".join(f"  {e.text.lower()}  \r\n" for e in real), encoding="utf-8"
+        )
+        _require(
+            canonical_mem_digest(parse_mem(noisy_path)) == OUTPUT_WEIGHTS_CANON_SHA256,
+            "canonicalization must normalize hex case and surrounding whitespace",
+        )
+        checks += 1
+        print(
+            "   ok: CRLF copy verifies against both pins "
+            "(raw bytes differ, canonical tokens do not);\n"
+            "       lower-case + padded words canonicalize identically",
+            file=stream,
+        )
+        print("", file=stream)
+        sections_run += 1
+
+    _require(
+        sections_run == SELF_TEST_SECTIONS,
+        f"self-test ran {sections_run} numbered sections, expected "
+        f"{SELF_TEST_SECTIONS} -- a scenario was dropped",
+    )
+    checks += 1
 
     print(
-        f"SELF-TEST PASSED: {checks} assertions. The verifier rejects "
-        f"clamp-to-zero\n"
-        f"signed encoding, 1-LSB weight drift, truncated memory images, "
-        f"and well-formed\n"
-        f"output-weight corruption against the shipped-file pin; "
-        f"malformed model JSON\n"
-        f"exits through ParseError rather than a traceback; "
-        f"report() survives an empty\n"
-        f"residual list; and the shipped artifacts are accepted.",
+        f"SELF-TEST PASSED: {checks} assertions across {sections_run} sections.\n"
+        f"The verifier rejects clamp-to-zero signed encoding, 1-LSB weight "
+        f"drift, truncated\n"
+        f"memory images, and well-formed output-weight corruption against the "
+        f"shipped-file\n"
+        f"pin; malformed model JSON and nonnumeric threshold/decay/weight "
+        f"fields exit through\n"
+        f"ParseError rather than a traceback; an empty or short result set "
+        f"FAILS while\n"
+        f"worst_residual_lsb() stays crash-safe; a CRLF checkout of the "
+        f"output-weight image\n"
+        f"still verifies; and the shipped artifacts are accepted.",
         file=stream,
     )
     return True
@@ -1100,8 +1505,9 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "prove the checker can fail: assert it rejects clamp-to-zero signed "
             "encoding, 1-LSB weight drift, truncated files, well-formed "
-            "output-weight corruption, and malformed model JSON; and that "
-            "report() survives no residuals"
+            "output-weight corruption, malformed model JSON and nonnumeric "
+            "fields, and an empty or short result set; and that a CRLF checkout "
+            "still verifies"
         ),
     )
     args = parser.parse_args(argv)
@@ -1110,7 +1516,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.self_test:
             self_test()
             return 0
-        return 0 if report(verify_shipped()) else 1
+        return (
+            0
+            if report(verify_shipped(), expected_sections=EXPECTED_SECTIONS)
+            else 1
+        )
     except SelfTestFailure as exc:
         print(f"\nSELF-TEST FAILED: {exc}", file=sys.stderr)
         return 1
