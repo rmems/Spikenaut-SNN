@@ -4,9 +4,14 @@
 //!
 //! [`SnnModel`] is a direct, validated decoding of
 //! `dataset/merged_v2/snn_model.json`: 16 leaky integrate-and-fire neurons,
-//! each with a decay rate, a firing threshold, a recurrent weight row, and the
-//! simulator state (membrane potential, last-spike flag) captured when the model
-//! was saved.
+//! each with a decay rate, a firing threshold, a learned input weight row, and
+//! the simulator state (membrane potential, last-spike flag) captured when the
+//! model was saved.
+//!
+//! Every number is snapped onto the Q8.8 grid as it is decoded (see
+//! [`quantize_q8_8`]) and every documented numeric invariant is enforced there,
+//! so a decoded [`SnnModel`] is exactly the parameter set the `.mem` artifacts
+//! hold and cannot carry a decay rate outside `(0, 1)`.
 //!
 //! [`SnnModel::load_default`] is that artifact, not a post-exp-009 legal-encoder
 //! retrain and not the session-holdout 5-ch v3 encoder. See
@@ -34,6 +39,39 @@ pub const TIMESTEP_SECONDS: f64 = 1.0 / CLOCK_HZ;
 /// Path of the shipped model, relative to the repository root.
 pub const MODEL_RELATIVE_PATH: &str = "dataset/merged_v2/snn_model.json";
 
+/// Scale of the Q8.8 fixed-point grid: one integer code is `1 / 256`.
+///
+/// `weight_format` in `config.json`, and the encoding of every `.mem` artifact
+/// beside the model.
+pub const Q8_8_SCALE: f64 = 256.0;
+
+/// Most negative Q8.8 value, hex `8000`.
+pub const Q8_8_MIN: f64 = -128.0;
+
+/// Most positive Q8.8 value, hex `7FFF`.
+pub const Q8_8_MAX: f64 = 127.996_093_75;
+
+/// Snap `value` onto the nearest value the Q8.8 grid can represent.
+///
+/// `snn_model.json` prints Q8.8 codes as seven-significant-digit decimals, so
+/// the text is truncated: `0.7539062` is the printed form of
+/// `0x00C1 = 193/256 = 0.75390625`, and neuron 1's decay `0.808594` is
+/// `0x00CF = 207/256 = 0.80859375`. 139 of the model's 288 stored numbers are
+/// short of their exact value this way.
+///
+/// Reading the decimals verbatim would leave the graph up to half an LSB away
+/// from `parameters_decay.mem`, `parameters.mem` and `parameters_weights.mem`,
+/// which is what a hardware/software equivalence claim cannot afford. Decoding
+/// snaps every numeric field back onto the grid, so the graph carries exactly
+/// the values the FPGA holds.
+///
+/// Q8.8 values are dyadic, hence exact in binary floating point: the snapped
+/// value round-trips through `f64` without further error.
+#[must_use]
+pub fn quantize_q8_8(value: f64) -> f64 {
+    (value * Q8_8_SCALE).round() / Q8_8_SCALE
+}
+
 /// Provenance stamp for the shipped `merged_v2` artifact loaded by this crate.
 ///
 /// This is the repository file at [`MODEL_RELATIVE_PATH`], a 16-neuron LIF
@@ -55,8 +93,13 @@ pub fn default_model_path() -> PathBuf {
 pub struct Neuron {
     /// Per-step membrane decay multiplier, in `(0, 1)`.
     ///
-    /// This is the discrete-time factor `v[t+1] = decay_rate * v[t] + ...`, not
-    /// a NIR time constant. Use [`Neuron::tau_seconds`] to convert.
+    /// This is the discrete-time factor `v[t+1] = decay_rate * v[t] + I`, not a
+    /// NIR time constant. Use [`Neuron::tau_seconds`] to convert.
+    ///
+    /// Decoding rejects anything outside `(0, 1)`, so a model that came from
+    /// [`SnnModel::from_json_str`] always satisfies the invariant. The field is
+    /// public, so a hand-built [`Neuron`] can still break it; every conversion
+    /// re-checks rather than assuming.
     pub decay_rate: f64,
     /// Membrane potential captured when the model was saved (simulator state).
     pub membrane_potential: f64,
@@ -64,7 +107,12 @@ pub struct Neuron {
     pub threshold: f64,
     /// Whether the unit spiked on the last saved step (simulator state).
     pub last_spike: bool,
-    /// Recurrent input weights, one per source neuron (`NEURON_COUNT` entries).
+    /// Learned input weights, one per input channel (`NEURON_COUNT` entries).
+    ///
+    /// Row `i` of `parameters_weights.mem`. The hidden layer is purely
+    /// feed-forward — the README records that the network has no recurrent
+    /// feedback — so these weigh the graph's input, not the population's own
+    /// spikes. [`crate::graph`] places them on a NIR `Linear` node.
     pub weights: Vec<f64>,
 }
 
@@ -153,7 +201,11 @@ impl SnnModel {
     /// - [`ModelError::Json`] if `text` is not well-formed JSON
     /// - [`ModelError::Schema`] if the document does not hold a non-empty
     ///   `neurons` list whose entries all carry the expected fields and a
-    ///   square weight matrix
+    ///   square weight matrix, or if a numeric field breaks its documented
+    ///   invariant: every number must be finite and inside the Q8.8 range, and
+    ///   `decay_rate` must lie in `(0, 1)`
+    ///
+    /// Numbers are snapped onto the Q8.8 grid; see [`quantize_q8_8`].
     pub fn from_json_str(text: &str) -> Result<Self, ModelError> {
         let document = json::parse(text)?;
         let entries = document
@@ -212,12 +264,12 @@ impl SnnModel {
             .collect()
     }
 
-    /// The recurrent weight matrix as a row-major `[units, units]` tensor.
+    /// The learned input weight matrix as a row-major `[units, units]` tensor.
     ///
-    /// Row `i` holds the incoming weights of unit `i`. The Input → LIF → Output
-    /// graph this crate builds does not place these weights on an edge: mapping
-    /// recurrence onto NIR `Affine` / `Linear` nodes belongs to the exporter
-    /// tickets, so the matrix is exposed here for those consumers.
+    /// Row `i` holds the weights unit `i` applies to the input channels, laid
+    /// out exactly like `parameters_weights.mem`. [`crate::graph`] puts this
+    /// tensor on the `Linear` node between `Input` and the LIF population, so
+    /// all 256 learned values reach the graph.
     ///
     /// # Errors
     ///
@@ -276,12 +328,13 @@ fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<N
         .iter()
         .enumerate()
         .map(|(column, weight)| {
-            weight.as_f64().ok_or_else(|| {
+            let value = weight.as_f64().ok_or_else(|| {
                 ModelError::Schema(format!(
                     "neuron {index} weight {column} is a {}, expected a number",
                     weight.type_name()
                 ))
-            })
+            })?;
+            q8_8_field(&format!("neuron {index} weight {column}"), value)
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -294,12 +347,55 @@ fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<N
     })?;
 
     Ok(Neuron {
-        decay_rate: number("decay_rate")?,
-        membrane_potential: number("membrane_potential")?,
-        threshold: number("threshold")?,
+        decay_rate: decay_field(
+            &format!("neuron {index} field `decay_rate`"),
+            number("decay_rate")?,
+        )?,
+        membrane_potential: q8_8_field(
+            &format!("neuron {index} field `membrane_potential`"),
+            number("membrane_potential")?,
+        )?,
+        threshold: q8_8_field(
+            &format!("neuron {index} field `threshold`"),
+            number("threshold")?,
+        )?,
         last_spike,
         weights,
     })
+}
+
+/// Accept one stored number: it must be finite and Q8.8-representable, and it
+/// is snapped onto the grid before the caller ever sees it.
+///
+/// `context` names the field for the error message.
+fn q8_8_field(context: &str, value: f64) -> Result<f64, ModelError> {
+    if !value.is_finite() {
+        return Err(ModelError::Schema(format!(
+            "{context} is {value}, expected a finite number"
+        )));
+    }
+    if !(Q8_8_MIN..=Q8_8_MAX).contains(&value) {
+        return Err(ModelError::Schema(format!(
+            "{context} is {value}, outside the Q8.8 range [{Q8_8_MIN}, {Q8_8_MAX}]"
+        )));
+    }
+    Ok(quantize_q8_8(value))
+}
+
+/// Accept a stored decay multiplier, enforcing the `(0, 1)` invariant that
+/// [`Neuron::decay_rate`] documents.
+///
+/// Without this, a model with a nonsensical decay decodes cleanly and only
+/// fails much later, in [`crate::graph`] — and never at all for a caller that
+/// reads [`SnnModel::weight_tensor`] or the fields directly.
+fn decay_field(context: &str, value: f64) -> Result<f64, ModelError> {
+    let decay_rate = q8_8_field(context, value)?;
+    if !(decay_rate > 0.0 && decay_rate < 1.0) {
+        return Err(ModelError::Schema(format!(
+            "{context} is {decay_rate}, expected a per-step decay multiplier in (0, 1)"
+        )));
+    }
+    Ok(decay_rate)
 }
 
 /// Everything that can go wrong loading a model or mapping it into NIR.
@@ -472,6 +568,102 @@ mod tests {
                 "expected {message:?} to contain {expected:?}"
             );
         }
+    }
+
+    /// The stored decimals are truncated Q8.8 codes; decoding must restore the
+    /// exact values, or the graph is not the model the FPGA runs.
+    #[test]
+    fn decoding_restores_exact_q8_8_values() {
+        let model = SnnModel::load_default().unwrap();
+
+        // `0.808594` in the JSON; `parameters_decay.mem` line 2 is `00CF`.
+        assert_eq!(model.neurons[1].decay_rate, 207.0 / 256.0);
+        assert_eq!(model.neurons[1].decay_rate, 0.808_593_75);
+        // `0.7539062` in the JSON; `parameters_weights.mem` line 2 is `00C1`.
+        assert_eq!(model.neurons[0].weights[1], 193.0 / 256.0);
+        assert_eq!(model.neurons[0].weights[1], 0.753_906_25);
+
+        // No stored number is left off the grid.
+        for neuron in &model.neurons {
+            for value in [
+                neuron.decay_rate,
+                neuron.threshold,
+                neuron.membrane_potential,
+            ]
+            .into_iter()
+            .chain(neuron.weights.iter().copied())
+            {
+                assert_eq!(value * Q8_8_SCALE, (value * Q8_8_SCALE).round(), "{value}");
+            }
+        }
+    }
+
+    #[test]
+    fn quantize_q8_8_snaps_to_the_nearest_code() {
+        assert_eq!(quantize_q8_8(0.808_594), 207.0 / 256.0);
+        assert_eq!(quantize_q8_8(0.753_906_2), 193.0 / 256.0);
+        // Already on the grid: unchanged.
+        assert_eq!(quantize_q8_8(1.125), 1.125);
+        assert_eq!(quantize_q8_8(-0.027_343_75), -0.027_343_75);
+        // Never moves by more than half an LSB.
+        for code in -2000..2000 {
+            let value = f64::from(code) / 512.0;
+            assert!((quantize_q8_8(value) - value).abs() <= 0.5 / 256.0);
+        }
+    }
+
+    /// `decay_rate` is documented as lying in `(0, 1)`; decoding is the boundary
+    /// that enforces it, so a caller reading the fields or the weight tensor
+    /// directly can never hold an invalid model.
+    #[test]
+    fn decoding_enforces_numeric_invariants() {
+        let cases = [
+            (
+                r#"{"neurons": [{"decay_rate": 0.0, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0], "last_spike": false}]}"#,
+                "decay multiplier in (0, 1)",
+            ),
+            (
+                r#"{"neurons": [{"decay_rate": 1.0, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0], "last_spike": false}]}"#,
+                "decay multiplier in (0, 1)",
+            ),
+            (
+                r#"{"neurons": [{"decay_rate": -0.5, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0], "last_spike": false}]}"#,
+                "decay multiplier in (0, 1)",
+            ),
+            (
+                r#"{"neurons": [{"decay_rate": 1.5, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0], "last_spike": false}]}"#,
+                "decay multiplier in (0, 1)",
+            ),
+            (
+                r#"{"neurons": [{"decay_rate": 1e300, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0], "last_spike": false}]}"#,
+                "outside the Q8.8 range",
+            ),
+            (
+                r#"{"neurons": [{"decay_rate": 0.5, "membrane_potential": 0.0, "threshold": 500.0, "weights": [1.0], "last_spike": false}]}"#,
+                "outside the Q8.8 range",
+            ),
+            (
+                r#"{"neurons": [{"decay_rate": 0.5, "membrane_potential": 0.0, "threshold": 1.0, "weights": [-1e9], "last_spike": false}]}"#,
+                "outside the Q8.8 range",
+            ),
+        ];
+        for (text, expected) in cases {
+            let err = SnnModel::from_json_str(text).unwrap_err();
+            let message = err.to_string();
+            assert!(matches!(err, ModelError::Schema(_)), "{message}");
+            assert!(
+                message.contains(expected),
+                "expected {message:?} to contain {expected:?}"
+            );
+        }
+
+        // A decay rate that rounds *onto* a boundary is rejected too: 0.999 is
+        // one LSB short of 1.0 and snaps to exactly 1.0.
+        let err = SnnModel::from_json_str(
+            r#"{"neurons": [{"decay_rate": 0.999, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0], "last_spike": false}]}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("decay multiplier in (0, 1)"));
     }
 
     #[test]
