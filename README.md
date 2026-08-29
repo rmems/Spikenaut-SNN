@@ -116,12 +116,23 @@ Channels 14-15 are the network's pain receptors. When the GPU crosses 85 °C, th
 
 Every column means something different. Feeding Kaspa hashrate into channel 6 as the v2 table directs lands it where the weights expect `monero_temp`. **Anyone reproducing or interpreting the shipped `merged_v2` weights must use the training-time map, not the table above.**
 
-Two further things follow from that encoder, both worth knowing before trusting the hidden weights:
+Running that encoder's own normalization over the eight records it was given produces this, which is worth knowing before trusting the hidden weights:
 
-- `fresh_sync_data.jsonl` carries only `kaspa` and `monero` records, so **channels 8-11 were never driven by any data** — a quarter of the input width was dead for the entire run.
-- Channels 12-15 are derived from the same six telemetry fields feeding 0-11 (`thermal_stress` from `gpu_temp_c`, `network_health` and `composite_reward` from the two `qubic_*` fields), so they add no independent signal.
+| Channels | Normalized range over the 8 records | |
+|---|---|---|
+| 0-7 (kaspa, monero) | 0.30 – 1.00, each seen in only 4 of 8 records | live |
+| 3 `kaspa_qubic` | exactly 1.0000 in all 4 | constant |
+| **8-11 (qubic)** | **never driven — no `qubic` record exists** | **dead** |
+| **12 `thermal_stress`** | **always exactly 0** | **dead** |
+| 13 `power_efficiency` | 0.0000 – 0.0151 | near-dead |
+| 14 `network_health` | 0.90 – 1.00 | live |
+| 15 `composite_reward` | 0.9991 – 1.0000 | near-constant |
 
-That is a 16-wide input carrying at most six distinct measurements, four channels of which are constant zero. It is consistent with the degenerate ramp described below, though — like the ramp's cause — not a link this repository can demonstrate, since no training run here connects the dataset to the parameters.
+**Five of sixteen channels are dead, not four.** Channels 8-11 have no source records at all. Channel 12 is dead for a different and more interesting reason: it is computed as `(gpu_temp_c - 40) / 6`, giving roughly 0.30-0.88, and then passed to `temporal_encoding(..., 'temp')`, which normalizes with `(value - 40) / 6` *again* and clips at zero. The double subtraction lands every record at zero. Channel 13 has the same bug in a milder form — `power_eff / 5` is about 0.48, and the `'hashrate'` branch then subtracts 0.5 — leaving it alive only by rounding.
+
+Channels 14 and 15 do carry signal that 0-11 do not: channels 0-11 read only `hashrate_mh`, `power_w`, `gpu_temp_c` and `qubic_tick_trace`, while 14 additionally consumes `qubic_epoch_progress` and 15 consumes `reward_hint`. Those two fields reach the network **only** through 14 and 15, so neither channel is redundant — a point that matters when deciding what to keep or repair in a retrain.
+
+What is left, then, is a 16-wide input in which five channels are dead, one is constant, two more are pinned near their ceiling, and any single record populates at most eight of the sixteen. That is consistent with the degenerate ramp described below, though — like the ramp's cause — not a link this repository can demonstrate, since no training run here connects the dataset to the parameters.
 
 **The v2 map is a proposal, not a fixed contract.** The replacement state contract is being defined in [#20](https://github.com/rmems/Spikenaut-SNN/issues/20), under one governing rule: logical state variables are *not* equivalent to physical SNN axons. Signals are never invented or duplicated just to fill 16 slots. Instead an explicit adapter sits between them:
 
@@ -199,7 +210,9 @@ initial $readmemh("dataset/merged_v2/parameters_weights.mem", weight_ram);
 | Training date | 2026-03-22 |
 | Training data | `fresh_sync_data.jsonl` — **8 records**, Kaspa + Monero mainnet sessions |
 
-**Externally reported diagnosis, not established here.** [#2](https://github.com/rmems/Spikenaut-SNN/issues/2) attributes the ramp to the 8-record set: two of its six features (`qubic_epoch_progress`, `reward_hint`) are effectively constant — range 0.0009, standard deviation 0.000284 — while dominating spike encoding at 87.5% spike rate each, and monotonically converging sync data (0.999912 → 1.0) produces single-attractor weights. That is a plausible account, but since no training run in this repository links that dataset to the shipped matrix, the causal claim cannot be checked from here. What *is* verifiable from the artifact is the ramp itself.
+**Externally reported diagnosis, not established here.** [#2](https://github.com/rmems/Spikenaut-SNN/issues/2) attributes the ramp to the 8-record set: two of its six features (`qubic_epoch_progress`, `reward_hint`) are effectively constant — range 0.0009, standard deviation 0.000284 — while dominating spike encoding at 87.5% spike rate each. That is a plausible account, but since no training run in this repository links that dataset to the shipped matrix, the causal claim cannot be checked from here. What *is* verifiable from the artifact is the ramp itself.
+
+The issue also cites monotonically converging sync data (`0.999912 → 1.0`) as producing single-attractor weights. That part does not survive checking and is dropped here: no `sync_percent` field exists in `fresh_sync_data.jsonl`, and the encoder reads nothing outside `telemetry`, so that sequence could not have reached the network at all. The nearest thing that *did* — `reward_hint` on channel 15, ranging 0.9991 to 1.0000 — is a real near-constant input and is a better candidate for the same argument.
 
 A replacement corpus, `qubic_ticks_snn.jsonl` (~27,430 records), and a data adapter are reported in [#2](https://github.com/rmems/Spikenaut-SNN/issues/2), but **neither is present in this repository or anywhere in its history** — treat both as external and currently uninspectable from the model card. The retrain has not happened, and the trainer needs fixing first ([#13](https://github.com/rmems/Spikenaut-SNN/issues/13)): it currently pins `W_MIN = 0`, row L1-normalizes, writes unsigned Q8.8, and emits no output-weight file.
 
