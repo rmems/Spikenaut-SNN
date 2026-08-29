@@ -34,7 +34,7 @@ This is a **research artifact, not a validated supervisor.** Three things a read
 | **It was trained on 8 records.** | The shipped `merged_v2` weights come from `fresh_sync_data.jsonl` — 8 records across 2 mining sessions, with 2 of 6 features effectively constant. The dataset has since been replaced with `qubic_ticks_snn.jsonl` (27,430 records), but **the model has not yet been retrained.** See [#13](https://github.com/rmems/Spikenaut-SNN/issues/13). |
 | **FPGA parity is unproven.** | The hardware numbers below are Vivado synthesis and implementation reports, not board-measured results. Whether the deployed SNN behaves like the software model is an open question, not a settled one. See [#6](https://github.com/rmems/Spikenaut-SNN/issues/6). |
 
-The architecture, the Q8.8 export contract, and the FPGA resource envelope are all real and reproducible. The *weights* are the part that needs redoing.
+The architecture and the Q8.8 export contract are verifiable from the artifacts in this repository. The FPGA resource and power figures are **externally reported** — no RTL, constraints, Vivado project or synthesis reports are checked in here, so a reader cannot reproduce them from this artifact. The *weights* are the part that needs redoing.
 
 ## The research question
 
@@ -183,9 +183,10 @@ The training data has been replaced with `qubic_ticks_snn.jsonl` (27,430 records
 ## Known limitations
 
 - **Degenerate hidden weights.** Linear-ramp matrix from an 8-record training set. Fix path: retrain on the 27K-record dataset, add ~4 inhibitory neurons (80:20 E:I), implement K-WTA sparsity. [#2](https://github.com/rmems/Spikenaut-SNN/issues/2), [#3](https://github.com/rmems/Spikenaut-SNN/issues/3), [#13](https://github.com/rmems/Spikenaut-SNN/issues/13)
-- **Purely excitatory hidden layer.** All 256 hidden weights are positive. Without inhibition and recurrence the network cannot do winner-take-all competition, suppress noise, hold temporal memory, or sharpen contrast. [#3](https://github.com/rmems/Spikenaut-SNN/issues/3)
+- **Purely excitatory hidden layer.** All 256 hidden weights are positive. Without inhibition and recurrence the network cannot do winner-take-all competition, suppress noise, or sharpen contrast. Note it is not memoryless: each LIF neuron's decaying membrane potential retains recent input, so the gap is **long-horizon and recurrent** memory, not temporal state as such. [#3](https://github.com/rmems/Spikenaut-SNN/issues/3)
 - **No FPGA parity evidence.** Spike agreement, action agreement, membrane-potential error, and quantization error against the software model have not been measured. Hardware numbers below are synthesis reports. [#6](https://github.com/rmems/Spikenaut-SNN/issues/6)
 - **Export tooling clamps negatives.** `silicon-bridge`'s `encode_q88` currently clamps negative values to zero, which would destroy the signed `parameters_output_weights.mem`. Signed Q8.8 is a hard requirement before that path is adopted. [#15](https://github.com/rmems/Spikenaut-SNN/issues/15)
+- **Output weights have no float source.** `snn_model.json` records only the 16 hidden-layer neurons; the 48 signed values in `parameters_output_weights.mem` have no float counterpart in this repository, so they cannot be cross-validated against a source of truth. They are checked structurally instead (count, encoding, round-trip, sign integrity). A sign-preserving exporter regression would go undetected until the output layer is added to `snn_model.json`. [#4](https://github.com/rmems/Spikenaut-SNN/issues/4)
 - **Upstream dataset hygiene.** Sibling telemetry datasets still carry dead columns, schema drift, mixed timestamp formats, synthetic tail records, and stuck values. [#2](https://github.com/rmems/Spikenaut-SNN/issues/2), [#3](https://github.com/rmems/Spikenaut-SNN/issues/3)
 
 ## Hardware baseline
