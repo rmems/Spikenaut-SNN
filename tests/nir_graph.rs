@@ -445,3 +445,36 @@ fn non_finite_public_parameters_are_rejected() {
     let model = spikenaut_snn::SnnModel::load_default().expect("load the shipped model");
     assert!(spikenaut_snn::build_lif_graph(&model).is_ok());
 }
+
+/// A caller-built parameter that is in range but off the Q8.8 grid must be
+/// rejected, not copied into the graph.
+///
+/// Being inside `[-128, 127.99609375]` is not the same as being representable:
+/// Q8.8 holds multiples of `1/256`, so `0.1` has no code. Decoding snaps values
+/// onto the grid, but the public fields bypass that — and a graph built from an
+/// off-grid weight silently stops matching what the `.mem` artifacts can hold,
+/// which is the equivalence this crate exists to preserve.
+#[test]
+fn off_grid_public_parameters_are_rejected() {
+    for off_grid in [0.1, 1.0 / 3.0, 0.751] {
+        let mut model = spikenaut_snn::SnnModel::load_default().expect("load the shipped model");
+        model.neurons[4].weights[9] = off_grid;
+        let err = spikenaut_snn::build_lif_graph(&model)
+            .expect_err("an off-grid weight must not reach the graph");
+        let text = format!("{err}");
+        assert!(
+            text.contains("neuron 4 weight 9") && text.contains("not Q8.8-representable"),
+            "error should name the field and the reason, got: {text}"
+        );
+    }
+
+    // On-grid neighbours of the same magnitude are still accepted, so the check
+    // rejects off-grid values rather than simply anything unusual.
+    let mut model = spikenaut_snn::SnnModel::load_default().expect("load the shipped model");
+    model.neurons[4].weights[9] = 26.0 / 256.0;
+    assert!(spikenaut_snn::build_lif_graph(&model).is_ok());
+
+    // And the shipped artifact, whose values are all on the grid, still builds.
+    let model = spikenaut_snn::SnnModel::load_default().expect("load the shipped model");
+    assert!(spikenaut_snn::build_lif_graph(&model).is_ok());
+}

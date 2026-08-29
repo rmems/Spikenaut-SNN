@@ -408,19 +408,17 @@ fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<N
 ///
 /// `context` names the field for the error message.
 fn q8_8_field(context: &str, value: f64) -> Result<f64, ModelError> {
-    check_q8_8(context, value)?;
+    check_finite_and_in_range(context, value)?;
     Ok(quantize_q8_8(value))
 }
 
-/// Check one number is finite and Q8.8-representable, **without** changing it.
+/// Check one number is finite and inside the Q8.8 range, saying nothing about
+/// whether it lands on the grid.
 ///
-/// [`q8_8_field`] is the decode path and snaps onto the grid; this is the
-/// re-check for values that arrive through the public [`SnnModel`] fields,
-/// where quantizing a caller's number silently would be its own surprise. The
-/// builder already re-validates decay rates and weight-row lengths for exactly
-/// that caller-built case; thresholds and weight values go through here so the
-/// same boundary covers every stored number.
-pub(crate) fn check_q8_8(context: &str, value: f64) -> Result<(), ModelError> {
+/// This is the decode pre-check: `snn_model.json` prints Q8.8 values at limited
+/// precision (`0.7539062` for `193/256`), so off-grid input is *expected* there
+/// and [`q8_8_field`] snaps it. Rejecting it would reject the shipped artifact.
+fn check_finite_and_in_range(context: &str, value: f64) -> Result<(), ModelError> {
     if !value.is_finite() {
         return Err(ModelError::Schema(format!(
             "{context} is {value}, expected a finite number"
@@ -429,6 +427,30 @@ pub(crate) fn check_q8_8(context: &str, value: f64) -> Result<(), ModelError> {
     if !(Q8_8_MIN..=Q8_8_MAX).contains(&value) {
         return Err(ModelError::Schema(format!(
             "{context} is {value}, outside the Q8.8 range [{Q8_8_MIN}, {Q8_8_MAX}]"
+        )));
+    }
+    Ok(())
+}
+
+/// Check one number is a value the Q8.8 grid can actually hold, **without**
+/// changing it.
+///
+/// This is the re-check for numbers arriving through the public [`SnnModel`]
+/// fields, which never cross the decode path. It is stricter than
+/// [`check_finite_and_in_range`] in one way and looser in another: being inside
+/// the range is not the same as being representable — the grid holds multiples
+/// of `1/256`, so `0.1` is in range with no code — but unlike [`q8_8_field`] it
+/// will not quantize, because silently rounding a caller's number would hand
+/// back a graph whose weights differ from the ones they set, with no error.
+pub(crate) fn check_q8_8(context: &str, value: f64) -> Result<(), ModelError> {
+    check_finite_and_in_range(context, value)?;
+    let scaled = value * Q8_8_SCALE;
+    if scaled.fract() != 0.0 {
+        return Err(ModelError::Schema(format!(
+            "{context} is {value}, which is not Q8.8-representable \
+             (nearest codes {}/256 and {}/256)",
+            scaled.floor(),
+            scaled.ceil()
         )));
     }
     Ok(())

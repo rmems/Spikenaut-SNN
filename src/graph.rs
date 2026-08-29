@@ -272,8 +272,11 @@ pub fn build_lif_graph_with_provenance(
         check_q8_8(&format!("neuron {index} threshold"), threshold)?;
     }
     let v_threshold = Tensor::from_f64(shape.clone(), thresholds)?;
-    let resistances = model
-        .decay_rates()
+    let decay_rates = model.decay_rates();
+    for (index, &decay_rate) in decay_rates.iter().enumerate() {
+        check_q8_8(&format!("neuron {index} decay_rate"), decay_rate)?;
+    }
+    let resistances = decay_rates
         .into_iter()
         .map(resistance_from_decay)
         .collect::<Result<Vec<_>, _>>()?;
