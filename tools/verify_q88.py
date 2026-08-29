@@ -29,8 +29,10 @@ close #4: weight MSE / bit-identical export is not the close bar
 ``--self-test`` proves the checker can actually fail: clamp-to-zero output
 weights (issue #15), 1-LSB hidden-weight drift, truncated files, well-formed
 output-weight corruption against the pin, malformed model JSON (a list/null
-top level, a null neuron, or a non-numeric threshold/decay/weight must surface
-as ``ParseError``, not a traceback), an empty or short result set (which must
+top level, a null neuron, a non-numeric threshold/decay/weight, or a
+huge-but-finite ``1e308`` must surface as ``ParseError``, not a
+traceback / ``OverflowError``), an invalid-UTF-8 ``.mem`` (``ParseError``,
+not ``UnicodeDecodeError``), an empty or short result set (which must
 FAIL while ``worst_residual_lsb`` stays crash-safe), and a CRLF checkout of the
 output-weight image (which must still verify). A checker that cannot fail is
 worthless, and so is one that passes without reading anything.
@@ -135,6 +137,12 @@ def encode_q88(value: float) -> int:
     the verifier reports the worst residual so that stays visible.)
     """
     scaled = value * Q88_SCALE
+    # A huge-but-finite float (1e308) scales to inf; math.floor(inf) raises
+    # OverflowError. Check the scaled magnitude before any rounding or int().
+    if not math.isfinite(scaled):
+        raise Q88RangeError(
+            f"{value!r} overflows Q8.8 scale [{Q88_MIN}, {Q88_MAX}]"
+        )
     # floor/ceil already return int; away-from-zero on both sides of zero.
     raw = math.floor(scaled + 0.5) if scaled >= 0 else math.ceil(scaled - 0.5)
     if raw < Q88_MIN_INT or raw > Q88_MAX_INT:
@@ -193,10 +201,11 @@ class MemEntry:
 class ParseError(Exception):
     """A shipped artifact could not be read as the format this tool expects.
 
-    Raised for a missing file, a malformed .mem line, or model JSON whose
-    shape does not match. ``main()`` maps it to exit code 2 -- "could not
-    check", which is deliberately distinct from exit code 1, "checked and
-    the values disagree".
+    Raised for a missing file, a malformed .mem line, invalid UTF-8 in an
+    artifact, a numeric field that overflows Q8.8 scale, or model JSON
+    whose shape does not match. ``main()`` maps it to exit code 2 --
+    "could not check", which is deliberately distinct from exit code 1,
+    "checked and the values disagree".
     """
 
 
@@ -233,8 +242,15 @@ def as_finite_float(value: object, where: str) -> float:
     subclasses ``int`` in Python, so ``isinstance(True, int)`` is True and an
     unguarded check would silently encode ``True`` as the weight 1.0.
 
+    Also rejects a huge-but-finite number (``1e308``) whose Q8.8 scaling
+    overflows: ``isfinite`` is true, but ``value * Q88_SCALE`` is inf and
+    ``math.floor`` then raises an uncaught ``OverflowError``. The scaled
+    magnitude is checked here, before any rounding or int conversion, so
+    the failure is a field-specific ``ParseError`` (exit 2).
+
     Raises:
-        ParseError: ``value`` is not a finite real number.
+        ParseError: ``value`` is not a finite real number, or overflows
+            the Q8.8 scale.
 
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -250,7 +266,28 @@ def as_finite_float(value: object, where: str) -> float:
         ) from exc
     if not math.isfinite(number):
         raise ParseError(f"{where}: expected a finite number, got {value!r}")
+    # Check scaled range before encode_q88 rounds: 1e308 is finite, 1e308*256
+    # is not, and math.floor(inf) is OverflowError.
+    scaled = number * Q88_SCALE
+    if not math.isfinite(scaled):
+        raise ParseError(
+            f"{where}: {number!r} overflows Q8.8 scale [{Q88_MIN}, {Q88_MAX}]"
+        )
     return number
+
+
+def read_utf8_text(path: Path) -> str:
+    """Read an artifact as UTF-8 text, or raise ``ParseError``.
+
+    A corrupted ``.mem`` or JSON file with invalid UTF-8 raises
+    ``UnicodeDecodeError`` from the file-read loop, which ``main()`` does
+    not catch. That is a parse failure (exit 2), same contract as a
+    missing or malformed artifact -- not a traceback.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ParseError(f"{path.name}: not valid UTF-8 ({exc})") from exc
 
 
 def parse_mem(path: Path) -> list[MemEntry]:
@@ -258,23 +295,23 @@ def parse_mem(path: Path) -> list[MemEntry]:
     if not path.is_file():
         raise ParseError(f"missing file: {path}")
     entries: list[MemEntry] = []
-    with path.open("r", encoding="utf-8") as handle:
-        for lineno, raw_line in enumerate(handle, start=1):
-            token = raw_line.strip()
-            if not token:
-                continue
-            if not HEX_LINE_RE.match(token):
-                raise ParseError(
-                    f"{path.name}:{lineno}: expected a 4-digit hex word, got {token!r}"
-                )
-            entries.append(
-                MemEntry(
-                    index=len(entries),
-                    lineno=lineno,
-                    text=token,
-                    word=int(token, 16),
-                )
+    text = read_utf8_text(path)
+    for lineno, raw_line in enumerate(text.splitlines(), start=1):
+        token = raw_line.strip()
+        if not token:
+            continue
+        if not HEX_LINE_RE.match(token):
+            raise ParseError(
+                f"{path.name}:{lineno}: expected a 4-digit hex word, got {token!r}"
             )
+        entries.append(
+            MemEntry(
+                index=len(entries),
+                lineno=lineno,
+                text=token,
+                word=int(token, 16),
+            )
+        )
     return entries
 
 
@@ -304,8 +341,7 @@ def load_model(path: Path) -> dict:
     """
     if not path.is_file():
         raise ParseError(f"missing file: {path}")
-    with path.open("r", encoding="utf-8") as handle:
-        model = json.load(handle)
+    model = json.loads(read_utf8_text(path))
     if not isinstance(model, dict):
         raise ParseError(
             f"{path.name}: expected a top-level JSON object, got "
@@ -866,7 +902,7 @@ def _write_mem(path: Path, words: list[int]) -> None:
 # Numbered scenarios self_test() must run. Counted and asserted at the end so
 # a section deleted or accidentally skipped fails loudly instead of silently
 # shrinking the suite.
-SELF_TEST_SECTIONS = 10
+SELF_TEST_SECTIONS = 11
 
 
 def self_test(stream=sys.stdout) -> bool:
@@ -1328,7 +1364,28 @@ def self_test(stream=sys.stdout) -> bool:
             as_finite_float(-0.02734375, "float") == -0.02734375,
             "as_finite_float rejected a valid JSON float",
         )
-        checks += 2
+        try:
+            as_finite_float(1e308, "neurons[0].threshold")
+        except ParseError as exc:
+            _require(
+                "neurons[0].threshold" in str(exc) and "Q8.8" in str(exc),
+                f"huge-finite ParseError must name the field and Q8.8; got {exc}",
+            )
+        except OverflowError as exc:
+            raise SelfTestFailure(
+                "as_finite_float leaked OverflowError on 1e308"
+            ) from exc
+        else:
+            raise SelfTestFailure("as_finite_float ACCEPTED 1e308")
+        try:
+            encode_q88(1e308)
+        except Q88RangeError:
+            pass
+        except OverflowError as exc:
+            raise SelfTestFailure("encode_q88 leaked OverflowError on 1e308") from exc
+        else:
+            raise SelfTestFailure("encode_q88 ACCEPTED 1e308")
+        checks += 4
 
         bad_scalars = [
             ("null threshold", "threshold", None),
@@ -1341,6 +1398,7 @@ def self_test(stream=sys.stdout) -> bool:
             ("list decay", "decay_rate", [0.9]),
             ("bool decay", "decay_rate", False),
             ("neginf decay", "decay_rate", float("-inf")),
+            ("huge finite threshold", "threshold", 1e308),
         ]
         bad_weights = [
             ("null weight", None),
@@ -1380,7 +1438,7 @@ def self_test(stream=sys.stdout) -> bool:
         print(
             f"   ok: {len(bad_scalars)} bad thresholds/decays and "
             f"{len(bad_weights)} bad weights all raise ParseError\n"
-            f"       (null, string, object/list, bool, NaN, +-inf); "
+            f"       (null, string, object/list, bool, NaN, +-inf, 1e308); "
             f"valid ints and floats still accepted",
             file=stream,
         )
@@ -1457,6 +1515,48 @@ def self_test(stream=sys.stdout) -> bool:
         print("", file=stream)
         sections_run += 1
 
+        # -- 11. invalid UTF-8 .mem exits through ParseError -----------------
+        #
+        # Codex: parse_mem() opened the file as UTF-8 and iterated lines;
+        # a corrupted image with invalid UTF-8 raised UnicodeDecodeError,
+        # which main() does not catch. Wrap the decode as ParseError
+        # (same pattern as the JSON read path). Temp file only -- never
+        # mutate dataset/merged_v2.
+        print(
+            "11. a .mem with invalid UTF-8 is REJECTED as ParseError",
+            file=stream,
+        )
+        bad_utf8_path = tmp / "parameters_output_weights_bad_utf8.mem"
+        bad_utf8_path.write_bytes(b"FFF9\n\xff\xfe\n001E\n")
+        try:
+            parse_mem(bad_utf8_path)
+        except ParseError:
+            pass
+        except UnicodeDecodeError as exc:
+            raise SelfTestFailure(
+                "parse_mem leaked UnicodeDecodeError on invalid UTF-8"
+            ) from exc
+        except Exception as exc:
+            raise SelfTestFailure(
+                f"parse_mem raised {type(exc).__name__}({exc}), expected ParseError"
+            ) from exc
+        else:
+            raise SelfTestFailure("parse_mem ACCEPTED a .mem with invalid UTF-8")
+        try:
+            read_utf8_text(bad_utf8_path)
+        except ParseError:
+            pass
+        except UnicodeDecodeError as exc:
+            raise SelfTestFailure(
+                "read_utf8_text leaked UnicodeDecodeError"
+            ) from exc
+        else:
+            raise SelfTestFailure("read_utf8_text ACCEPTED invalid UTF-8")
+        checks += 2
+        print("   ok: invalid UTF-8 .mem raises ParseError, not UnicodeDecodeError", file=stream)
+        print("", file=stream)
+        sections_run += 1
+
     _require(
         sections_run == SELF_TEST_SECTIONS,
         f"self-test ran {sections_run} numbered sections, expected "
@@ -1470,13 +1570,15 @@ def self_test(stream=sys.stdout) -> bool:
         f"drift, truncated\n"
         f"memory images, and well-formed output-weight corruption against the "
         f"shipped-file\n"
-        f"pin; malformed model JSON and nonnumeric threshold/decay/weight "
-        f"fields exit through\n"
-        f"ParseError rather than a traceback; an empty or short result set "
-        f"FAILS while\n"
-        f"worst_residual_lsb() stays crash-safe; a CRLF checkout of the "
-        f"output-weight image\n"
-        f"still verifies; and the shipped artifacts are accepted.",
+        f"pin; malformed model JSON, nonnumeric fields, Q8.8-scale overflow "
+        f"(1e308), and\n"
+        f"invalid-UTF-8 .mem files exit through ParseError rather than a "
+        f"traceback; an empty\n"
+        f"or short result set FAILS while worst_residual_lsb() stays "
+        f"crash-safe; a CRLF\n"
+        f"checkout of the output-weight image still verifies; and the "
+        f"shipped artifacts are\n"
+        f"accepted.",
         file=stream,
     )
     return True
@@ -1506,8 +1608,8 @@ def main(argv: list[str] | None = None) -> int:
             "prove the checker can fail: assert it rejects clamp-to-zero signed "
             "encoding, 1-LSB weight drift, truncated files, well-formed "
             "output-weight corruption, malformed model JSON and nonnumeric "
-            "fields, and an empty or short result set; and that a CRLF checkout "
-            "still verifies"
+            "fields, Q8.8-scale overflow, invalid-UTF-8 .mem files, and an "
+            "empty or short result set; and that a CRLF checkout still verifies"
         ),
     )
     args = parser.parse_args(argv)
