@@ -283,11 +283,21 @@ def read_utf8_text(path: Path) -> str:
     ``UnicodeDecodeError`` from the file-read loop, which ``main()`` does
     not catch. That is a parse failure (exit 2), same contract as a
     missing or malformed artifact -- not a traceback.
+
+    ``OSError`` is caught for the same reason. Callers check ``is_file()``
+    first, but that only says the path resolves to a file *now* and says
+    nothing about whether it can be opened: a read-protected artifact, a
+    directory reached directly, a vanished file, or an I/O error all raise
+    here after the guard passed. ``OSError`` is the base class for exactly
+    that set, and this function does nothing but open one file, so catching
+    it is narrow rather than a blanket handler.
     """
     try:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise ParseError(f"{path.name}: not valid UTF-8 ({exc})") from exc
+    except OSError as exc:
+        raise ParseError(f"{path}: cannot be read ({exc})") from exc
 
 
 def parse_mem(path: Path) -> list[MemEntry]:
@@ -1553,7 +1563,29 @@ def self_test(stream=sys.stdout) -> bool:
         else:
             raise SelfTestFailure("read_utf8_text ACCEPTED invalid UTF-8")
         checks += 2
+
+        # An unreadable-but-present artifact takes the same exit-2 path.
+        # A read-protected file is the realistic case, but it cannot be
+        # exercised as root, so a directory and a vanished path stand in --
+        # both raise OSError from read_text after is_file() has passed or
+        # been bypassed, which is the failure being guarded.
+        for label, target in (
+            ("a directory", tmp),
+            ("a vanished file", tmp / "does_not_exist.mem"),
+        ):
+            try:
+                read_utf8_text(target)
+            except ParseError:
+                pass
+            except OSError as exc:
+                raise SelfTestFailure(
+                    f"read_utf8_text leaked {type(exc).__name__} on {label}"
+                ) from exc
+            else:
+                raise SelfTestFailure(f"read_utf8_text ACCEPTED {label}")
+            checks += 1
         print("   ok: invalid UTF-8 .mem raises ParseError, not UnicodeDecodeError", file=stream)
+        print("   ok: an unreadable artifact raises ParseError, not OSError", file=stream)
         print("", file=stream)
         sections_run += 1
 
