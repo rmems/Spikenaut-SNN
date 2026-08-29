@@ -229,10 +229,13 @@ impl SnnModel {
     ///   square weight matrix, or if a numeric field breaks its documented
     ///   invariant: every number must be finite and inside the Q8.8 range, and
     ///   `decay_rate` must lie in `(0, 1)`
+    /// - [`ModelError::Schema`] if the document or any neuron carries a member
+    ///   this decoder does not read; see [`reject_unknown_members`]
     ///
     /// Numbers are snapped onto the Q8.8 grid; see [`quantize_q8_8`].
     pub fn from_json_str(text: &str) -> Result<Self, ModelError> {
         let document = json::parse(text)?;
+        reject_unknown_members("the document", &document, &["neurons"])?;
         let entries = document
             .get("neurons")
             .ok_or_else(|| ModelError::Schema("missing top-level `neurons` key".into()))?
@@ -335,6 +338,17 @@ fn require_merged_v2_width(model: &SnnModel) -> Result<(), ModelError> {
 }
 
 fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<Neuron, ModelError> {
+    reject_unknown_members(
+        &format!("neuron {index}"),
+        entry,
+        &[
+            "decay_rate",
+            "last_spike",
+            "membrane_potential",
+            "threshold",
+            "weights",
+        ],
+    )?;
     let field = |name: &str| -> Result<&Json, ModelError> {
         entry
             .get(name)
@@ -401,6 +415,40 @@ fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<N
         last_spike,
         weights,
     })
+}
+
+/// Reject an object that carries members this decoder does not read.
+///
+/// The graph builder stamps `Provenance::MERGED_V2` on whatever this decoder
+/// produces. Ignoring an unrecognised member would let a later revision of the
+/// artifact — a retrain that adds per-neuron output weights, say — decode
+/// partially and still ship under that stamp, describing a model the graph does
+/// not contain. Failing here makes the schema change visible at load time
+/// instead of silent in the graph.
+///
+/// `context` names the object for the error message. A non-object is an error
+/// too: every caller has already committed to reading members off it.
+fn reject_unknown_members(context: &str, value: &Json, known: &[&str]) -> Result<(), ModelError> {
+    let members = value.as_object().ok_or_else(|| {
+        ModelError::Schema(format!(
+            "{context} is not an object (found {})",
+            value.type_name()
+        ))
+    })?;
+    // `BTreeMap` iterates in key order, so the message is stable across runs.
+    let unknown: Vec<&str> = members
+        .keys()
+        .map(String::as_str)
+        .filter(|name| !known.contains(name))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(ModelError::Schema(format!(
+            "{context} carries unknown member(s) `{}`; this decoder reads only `{}`",
+            unknown.join("`, `"),
+            known.join("`, `"),
+        )));
+    }
+    Ok(())
 }
 
 /// Accept one stored number: it must be finite and Q8.8-representable, and it
@@ -768,6 +816,19 @@ mod tests {
                 r#"{"neurons": [{"decay_rate": 0.5, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0], "last_spike": 0}]}"#,
                 "expected a boolean",
             ),
+            (r#"[]"#, "the document is not an object (found array)"),
+            (
+                r#"{"neurons": [3]}"#,
+                "neuron 0 is not an object (found number)",
+            ),
+            (
+                r#"{"neurons": [{"decay_rate": 0.5, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0], "last_spike": false}], "output_weights": [[0.1]]}"#,
+                "the document carries unknown member(s) `output_weights`",
+            ),
+            (
+                r#"{"neurons": [{"decay_rate": 0.5, "inhibitory": true, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0], "last_spike": false}]}"#,
+                "neuron 0 carries unknown member(s) `inhibitory`",
+            ),
         ];
         for (text, expected) in cases {
             let err = SnnModel::from_json_str(text).unwrap_err();
@@ -777,6 +838,35 @@ mod tests {
                 "expected {message:?} to contain {expected:?}"
             );
         }
+    }
+
+    /// A member this decoder does not read must not pass silently, because the
+    /// builder stamps `Provenance::MERGED_V2` on what comes out.
+    ///
+    /// The retrain tracked by issues #2 and #3 is expected to add per-neuron
+    /// parameters — signed output weights, an excitatory/inhibitory flag. If a
+    /// revised artifact decoded by dropping them, the graph would keep claiming
+    /// to be the shipped model while describing strictly less of it. Loudly
+    /// refusing an unknown member is what makes that revision a visible schema
+    /// change rather than a silent truncation.
+    #[test]
+    fn an_unknown_member_is_never_dropped_silently() {
+        let shipped = std::fs::read_to_string(default_model_path()).unwrap();
+        SnnModel::from_json_str(&shipped).expect("the shipped artifact decodes");
+
+        // The same artifact, with one member the decoder does not read.
+        let widened = shipped.replacen(
+            r#""decay_rate""#,
+            r#""output_weight": 0.5, "decay_rate""#,
+            1,
+        );
+        assert_ne!(widened, shipped, "the fixture must actually differ");
+        let err = SnnModel::from_json_str(&widened).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unknown member(s) `output_weight`"),
+            "a widened artifact must be refused, got: {err}"
+        );
     }
 
     /// The stored decimals are truncated Q8.8 codes; decoding must restore the

@@ -360,43 +360,129 @@ fn matches_a_hand_built_nir_graph() {
     assert_eq!(ours, reference);
 }
 
+/// Split a `Cargo.toml` into the two scopes the pin check needs: every line of
+/// every dependency table, and the names declared by the runtime
+/// `[dependencies]` table alone.
+///
+/// The two claims are different sizes, so one scope cannot serve both.
+///
+/// The wide scope is every dependency table there is: `[dependencies]`,
+/// `[dev-dependencies]`, `[build-dependencies]`, `[target.'cfg(..)'.dependencies]`
+/// and the `[dependencies.<name>]` table form. A `git =` or `path =` pin is
+/// forbidden in all of them, so that scan must not narrow.
+///
+/// The narrow scope is `[dependencies]` alone, in either spelling. Only that
+/// table has to read exactly `nir-rs`: issue #8 asks for registry resolution,
+/// not a ban on dev-dependencies, and a future test helper must not trip the
+/// check with a message about nir-rs.
+///
+/// Comments are stripped first, which also keeps `[lib] path` and the prose
+/// about this rule out of the scan; the manifest has no `#` inside a string, so
+/// cutting at the first one is exact.
+fn dependency_tables(manifest: &str) -> (Vec<&str>, Vec<String>) {
+    let mut section = String::new();
+    let mut pinned: Vec<&str> = Vec::new();
+    let mut runtime: Vec<String> = Vec::new();
+    for line in manifest.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if let Some(header) = line.strip_prefix('[') {
+            section = header.trim_end_matches(']').to_string();
+            // `[dependencies.nir-rs]` names its dependency in the header, so
+            // the body below carries no `name =` line to pick it up from.
+            if let Some(name) = section.strip_prefix("dependencies.") {
+                runtime.push(name.to_string());
+            }
+            continue;
+        }
+        if line.is_empty() || !section.contains("dependencies") {
+            continue;
+        }
+        pinned.push(line);
+        if section == "dependencies" {
+            runtime.push(line.split('=').next().unwrap_or("").trim().to_string());
+        }
+    }
+    (pinned, runtime)
+}
+
+/// The scope split above is only worth having if it actually holds on the
+/// manifests it was written for, and the shipped `Cargo.toml` exercises none of
+/// them: it has one table and one dependency.
+///
+/// Each case below is a manifest this repository does not have yet but could,
+/// and each one is a way the check could go wrong — silently missing a pin, or
+/// failing on something that is not a violation at all.
+#[test]
+fn the_dependency_scan_scopes_each_claim_correctly() {
+    // A git pin outside `[dependencies]` is still a git pin. Narrowing the
+    // scan to the runtime table would let all three of these through.
+    for table in [
+        "[dev-dependencies]",
+        "[build-dependencies]",
+        "[target.'cfg(unix)'.dependencies]",
+    ] {
+        let manifest = format!(
+            "[package]\nname = \"x\"\n\n{table}\nhelper = {{ git = \"https://example.invalid/h\" }}\n"
+        );
+        let (pinned, _) = dependency_tables(&manifest);
+        assert!(
+            pinned.join("\n").contains("git ="),
+            "a git pin in {table} must still be scanned, got: {pinned:?}"
+        );
+    }
+
+    // A registry dev-dependency is not a violation of issue #8. It must not
+    // reach the runtime-table assertion, which would report it as a stray
+    // dependency alongside nir-rs.
+    let manifest = "[dependencies]\nnir-rs = \"0.4.2\"\n\n[dev-dependencies]\nproptest = \"1\"\n";
+    let (pinned, runtime) = dependency_tables(manifest);
+    assert_eq!(runtime, ["nir-rs"], "dev-dependencies are not runtime ones");
+    assert!(
+        pinned.iter().any(|line| line.starts_with("proptest")),
+        "the wide scan still covers it: {pinned:?}"
+    );
+
+    // Rewriting the pin as a table is the same dependency spelled differently.
+    let manifest = "[dependencies.nir-rs]\nversion = \"0.4.2\"\n";
+    let (pinned, runtime) = dependency_tables(manifest);
+    assert_eq!(runtime, ["nir-rs"], "the table form declares nir-rs too");
+    assert!(
+        pinned.iter().any(|line| line.starts_with("version")),
+        "and its body is still scanned for pins: {pinned:?}"
+    );
+
+    // `[lib] path` is not a path pin. Only comment stripping and the section
+    // filter keep it out.
+    let manifest =
+        "[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\nnir-rs = \"0.4.2\" # not a path = pin\n";
+    let (pinned, runtime) = dependency_tables(manifest);
+    assert_eq!(runtime, ["nir-rs"]);
+    assert!(
+        !pinned.join("\n").contains("path ="),
+        "neither `[lib] path` nor a comment is a pin: {pinned:?}"
+    );
+}
+
 /// Acceptance criterion from issue #8: `nir-rs` resolves from crates.io, not
 /// from a git or sibling-path pin.
 #[test]
 fn nir_rs_resolves_from_crates_io() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
 
-    // Every dependency table, comments stripped. Scoping to `*dependencies*`
-    // sections keeps `[lib] path` and prose about the rule out of the check;
-    // the manifest has no `#` inside a string, so cutting at the first one is
-    // exact.
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("read Cargo.toml");
-    let mut in_dependencies = false;
-    let mut dependency_lines: Vec<&str> = Vec::new();
-    for line in manifest.lines() {
-        let line = line.split('#').next().unwrap_or("").trim();
-        if let Some(header) = line.strip_prefix('[') {
-            in_dependencies = header.trim_end_matches(']').contains("dependencies");
-        } else if in_dependencies && !line.is_empty() {
-            dependency_lines.push(line);
-        }
-    }
-    let dependencies = dependency_lines.join("\n");
+    let (pinned, runtime) = dependency_tables(&manifest);
+    let dependencies = pinned.join("\n");
 
     for forbidden in ["git =", "path =", "git=", "path="] {
         assert!(
             !dependencies.contains(forbidden),
-            "no dependency may be pinned with `{forbidden}`, found in:\n{dependencies}",
+            "no dependency in any table may be pinned with `{forbidden}`, found in:\n{dependencies}",
         );
     }
     assert_eq!(
-        dependency_lines.len(),
-        1,
-        "nir-rs must be the only dependency, found:\n{dependencies}",
-    );
-    assert!(
-        dependencies.starts_with("nir-rs ="),
-        "the sole dependency must be nir-rs, found:\n{dependencies}",
+        runtime,
+        ["nir-rs"],
+        "`[dependencies]` must declare nir-rs and nothing else, found: {runtime:?}",
     );
 
     let lock_path: PathBuf = root.join("Cargo.lock");
