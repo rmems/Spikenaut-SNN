@@ -7,7 +7,12 @@
 //! into the [Neuromorphic Intermediate Representation][nir], so the graph can
 //! leave the repository in the standard interchange form.
 //!
-//! It has exactly one dependency, [`nir_rs`] from crates.io.
+//! [`encode`] is the matching front end: the model's 16 telemetry channels are
+//! continuous signals, and the population eats spikes, so `axon-encoder` turns
+//! one into the other at the model's 1 kHz clock.
+//!
+//! It has exactly two dependencies, [`nir_rs`] and [`axon_encoder`], both from
+//! crates.io.
 //!
 //! The loaded graph is the shipped `merged_v2` artifact
 //! ([`model::MERGED_V2_PROVENANCE`]): 16-neuron LIF with known training-path
@@ -36,6 +41,9 @@
 //!
 //! # Scope
 //!
+//! [`encode`] converts a 16-wide telemetry frame into spikes and nothing else;
+//! feeding that spike train through the graph is its own ticket.
+//!
 //! [`graph`] builds the `Input → LIF → Output` population graph and nothing
 //! else. The recurrent 16×16 weight matrix is decoded and exposed through
 //! [`SnnModel::weight_tensor`], but placing it on a NIR `Affine` / `Linear`
@@ -46,9 +54,11 @@
 
 #![warn(missing_docs)]
 
+pub mod encode;
 pub mod graph;
 pub mod json;
 pub mod model;
 
+pub use encode::{CHANNEL_COUNT, CHANNEL_MAP, TelemetryEncoder, TelemetrySource};
 pub use graph::{build_lif_graph, load_default_lif_graph};
 pub use model::{MERGED_V2_PROVENANCE, ModelError, Neuron, SnnModel};

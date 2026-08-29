@@ -179,14 +179,17 @@ fn nir_rs_resolves_from_crates_io() {
             "no dependency may be pinned with `{forbidden}`, found in:\n{dependencies}",
         );
     }
+    // The allowed set is exact, so a third dependency (issue #9 added
+    // `axon-encoder`) or a rename still fails here.
+    let mut names: Vec<&str> = dependency_lines
+        .iter()
+        .map(|line| line.split('=').next().unwrap_or("").trim())
+        .collect();
+    names.sort_unstable();
     assert_eq!(
-        dependency_lines.len(),
-        1,
-        "nir-rs must be the only dependency, found:\n{dependencies}",
-    );
-    assert!(
-        dependencies.starts_with("nir-rs ="),
-        "the sole dependency must be nir-rs, found:\n{dependencies}",
+        names,
+        ["axon-encoder", "nir-rs"],
+        "unexpected dependency set:\n{dependencies}",
     );
 
     let lock_path: PathBuf = root.join("Cargo.lock");
