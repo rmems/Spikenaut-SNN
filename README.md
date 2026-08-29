@@ -130,13 +130,13 @@ Running that encoder end to end over the eight records — including `create_spi
 | **12** | `thermal_stress` | **all zero** | **dead** |
 | 13 | `power_efficiency` | 0, 0, 0.006, 0.015, 0, 0, 0, 0 | barely live |
 | 14 | `network_health` | 1.0 ×4, then 0.900, 0.950, 0.975, 1.000 | live |
-| 15 | `composite_reward` | 0.9991, then 1.0000 ×7 | near-constant |
+| 15 | `composite_reward` | 0.9991, 0.9998, 0.9999, 1.0, 0.9999, 0.99996, 0.999997, 1.0 | near-constant |
 
 Two things about this table are easy to get wrong, and I got both wrong before review caught them.
 
 **It is rates, not spikes.** `temporal_encoding` turns a normalized value into `spike_rate = normalized * 100` Hz, then `spike_prob = spike_rate / 1000` per 1 ms tick, then draws `1 if np.random.random() < spike_prob else 0`. So the emitted `spike_vector` is a Bernoulli sample, and even a channel pinned at normalized `1.0` fires with probability **0.1** per tick. Channel 3 sitting at 1.0 across its four kaspa records yields roughly **0.4 expected spikes**, not four. Nothing here licenses a claim about the realized spike train.
 
-Worse for reproducibility: there is **no `np.random.seed` anywhere in the encoder**. The exact stimuli that trained the shipped weights are therefore unrecoverable even now that the encoder is, which is a harder limit than the missing dataset — a rerun reproduces the rates but never the spikes.
+There is also **no `np.random.seed` anywhere in the encoder**, so rerunning it reproduces the rate table above exactly and its `spike_vector` never. Stated narrowly on purpose: that is a fact about this script, not about the shipped weights. Since nothing here links this encoder to `merged_v2`, it does not establish that these were the training stimuli, nor that the real ones are lost — they may have been generated or retained somewhere outside this repository. What it does mean is that re-deriving the stimuli *from this script* is not a route to reproducing them.
 
 **The zero-fill still holds, and holds for both representations.** A kaspa event never writes channels 4-11, a monero event never writes 0-3 or 8-11, so **every one of channels 0-7 is zero on half the records** — and a normalized 0 gives `spike_prob` 0, meaning those halves emit no spikes at all, deterministically. Channel 3 is the extreme case: `1,1,1,1,0,0,0,0` in rate terms, so it can only ever fire on a kaspa record, though on any given run it will mostly not fire at all. Asymmetric, not a clean flag. Channels 0-2 and 4-7 carry the same asymmetry folded into their magnitude.
 
