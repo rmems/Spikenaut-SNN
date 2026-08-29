@@ -249,11 +249,16 @@ fn graph_parameters_match_the_q8_8_mem_artifacts() {
     let TensorData::F64(rs) = lif.r.data() else {
         panic!("expected an f64 r");
     };
-    for ((tau, r), decay) in taus
-        .iter()
-        .zip(rs)
-        .zip(read_q8_8_mem("parameters_decay.mem"))
-    {
+    // zip() stops at the shortest iterator, so without this the loop would run
+    // fewer times and still pass if any of the three were short — a test that
+    // silently checks less than it claims.
+    let decays = read_q8_8_mem("parameters_decay.mem");
+    assert_eq!(taus.len(), NEURON_COUNT, "one tau per neuron");
+    assert_eq!(rs.len(), NEURON_COUNT, "one resistance per neuron");
+    assert_eq!(decays.len(), NEURON_COUNT, "one decay per neuron");
+
+    let mut checked = 0usize;
+    for ((tau, r), decay) in taus.iter().zip(rs).zip(decays) {
         // tau encodes the stored decay exactly...
         assert!(
             ((-TIMESTEP_SECONDS / tau).exp() - decay).abs() < 1e-12,
@@ -261,7 +266,12 @@ fn graph_parameters_match_the_q8_8_mem_artifacts() {
         );
         // ...and r is derived from that same exact value.
         assert!((r - 1.0 / (1.0 - decay)).abs() < 1e-12);
+        checked += 1;
     }
+    assert_eq!(
+        checked, NEURON_COUNT,
+        "every neuron's decay must be checked"
+    );
 }
 
 /// NIR integrates `tau * dv/dt = (v_leak - v) + R*I`, so one step is
