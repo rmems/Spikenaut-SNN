@@ -99,7 +99,7 @@ use nir_rs::types::{MetadataValue, Tensor};
 use nir_rs::{NirGraph, NirNode};
 
 use crate::model::{
-    MERGED_V2_PROVENANCE, MODEL_RELATIVE_PATH, ModelError, SnnModel, TIMESTEP_SECONDS,
+    MERGED_V2_PROVENANCE, MODEL_RELATIVE_PATH, ModelError, SnnModel, TIMESTEP_SECONDS, check_q8_8,
 };
 #[cfg(doc)]
 use crate::model::{Neuron, tau_from_decay};
@@ -267,7 +267,11 @@ pub fn build_lif_graph_with_provenance(
 
     let weight = model.weight_tensor()?;
     let tau = Tensor::from_f64(shape.clone(), model.taus_seconds(timestep_seconds)?)?;
-    let v_threshold = Tensor::from_f64(shape.clone(), model.thresholds())?;
+    let thresholds = model.thresholds();
+    for (index, &threshold) in thresholds.iter().enumerate() {
+        check_q8_8(&format!("neuron {index} threshold"), threshold)?;
+    }
+    let v_threshold = Tensor::from_f64(shape.clone(), thresholds)?;
     let resistances = model
         .decay_rates()
         .into_iter()

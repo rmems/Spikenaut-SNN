@@ -315,6 +315,9 @@ impl SnnModel {
                     neuron.weights.len()
                 )));
             }
+            for (column, &weight) in neuron.weights.iter().enumerate() {
+                check_q8_8(&format!("neuron {index} weight {column}"), weight)?;
+            }
             data.extend_from_slice(&neuron.weights);
         }
         Ok(Tensor::from_f64(vec![units, units], data)?)
@@ -405,6 +408,19 @@ fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<N
 ///
 /// `context` names the field for the error message.
 fn q8_8_field(context: &str, value: f64) -> Result<f64, ModelError> {
+    check_q8_8(context, value)?;
+    Ok(quantize_q8_8(value))
+}
+
+/// Check one number is finite and Q8.8-representable, **without** changing it.
+///
+/// [`q8_8_field`] is the decode path and snaps onto the grid; this is the
+/// re-check for values that arrive through the public [`SnnModel`] fields,
+/// where quantizing a caller's number silently would be its own surprise. The
+/// builder already re-validates decay rates and weight-row lengths for exactly
+/// that caller-built case; thresholds and weight values go through here so the
+/// same boundary covers every stored number.
+pub(crate) fn check_q8_8(context: &str, value: f64) -> Result<(), ModelError> {
     if !value.is_finite() {
         return Err(ModelError::Schema(format!(
             "{context} is {value}, expected a finite number"
@@ -415,7 +431,7 @@ fn q8_8_field(context: &str, value: f64) -> Result<f64, ModelError> {
             "{context} is {value}, outside the Q8.8 range [{Q8_8_MIN}, {Q8_8_MAX}]"
         )));
     }
-    Ok(quantize_q8_8(value))
+    Ok(())
 }
 
 /// Accept a stored decay multiplier, enforcing the `(0, 1)` invariant that

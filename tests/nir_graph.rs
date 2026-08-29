@@ -406,3 +406,42 @@ fn nir_rs_resolves_from_crates_io() {
         "nir-rs must resolve to 0.4.x, got:\n{entry}",
     );
 }
+
+/// A caller-built model with a non-finite threshold or weight must be rejected
+/// before it reaches the graph.
+///
+/// `SnnModel::neurons` and `Neuron::weights` are public, so a hand-built or
+/// post-load-mutated model never crosses the decode-time checks. The builder
+/// already re-validates decay rates and weight-row lengths for exactly this
+/// case; without the value checks a `NaN` threshold or weight would ride into
+/// the `Lif` / `Linear` tensors, and `validate_structure()` would not catch it
+/// because it only inspects graph structure.
+#[test]
+fn non_finite_public_parameters_are_rejected() {
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut model = spikenaut_snn::SnnModel::load_default().expect("load the shipped model");
+        model.neurons[2].threshold = bad;
+        let err = spikenaut_snn::build_lif_graph(&model)
+            .expect_err("a non-finite threshold must not reach the graph");
+        assert!(
+            format!("{err}").contains("neuron 2 threshold"),
+            "error should name the offending threshold, got: {err}"
+        );
+
+        let mut model = spikenaut_snn::SnnModel::load_default().expect("load the shipped model");
+        model.neurons[5].weights[7] = bad;
+        let err = spikenaut_snn::build_lif_graph(&model)
+            .expect_err("a non-finite weight must not reach the graph");
+        assert!(
+            format!("{err}").contains("neuron 5 weight 7"),
+            "error should name the offending weight, got: {err}"
+        );
+    }
+
+    // Out-of-range but finite is rejected too, and the shipped model still builds.
+    let mut model = spikenaut_snn::SnnModel::load_default().expect("load the shipped model");
+    model.neurons[0].weights[0] = 1e9;
+    assert!(spikenaut_snn::build_lif_graph(&model).is_err());
+    let model = spikenaut_snn::SnnModel::load_default().expect("load the shipped model");
+    assert!(spikenaut_snn::build_lif_graph(&model).is_ok());
+}
