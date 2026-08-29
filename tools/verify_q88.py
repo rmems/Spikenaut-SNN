@@ -27,8 +27,9 @@ close #4: weight MSE / bit-identical export is not the close bar
 weights (issue #15), 1-LSB hidden-weight drift, truncated files, well-formed
 output-weight corruption against the pin, malformed model JSON (a list/null
 top level or a null neuron must surface as ``ParseError``, not a traceback),
-and ``report()`` with no residual data (the empty-``max`` crash). A checker
-that cannot fail is worthless.
+``report()`` with no residual data (the empty-``max`` crash), and a
+vacuous ``report([])`` (must fail, not print OK). A checker that cannot
+fail is worthless.
 
 Standard library only. Run from anywhere::
 
@@ -68,7 +69,12 @@ N_OUTPUT_WEIGHTS = 48
 # not invented JSON floats. Update both pins together if the artifact is
 # intentionally replaced.
 #
-#   python3 -c "import hashlib; from pathlib import Path; p=Path('dataset/merged_v2/parameters_output_weights.mem'); print(hashlib.sha256(p.read_bytes()).hexdigest())"
+# OUTPUT_WEIGHTS_SHA256 is sha256 of the LF-normalized file bytes (CRLF/CR
+# folded to LF first). That is the same digest as the LF checkout of
+# parameters_output_weights.mem; a Windows autocrlf working copy of the
+# same 48 words still matches. The gold hex tuple is the per-word pin.
+#
+#   python3 -c "from pathlib import Path; b=Path('dataset/merged_v2/parameters_output_weights.mem').read_bytes().replace(b'\r\n', b'\n').replace(b'\r', b'\n'); import hashlib; print(hashlib.sha256(b).hexdigest())"
 OUTPUT_WEIGHTS_SHA256 = (
     "d6d3aff3c5eba76fd0206fbff377594d2c4a3c22f980e641257f4d2911405469"
 )
@@ -178,9 +184,20 @@ class ParseError(Exception):
     """
 
 
+def normalize_mem_bytes(data: bytes) -> bytes:
+    """Canonical LF-only .mem bytes. CRLF and lone CR become LF.
+
+    The shipped pin is over this logical image, not raw checkout bytes, so
+    a Windows ``core.autocrlf`` working copy of the same hex words still
+    matches. Extra/missing words, blank-line drift, and any non-newline
+    byte change still change the digest -- the pin is not weakened.
+    """
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 def file_sha256(path: Path) -> str:
-    """sha256 of a file's exact on-disk bytes. Read-only; never writes."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """sha256 of a .mem file's LF-normalized bytes. Read-only; never writes."""
+    return hashlib.sha256(normalize_mem_bytes(path.read_bytes())).hexdigest()
 
 
 def parse_mem(path: Path) -> list[MemEntry]:
@@ -208,19 +225,36 @@ def parse_mem(path: Path) -> list[MemEntry]:
     return entries
 
 
+def require_finite_number(value: object, where: str) -> float:
+    """Return ``value`` as a finite float, or raise ``ParseError``.
+
+    ``float(None)`` and ``float({})`` raise ``TypeError``, which would
+    bypass the documented exit-code-2 contract. Bool is rejected even
+    though it is an ``int`` subclass -- a JSON ``true`` is not a weight.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ParseError(f"{where}: expected a number, got {type(value).__name__}")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ParseError(f"{where}: expected a finite number, got {value!r}")
+    return number
+
+
 def load_model(path: Path) -> dict:
     """Load snn_model.json and assert it has the shape the checker assumes.
 
     Every rejection route -- missing file, malformed JSON container, wrong
-    neuron count, missing or wrongly-sized fields -- exits through
-    ``ParseError``, which ``main()`` maps to exit code 2. Shape is validated
-    before any field is read, so a top-level list/scalar or a ``null`` neuron
-    cannot leak an ``AttributeError``/``TypeError`` past that contract.
+    neuron count, missing or wrongly-sized fields, non-numeric
+    threshold/decay_rate/weight -- exits through ``ParseError``, which
+    ``main()`` maps to exit code 2. Shape and numeric types are validated
+    before any ``float()`` conversion, so a top-level list/scalar, a
+    ``null`` neuron, or a ``null``/object scalar cannot leak a
+    ``TypeError`` past that contract.
 
     Raises:
         ParseError: the file is missing, or its JSON does not match the
             expected ``{"neurons": [{threshold, decay_rate, weights[16]}, ...]}``
-            shape.
+            shape with finite numeric scalars.
         json.JSONDecodeError: the file is not valid JSON at all.
 
     """
@@ -258,6 +292,16 @@ def load_model(path: Path) -> dict:
             raise ParseError(
                 f"{path.name}: neuron {i} has {len(neuron['weights'])} weights, "
                 f"expected {N_INPUTS}"
+            )
+        require_finite_number(
+            neuron["threshold"], f"{path.name}: neuron {i} threshold"
+        )
+        require_finite_number(
+            neuron["decay_rate"], f"{path.name}: neuron {i} decay_rate"
+        )
+        for j, weight in enumerate(neuron["weights"]):
+            require_finite_number(
+                weight, f"{path.name}: neuron {i} weights[{j}]"
             )
     return model
 
@@ -615,8 +659,9 @@ def worst_residual_lsb(results: list[SectionResult]) -> float:
     """Max residual across sections that have one; 0.0 if none do.
 
     An empty residual list must not raise — ``report()`` is called with
-    signed-only results (``max_residual_lsb`` is None) and in tests with
-    no sections at all. ``max()`` on an empty generator is a ValueError.
+    signed-only results (``max_residual_lsb`` is None). ``report([])``
+    itself is a failure; this helper still returns 0.0 for that path.
+    ``max()`` on an empty generator is a ValueError.
     """
     residuals = [r.max_residual_lsb for r in results if r.max_residual_lsb is not None]
     return max(residuals) if residuals else 0.0
@@ -627,8 +672,10 @@ def report(results: list[SectionResult], stream=sys.stdout) -> bool:
 
     The OK line deliberately separates the values cross-validated against
     snn_model.json floats from the output weights held only by the pin, so
-    the report never overstates what was actually proven. Accepts an empty
-    ``results`` list without raising.
+    the report never overstates what was actually proven. An empty
+    ``results`` list is a failure -- ``all([])`` is vacuously True and
+    must not print OK or claim that 48 output weights were pinned. An
+    empty *residual* list still reports 0.0 without raising.
     """
     print("Q8.8 export verification", file=stream)
     print(f"repo root: {REPO_ROOT}", file=stream)
@@ -637,6 +684,13 @@ def report(results: list[SectionResult], stream=sys.stdout) -> bool:
     for result in results:
         print(result.render(), file=stream)
     print("", file=stream)
+
+    if not results:
+        print(
+            "FAILED: no sections to verify -- an empty result list is not a pass.",
+            file=stream,
+        )
+        return False
 
     total_values = sum(r.count for r in results)
     total_mismatches = sum(len(r.mismatches) for r in results)
@@ -891,15 +945,23 @@ def self_test(stream=sys.stdout) -> bool:
         #
         # Amazon Q: max() over an empty generator of max_residual_lsb raises
         # ValueError. The signed section has no residual; an empty results
-        # list has none either. Both must report 0.0, not crash.
-        print("6. report() survives an empty residual list", file=stream)
+        # list has none either. Residual max must report 0.0, not crash.
+        # Codex: report([]) must FAIL -- all([]) is vacuously True and the
+        # OK line would falsely claim 48 output weights were pinned.
+        print("6. report() survives empty residuals; report([]) is REJECTED", file=stream)
         _require(
             worst_residual_lsb([]) == 0.0,
             "empty results must report 0.0 residual, not raise",
         )
         silent = io.StringIO()
         empty_ok = report([], stream=silent)
-        _require(empty_ok, "empty report() should not fail or raise")
+        empty_text = silent.getvalue()
+        _require(not empty_ok, "empty report() must fail (vacuous all() is not a pass)")
+        _require(
+            "FAILED" in empty_text and "48" not in empty_text,
+            "empty report() must not print OK or claim 48 output weights were pinned; "
+            f"got {empty_text!r}",
+        )
         signed_only = [
             check_signed_section(
                 "output weights (no residual)",
@@ -922,8 +984,11 @@ def self_test(stream=sys.stdout) -> bool:
         silent = io.StringIO()
         signed_ok = report(signed_only, stream=silent)
         _require(signed_ok, "signed-only report() should pass and not raise")
-        checks += 5
-        print("   ok: empty and signed-only report() return 0.0 residual", file=stream)
+        checks += 6
+        print(
+            "   ok: empty report() fails; signed-only passes with 0.0 residual",
+            file=stream,
+        )
         print("", file=stream)
 
         # -- 7. well-formed output-weight corruption is REJECTED (the pin) -----
@@ -944,6 +1009,28 @@ def self_test(stream=sys.stdout) -> bool:
             file_sha256(MEM_OUTPUT) == OUTPUT_WEIGHTS_SHA256,
             "shipped output-weight sha256 does not match the pin",
         )
+        crlf_path = tmp / "parameters_output_weights_crlf.mem"
+        crlf_path.write_bytes(
+            normalize_mem_bytes(MEM_OUTPUT.read_bytes()).replace(b"\n", b"\r\n")
+        )
+        _require(
+            file_sha256(crlf_path) == OUTPUT_WEIGHTS_SHA256,
+            "CRLF checkout of the same 48 words must match the LF-normalized pin",
+        )
+        crlf_pinned = check_signed_section(
+            "output weights (CRLF checkout)",
+            "LF-normalized sha256 + gold hex pin",
+            parse_mem(crlf_path),
+            N_OUTPUT_WEIGHTS,
+            expected_hex=gold,
+            expected_sha256=OUTPUT_WEIGHTS_SHA256,
+            mem_path=crlf_path,
+        )
+        _require(
+            crlf_pinned.ok,
+            "CRLF-normalized pin must accept the same 48 hex words",
+        )
+        checks += 2
         _require(
             len(gold) == N_OUTPUT_WEIGHTS,
             f"shipped file has {len(gold)} words, expected {N_OUTPUT_WEIGHTS}",
@@ -1016,11 +1103,12 @@ def self_test(stream=sys.stdout) -> bool:
         #
         # CodeRabbit: a list/null top level made model.get("neurons") raise
         # AttributeError, and a null neuron made `key not in neuron` raise
+        # TypeError. Codex: a well-shaped model with threshold/decay_rate/
+        # weight equal to null or an object still blew up in float() as
         # TypeError. Both escaped the documented ParseError path, so main()
-        # would traceback instead of returning exit code 2. Shape must be
-        # validated before any field is read.
+        # would traceback instead of returning exit code 2.
         print(
-            "8. non-object model records are REJECTED as ParseError",
+            "8. malformed model records and non-numeric fields are REJECTED as ParseError",
             file=stream,
         )
         good_model = load_model(MODEL_JSON)
@@ -1031,11 +1119,35 @@ def self_test(stream=sys.stdout) -> bool:
         scalar_weights_model = json.loads(json.dumps(good_model))
         scalar_weights_model["neurons"][0]["weights"] = N_INPUTS
 
+        null_threshold_model = json.loads(json.dumps(good_model))
+        null_threshold_model["neurons"][0]["threshold"] = None
+
+        object_threshold_model = json.loads(json.dumps(good_model))
+        object_threshold_model["neurons"][0]["threshold"] = {"lsb": 1}
+
+        null_decay_model = json.loads(json.dumps(good_model))
+        null_decay_model["neurons"][1]["decay_rate"] = None
+
+        object_decay_model = json.loads(json.dumps(good_model))
+        object_decay_model["neurons"][1]["decay_rate"] = {"rate": 0.9}
+
+        null_weight_model = json.loads(json.dumps(good_model))
+        null_weight_model["neurons"][2]["weights"][3] = None
+
+        object_weight_model = json.loads(json.dumps(good_model))
+        object_weight_model["neurons"][2]["weights"][5] = {"w": 1.0}
+
         malformed_models = [
             ("list top level", []),
             ("null top level", None),
             ("null neuron entry", null_neuron_model),
             ("non-list neuron weights", scalar_weights_model),
+            ("null threshold", null_threshold_model),
+            ("object threshold", object_threshold_model),
+            ("null decay_rate", null_decay_model),
+            ("object decay_rate", object_decay_model),
+            ("null weight", null_weight_model),
+            ("object weight", object_weight_model),
         ]
         for label, payload in malformed_models:
             bad_path = tmp / f"model_{label.replace(' ', '_')}.json"
@@ -1071,7 +1183,9 @@ def self_test(stream=sys.stdout) -> bool:
         f"malformed model JSON\n"
         f"exits through ParseError rather than a traceback; "
         f"report() survives an empty\n"
-        f"residual list; and the shipped artifacts are accepted.",
+        f"residual list and rejects a vacuous empty result list; "
+        f"and the shipped artifacts\n"
+        f"are accepted.",
         file=stream,
     )
     return True
@@ -1100,8 +1214,8 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "prove the checker can fail: assert it rejects clamp-to-zero signed "
             "encoding, 1-LSB weight drift, truncated files, well-formed "
-            "output-weight corruption, and malformed model JSON; and that "
-            "report() survives no residuals"
+            "output-weight corruption, and malformed model JSON; that "
+            "report() survives no residuals; and that report([]) fails"
         ),
     )
     args = parser.parse_args(argv)
