@@ -25,8 +25,10 @@ close #4: weight MSE / bit-identical export is not the close bar
 
 ``--self-test`` proves the checker can actually fail: clamp-to-zero output
 weights (issue #15), 1-LSB hidden-weight drift, truncated files, well-formed
-output-weight corruption against the pin, and ``report()`` with no residual
-data (the empty-``max`` crash). A checker that cannot fail is worthless.
+output-weight corruption against the pin, malformed model JSON (a list/null
+top level or a null neuron must surface as ``ParseError``, not a traceback),
+and ``report()`` with no residual data (the empty-``max`` crash). A checker
+that cannot fail is worthless.
 
 Standard library only. Run from anywhere::
 
@@ -111,10 +113,8 @@ def encode_q88(value: float) -> int:
     the verifier reports the worst residual so that stays visible.)
     """
     scaled = value * Q88_SCALE
-    if scaled >= 0:
-        raw = int(math.floor(scaled + 0.5))
-    else:
-        raw = int(math.ceil(scaled - 0.5))
+    # floor/ceil already return int; away-from-zero on both sides of zero.
+    raw = math.floor(scaled + 0.5) if scaled >= 0 else math.ceil(scaled - 0.5)
     if raw < Q88_MIN_INT or raw > Q88_MAX_INT:
         raise Q88RangeError(
             f"{value!r} -> {raw} is outside Q8.8 range [{Q88_MIN}, {Q88_MAX}]"
@@ -164,11 +164,18 @@ class MemEntry:
 
     @property
     def value(self) -> float:
+        """The Q8.8 word decoded to the float it represents."""
         return decode_q88(self.word)
 
 
 class ParseError(Exception):
-    pass
+    """A shipped artifact could not be read as the format this tool expects.
+
+    Raised for a missing file, a malformed .mem line, or model JSON whose
+    shape does not match. ``main()`` maps it to exit code 2 -- "could not
+    check", which is deliberately distinct from exit code 1, "checked and
+    the values disagree".
+    """
 
 
 def file_sha256(path: Path) -> str:
@@ -202,10 +209,30 @@ def parse_mem(path: Path) -> list[MemEntry]:
 
 
 def load_model(path: Path) -> dict:
+    """Load snn_model.json and assert it has the shape the checker assumes.
+
+    Every rejection route -- missing file, malformed JSON container, wrong
+    neuron count, missing or wrongly-sized fields -- exits through
+    ``ParseError``, which ``main()`` maps to exit code 2. Shape is validated
+    before any field is read, so a top-level list/scalar or a ``null`` neuron
+    cannot leak an ``AttributeError``/``TypeError`` past that contract.
+
+    Raises:
+        ParseError: the file is missing, or its JSON does not match the
+            expected ``{"neurons": [{threshold, decay_rate, weights[16]}, ...]}``
+            shape.
+        json.JSONDecodeError: the file is not valid JSON at all.
+
+    """
     if not path.is_file():
         raise ParseError(f"missing file: {path}")
     with path.open("r", encoding="utf-8") as handle:
         model = json.load(handle)
+    if not isinstance(model, dict):
+        raise ParseError(
+            f"{path.name}: expected a top-level JSON object, got "
+            f"{type(model).__name__}"
+        )
     neurons = model.get("neurons")
     if not isinstance(neurons, list):
         raise ParseError(f"{path.name}: expected a top-level 'neurons' list")
@@ -214,9 +241,19 @@ def load_model(path: Path) -> dict:
             f"{path.name}: expected {N_NEURONS} neurons, found {len(neurons)}"
         )
     for i, neuron in enumerate(neurons):
+        if not isinstance(neuron, dict):
+            raise ParseError(
+                f"{path.name}: neuron {i} is not a JSON object, got "
+                f"{type(neuron).__name__}"
+            )
         for key in ("threshold", "decay_rate", "weights"):
             if key not in neuron:
                 raise ParseError(f"{path.name}: neuron {i} is missing {key!r}")
+        if not isinstance(neuron["weights"], list):
+            raise ParseError(
+                f"{path.name}: neuron {i} 'weights' is not a list, got "
+                f"{type(neuron['weights']).__name__}"
+            )
         if len(neuron["weights"]) != N_INPUTS:
             raise ParseError(
                 f"{path.name}: neuron {i} has {len(neuron['weights'])} weights, "
@@ -232,6 +269,12 @@ def load_model(path: Path) -> dict:
 
 @dataclass
 class Mismatch:
+    """One exported value that disagrees with its reference source.
+
+    Carries both sides plus enough coordinates (index, human label, line
+    number) to point at the offending line of the .mem file.
+    """
+
     index: int
     label: str  # human-readable coordinate, e.g. "neuron 3 <- input 7"
     lineno: int
@@ -241,13 +284,20 @@ class Mismatch:
 
     @property
     def expected_float(self) -> float:
+        """The float the reference source says this slot should hold."""
         return decode_q88(int(self.expected_hex, 16))
 
     @property
     def actual_float(self) -> float:
+        """The float the shipped .mem file actually holds in this slot."""
         return decode_q88(int(self.actual_hex, 16))
 
     def render(self) -> str:
+        """Format this mismatch as one aligned report line.
+
+        Names the coordinate, both hex words with their floats, and the
+        signed delta -- enough to find the bad value in the file by hand.
+        """
         return (
             f"  [{self.index:3d}] {self.label:<26} line {self.lineno:<4} "
             f"json={self.source_float:+.7f}  "
@@ -259,6 +309,13 @@ class Mismatch:
 
 @dataclass
 class SectionResult:
+    """The verdict for one memory section: what was checked and what broke.
+
+    ``failed`` records section-level invariant breaks (wrong length, pin
+    failure, lost sign) that are not tied to any single value, which is why
+    it is tracked separately from ``mismatches``.
+    """
+
     name: str
     source: str
     count: int
@@ -269,9 +326,20 @@ class SectionResult:
 
     @property
     def ok(self) -> bool:
+        """Whether this section verified cleanly.
+
+        True only if no value mismatched *and* no section-level invariant
+        broke. A section with zero mismatches can still fail (wrong length,
+        pin failure, lost sign), so both halves are load-bearing.
+        """
         return not self.failed and not self.mismatches
 
     def render(self) -> str:
+        """Format this section's PASS/FAIL block for the report.
+
+        Headline, worst residual, notes, and every mismatch in full -- it
+        never truncates, because a partial diff hides regressions.
+        """
         status = "PASS" if self.ok else "FAIL"
         head = f"[{status}] {self.name}: {self.count} values  ({self.source})"
         lines = [head]
@@ -485,6 +553,18 @@ def check_signed_section(
 
 
 def verify_shipped() -> list[SectionResult]:
+    """Run all four section checks against the artifacts shipped in the repo.
+
+    Thresholds, decay rates, and hidden weights are re-derived from
+    snn_model.json and compared value by value; the output weights have no
+    JSON source and are checked against the shipped-file pin plus the signed
+    invariants. Returns one SectionResult per section -- it does not print,
+    exit, or raise on a mismatch; that is ``report()``'s job.
+
+    Raises:
+        ParseError: an artifact is missing or malformed.
+
+    """
     model = load_model(MODEL_JSON)
     neurons = model["neurons"]
 
@@ -543,6 +623,13 @@ def worst_residual_lsb(results: list[SectionResult]) -> float:
 
 
 def report(results: list[SectionResult], stream=sys.stdout) -> bool:
+    """Print the full per-section report and the verdict; return True if clean.
+
+    The OK line deliberately separates the values cross-validated against
+    snn_model.json floats from the output weights held only by the pin, so
+    the report never overstates what was actually proven. Accepts an empty
+    ``results`` list without raising.
+    """
     print("Q8.8 export verification", file=stream)
     print(f"repo root: {REPO_ROOT}", file=stream)
     print(f"artifacts: {DATA_DIR.relative_to(REPO_ROOT)}/", file=stream)
@@ -601,11 +688,23 @@ class SelfTestFailure(AssertionError):
 
 
 def _require(condition: bool, message: str) -> None:
+    """Assert a self-test invariant.
+
+    Raises:
+        SelfTestFailure: ``condition`` is false. Used instead of bare
+            ``assert`` so the checks survive ``python -O``.
+
+    """
     if not condition:
         raise SelfTestFailure(message)
 
 
 def _write_mem(path: Path, words: list[int]) -> None:
+    """Write raw 16-bit words as a .mem image, one 4-digit hex line each.
+
+    Self-test scratch files only -- callers pass a temp path. Nothing here
+    ever writes into ``dataset/``.
+    """
     path.write_text("".join(f"{w:04X}\n" for w in words), encoding="utf-8")
 
 
@@ -913,14 +1012,66 @@ def self_test(stream=sys.stdout) -> bool:
         print("   ok: 47 zeros + FFFF rejected by gold pin, accepted without it", file=stream)
         print("", file=stream)
 
+        # -- 8. malformed model JSON exits through ParseError -----------------
+        #
+        # CodeRabbit: a list/null top level made model.get("neurons") raise
+        # AttributeError, and a null neuron made `key not in neuron` raise
+        # TypeError. Both escaped the documented ParseError path, so main()
+        # would traceback instead of returning exit code 2. Shape must be
+        # validated before any field is read.
+        print(
+            "8. non-object model records are REJECTED as ParseError",
+            file=stream,
+        )
+        good_model = load_model(MODEL_JSON)
+
+        null_neuron_model = json.loads(json.dumps(good_model))
+        null_neuron_model["neurons"][3] = None
+
+        scalar_weights_model = json.loads(json.dumps(good_model))
+        scalar_weights_model["neurons"][0]["weights"] = N_INPUTS
+
+        malformed_models = [
+            ("list top level", []),
+            ("null top level", None),
+            ("null neuron entry", null_neuron_model),
+            ("non-list neuron weights", scalar_weights_model),
+        ]
+        for label, payload in malformed_models:
+            bad_path = tmp / f"model_{label.replace(' ', '_')}.json"
+            bad_path.write_text(json.dumps(payload), encoding="utf-8")
+            try:
+                load_model(bad_path)
+            except ParseError:
+                pass
+            except Exception as exc:  # AttributeError / TypeError = the bug
+                raise SelfTestFailure(
+                    f"{label}: load_model raised "
+                    f"{type(exc).__name__}({exc}), expected ParseError"
+                ) from exc
+            else:
+                raise SelfTestFailure(
+                    f"{label}: load_model ACCEPTED a malformed model"
+                )
+            checks += 1
+        print(
+            f"   ok: {len(malformed_models)} malformed models "
+            f"({', '.join(label for label, _ in malformed_models)}) "
+            f"all raise ParseError",
+            file=stream,
+        )
+        print("", file=stream)
+
     print(
         f"SELF-TEST PASSED: {checks} assertions. The verifier rejects "
         f"clamp-to-zero\n"
         f"signed encoding, 1-LSB weight drift, truncated memory images, "
         f"and well-formed\n"
         f"output-weight corruption against the shipped-file pin; "
-        f"report() survives an\n"
-        f"empty residual list; and the shipped artifacts are accepted.",
+        f"malformed model JSON\n"
+        f"exits through ParseError rather than a traceback; "
+        f"report() survives an empty\n"
+        f"residual list; and the shipped artifacts are accepted.",
         file=stream,
     )
     return True
@@ -930,6 +1081,13 @@ def self_test(stream=sys.stdout) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point. Returns the process exit code, never raises.
+
+    Exit codes are the contract this tool is consumed by:
+    0 = everything verified, 1 = a value or invariant did not verify (or a
+    self-test assertion failed), 2 = an artifact could not be parsed at all,
+    so nothing was actually checked.
+    """
     parser = argparse.ArgumentParser(
         description=(
             "Verify the Q8.8 export pipeline: snn_model.json floats vs the "
@@ -941,8 +1099,9 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "prove the checker can fail: assert it rejects clamp-to-zero signed "
-            "encoding, 1-LSB weight drift, truncated files, and well-formed "
-            "output-weight corruption; and that report() survives no residuals"
+            "encoding, 1-LSB weight drift, truncated files, well-formed "
+            "output-weight corruption, and malformed model JSON; and that "
+            "report() survives no residuals"
         ),
     )
     args = parser.parse_args(argv)
