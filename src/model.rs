@@ -454,10 +454,43 @@ fn reject_unknown_members(context: &str, value: &Json, known: &[&str]) -> Result
 /// Accept one stored number: it must be finite and Q8.8-representable, and it
 /// is snapped onto the grid before the caller ever sees it.
 ///
-/// `context` names the field for the error message.
+/// The range check runs on the *snapped* value, not on the literal in the file.
+/// `snn_model.json` prints at seven significant digits, which is why
+/// [`check_finite_and_in_range`] tolerates off-grid input at all — but that
+/// same formatting writes the largest Q8.8 code, `0x7FFF` = 127.996_093_75, as
+/// `127.9961`, which overshoots [`Q8_8_MAX`] by 6.25e-6. Checking the literal
+/// would reject a boundary value the encoding can hold perfectly well, purely
+/// because of how it was printed. Checking what it encodes to does not: the
+/// question that matters is whether the number lands on a real Q8.8 code, and
+/// `127.9961` lands on the largest one exactly.
+///
+/// This does not widen the range. A value that snaps past the top still fails:
+/// 127.998_046_875 scales to 32767.5, rounds away from zero to code 32768, and
+/// 128.0 is not encodable. Half an LSB either side of the extreme codes is the
+/// whole of what this admits, and it is admitted at the negative end too for
+/// symmetry.
+///
+/// Only the decode path does this. [`check_q8_8`], the public-API boundary,
+/// demands an exactly-representable value, so there is no rounding interval to
+/// forgive there.
+///
+/// `context` names the field for the error message, which quotes the value as
+/// written rather than as snapped, so it points at the file.
 fn q8_8_field(context: &str, value: f64) -> Result<f64, ModelError> {
-    check_finite_and_in_range(context, value)?;
-    Ok(quantize_q8_8(value))
+    if !value.is_finite() {
+        return Err(ModelError::Schema(format!(
+            "{context} is {value}, expected a finite number"
+        )));
+    }
+    // `value * Q8_8_SCALE` overflows to infinity near `f64::MAX`, so the
+    // snapped value gets its own range check rather than being trusted.
+    let snapped = quantize_q8_8(value);
+    if !(Q8_8_MIN..=Q8_8_MAX).contains(&snapped) {
+        return Err(ModelError::Schema(format!(
+            "{context} is {value}, outside the Q8.8 range [{Q8_8_MIN}, {Q8_8_MAX}]"
+        )));
+    }
+    Ok(snapped)
 }
 
 /// Check one number is finite and inside the Q8.8 range, saying nothing about
@@ -838,6 +871,61 @@ mod tests {
                 "expected {message:?} to contain {expected:?}"
             );
         }
+    }
+
+    /// The extreme Q8.8 codes must survive being printed.
+    ///
+    /// `snn_model.json` is written at seven significant digits — that is why
+    /// `0.7539062` appears in it for code 193 — and at that precision the
+    /// largest code, 127.996_093_75, is written `127.9961`, which is 6.25e-6
+    /// *above* `Q8_8_MAX`. Checking the literal rejected it, so a model holding
+    /// a saturated weight or threshold could not be loaded at all. The shipped
+    /// artifact tops out at 1.59375 and never reached this, but the retrain in
+    /// #2/#3 regenerates these files with a wider weight range.
+    ///
+    /// The check is on what the number encodes to, which does not widen the
+    /// range: anything that snaps past the top code still fails.
+    #[test]
+    fn the_extreme_codes_survive_seven_digit_printing() {
+        // Both ends, as a producer would print them.
+        for (printed, expected) in [(127.9961_f64, Q8_8_MAX), (-128.0_f64, Q8_8_MIN)] {
+            let value = q8_8_field("threshold", printed)
+                .unwrap_or_else(|e| panic!("{printed} must load: {e}"));
+            assert_eq!(value, expected, "{printed} must snap to the extreme code");
+        }
+
+        // Half an LSB is the whole of the tolerance: these still round onto a
+        // real code. 127.998 scales to 32767.488, which is code 32767.
+        for inside in [127.998_f64, -128.001] {
+            q8_8_field("threshold", inside)
+                .unwrap_or_else(|e| panic!("{inside} rounds onto a code: {e}"));
+        }
+
+        // And the range is still a range. Each of these snaps past an end:
+        // 127.998_046_875 scales to exactly 32767.5 and rounds away from zero
+        // to code 32768, which 128.0 cannot hold.
+        for beyond in [
+            127.998_046_875_f64,
+            -128.001_953_125,
+            200.0,
+            -200.0,
+            f64::MAX,
+            f64::MIN,
+        ] {
+            let err = q8_8_field("threshold", beyond).unwrap_err();
+            assert!(
+                err.to_string().contains("outside the Q8.8 range"),
+                "unexpected error for {beyond}: {err}"
+            );
+        }
+
+        // The public-API boundary is stricter on purpose. It takes the exact
+        // code, and refuses the printed form: a caller setting a threshold in
+        // code is not working around a formatter, so there is no rounding to
+        // forgive. Which of the two true complaints it makes — off-grid, or
+        // above the top code, both of which `127.9961` is — is not pinned here.
+        check_q8_8("threshold", Q8_8_MAX).expect("the exact code is representable");
+        check_q8_8("threshold", 127.9961).expect_err("the printed form is not exact");
     }
 
     /// A member this decoder does not read must not pass silently, because the
