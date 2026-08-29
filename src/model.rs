@@ -230,7 +230,9 @@ impl SnnModel {
     ///   invariant: every number must be finite and inside the Q8.8 range, and
     ///   `decay_rate` must lie in `(0, 1)`
     /// - [`ModelError::Schema`] if the document or any neuron carries a member
-    ///   this decoder does not read; see [`reject_unknown_members`]
+    ///   this decoder does not read. An unrecognised member is a schema change,
+    ///   and refusing it here is what stops a later revision of the artifact
+    ///   from decoding partially and still being labelled `merged_v2`.
     ///
     /// Numbers are snapped onto the Q8.8 grid; see [`quantize_q8_8`].
     pub fn from_json_str(text: &str) -> Result<Self, ModelError> {
@@ -327,6 +329,14 @@ impl SnnModel {
     }
 }
 
+/// Refuse a model that is not the shipped 16-unit population.
+///
+/// Only the `load_default*` entry points call this, and only they stamp
+/// `Provenance::MERGED_V2`. The width is what the stamp asserts: the `.mem`
+/// artifacts, the FPGA bitstream and `config.json`'s `n_channels` all agree on
+/// 16, so a model of any other size is not the thing being claimed, whatever
+/// else is right about it. Generic callers go through the unstamped builders
+/// and are not held to this.
 fn require_merged_v2_width(model: &SnnModel) -> Result<(), ModelError> {
     if model.len() != NEURON_COUNT {
         return Err(ModelError::Schema(format!(
@@ -337,6 +347,29 @@ fn require_merged_v2_width(model: &SnnModel) -> Result<(), ModelError> {
     Ok(())
 }
 
+/// Decode one entry of the `neurons` array.
+///
+/// `index` names the unit in error messages; `expected_weights` is the length
+/// the row must have, which the caller sets to the number of units so the
+/// matrix comes out square.
+///
+/// The contract is stricter than it looks, and deliberately asymmetric:
+///
+/// - Unknown members are refused, not ignored — see [`reject_unknown_members`]
+///   for why the provenance stamp depends on that.
+/// - `weights`, `threshold` and `membrane_potential` go through
+///   [`q8_8_field`], which *snaps* them onto the Q8.8 grid rather than
+///   demanding they already sit on it. The artifact prints at seven
+///   significant digits, so off-grid input is expected here.
+/// - `decay_rate` is not a Q8.8 field. It is a per-step multiplier and must lie
+///   strictly inside `(0, 1)`, since [`tau_from_decay`] takes its logarithm.
+/// - `last_spike` is simulator state, carried but never placed on the graph.
+///
+/// # Errors
+///
+/// [`ModelError::Schema`], naming the unit and the field, if a member is
+/// missing, has the wrong JSON type, breaks one of the invariants above, or is
+/// not read by this decoder at all.
 fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<Neuron, ModelError> {
     reject_unknown_members(
         &format!("neuron {index}"),
