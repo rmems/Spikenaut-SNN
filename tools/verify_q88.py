@@ -15,14 +15,14 @@ What it does
 3. Checks the 48 signed output weights. ``snn_model.json`` carries no output
    layer and this tool does not invent one. The shipped file is pinned by the
    sha256 of its *canonical token sequence* and the exact 48 hex words
-   (computed from the file as shipped). Sign-integrity and decode→re-encode
+   (computed from the file as shipped). Sign-integrity and decode->re-encode
    stay as defense in depth; they are not enough on their own (a well-formed
-   FFF9→FFF8 swap still round-trips).
+   FFF9->FFF8 swap still round-trips).
 4. Exits non-zero with a per-value report on any mismatch. An empty or short
    result set is a hard failure, never a pass: reporting a clean verification
    having read nothing is worse than crashing, because it gets believed.
 
-This is the float→Q8.8 encoding half of issue #4. Passing here does not
+This is the float->Q8.8 encoding half of issue #4. Passing here does not
 close #4: weight MSE / bit-identical export is not the close bar
 (Hamming-on-holdout is).
 
@@ -75,15 +75,28 @@ N_OUTPUT_WEIGHTS = 48
 # of quietly shrinking the verdict's scope.
 EXPECTED_SECTIONS = 4
 
+# The artifacts a complete run must each cover exactly once. Counting sections
+# is not enough: four individually clean results can still be the wrong four.
+# Duplicating one verify_shipped() entry while dropping another keeps the count
+# at 4 and passes every per-section check, so the verdict would claim the full
+# artifact set while never having opened one of the files. Identity, not
+# arity, is what "complete" means here.
+EXPECTED_ARTIFACTS = (
+    "parameters.mem",
+    "parameters_decay.mem",
+    "parameters_weights.mem",
+    "parameters_output_weights.mem",
+)
+
 # Pin of the shipped output-weight image. snn_model.json has no output layer,
-# so this is the independent reference — computed from the file as shipped,
+# so this is the independent reference -- computed from the file as shipped,
 # not invented JSON floats. Update both pins together if the artifact is
 # intentionally replaced.
 #
 # What is hashed (NOT the raw file bytes): the canonical token sequence, i.e.
 # every parsed 4-digit hex word, whitespace-stripped and upper-cased, joined
 # by a single "\n", with no trailing newline, ASCII-encoded. See
-# canonical_mem_digest(). Hashing raw bytes made the pin checkout-dependent —
+# canonical_mem_digest(). Hashing raw bytes made the pin checkout-dependent --
 # a Windows checkout with core.autocrlf materializes the same 48 words with
 # CRLF endings, and a raw-byte hash then fails on a semantically identical
 # artifact. (.gitattributes also pins *.mem to LF as defense in depth.)
@@ -576,8 +589,8 @@ def check_signed_section(
     snn_model.json has no output layer, so there is no float column to
     cross-validate against. The shipped file is pinned by the sha256 of its
     canonical token sequence and by the exact 48 hex words. Sign-integrity
-    and decode→re-encode stay as defense in depth: they catch clamp-to-zero
-    and broken codecs, but a well-formed FFF9→FFF8 swap still round-trips.
+    and decode->re-encode stay as defense in depth: they catch clamp-to-zero
+    and broken codecs, but a well-formed FFF9->FFF8 swap still round-trips.
 
       * shipped-file pin (when ``expected_hex`` / ``expected_canon_sha256``
         is given); the sha covers the parsed tokens, not raw file bytes, so
@@ -783,7 +796,7 @@ def verify_shipped() -> list[SectionResult]:
 def worst_residual_lsb(results: list[SectionResult]) -> float:
     """Max residual across sections that have one; 0.0 if none do.
 
-    An empty residual list must not raise — ``report()`` is called with
+    An empty residual list must not raise -- ``report()`` is called with
     signed-only results (``max_residual_lsb`` is None) and in tests with
     no sections at all. ``max()`` on an empty generator is a ValueError.
     """
@@ -795,6 +808,7 @@ def report(
     results: list[SectionResult],
     stream=sys.stdout,
     expected_sections: int | None = None,
+    expected_artifacts: tuple[str, ...] | None = None,
 ) -> bool:
     """Print the full per-section report and the verdict; return True if clean.
 
@@ -841,6 +855,23 @@ def report(
                 f"{expected_sections}. A section was dropped, so this verdict "
                 f"would cover less than the artifact set it claims."
             )
+        if expected_artifacts is not None:
+            # Which artifact each section actually read, taken from its label.
+            seen = [
+                artifact
+                for artifact in expected_artifacts
+                for r in results
+                if artifact in r.name
+            ]
+            for artifact in expected_artifacts:
+                covered = seen.count(artifact)
+                if covered != 1:
+                    structural.append(
+                        f"INCOMPLETE RUN: {artifact} was checked {covered} "
+                        f"time(s), expected exactly 1. A duplicated or missing "
+                        f"section keeps the count right while leaving an "
+                        f"artifact unverified."
+                    )
         if total_values == 0:
             structural.append(
                 "NOTHING WAS CHECKED: sections were present but held 0 values."
@@ -868,7 +899,7 @@ def report(
                 "round-trip (defense in depth)."
             )
         lines.append(
-            "    This is the float→Q8.8 encoding half of issue #4; it is not "
+            "    This is the float->Q8.8 encoding half of issue #4; it is not "
             "a close of #4."
         )
         lines.append(
@@ -980,7 +1011,12 @@ def self_test(stream=sys.stdout) -> bool:
         "the shipped .mem files do not verify -- see the default (non-self-test) run",
     )
     _require(
-        report(shipped, stream=io.StringIO(), expected_sections=EXPECTED_SECTIONS),
+        report(
+            shipped,
+            stream=io.StringIO(),
+            expected_sections=EXPECTED_SECTIONS,
+            expected_artifacts=EXPECTED_ARTIFACTS,
+        ),
         "the shipped artifacts did not survive the full report() verdict",
     )
     print(
@@ -1177,7 +1213,10 @@ def self_test(stream=sys.stdout) -> bool:
         )
         silent = io.StringIO()
         short_run_ok = report(
-            shipped[:1], stream=silent, expected_sections=EXPECTED_SECTIONS
+            shipped[:1],
+            stream=silent,
+            expected_sections=EXPECTED_SECTIONS,
+            expected_artifacts=EXPECTED_ARTIFACTS,
         )
         _require(
             not short_run_ok,
@@ -1230,9 +1269,9 @@ def self_test(stream=sys.stdout) -> bool:
 
         # -- 7. well-formed output-weight corruption is REJECTED (the pin) -----
         #
-        # Sign-integrity + decode→re-encode accept any well-formed 48-word
+        # Sign-integrity + decode->re-encode accept any well-formed 48-word
         # file with at least one high-bit word. The gold pin is what makes
-        # FFF9→FFF8 and "47 zeros + FFFF" fail.
+        # FFF9->FFF8 and "47 zeros + FFFF" fail.
         print(
             "7. well-formed output-weight corruption is REJECTED (shipped-file pin)",
             file=stream,
@@ -1260,17 +1299,17 @@ def self_test(stream=sys.stdout) -> bool:
         mut_path = tmp / "parameters_output_weights_fff8.mem"
         _write_mem(mut_path, mutated_words)
         unpinned_fff8 = check_signed_section(
-            "output weights (FFF9→FFF8, no pin)",
+            "output weights (FFF9->FFF8, no pin)",
             "sign-integrity + round-trip only",
             parse_mem(mut_path),
             N_OUTPUT_WEIGHTS,
         )
         _require(
             unpinned_fff8.ok,
-            "sanity: FFF9→FFF8 still passes sign+round-trip; the pin is load-bearing",
+            "sanity: FFF9->FFF8 still passes sign+round-trip; the pin is load-bearing",
         )
         pinned_fff8 = check_signed_section(
-            "output weights (FFF9→FFF8)",
+            "output weights (FFF9->FFF8)",
             "gold hex pin",
             parse_mem(mut_path),
             N_OUTPUT_WEIGHTS,
@@ -1278,14 +1317,14 @@ def self_test(stream=sys.stdout) -> bool:
         )
         _require(
             not pinned_fff8.ok,
-            "verifier ACCEPTED FFF9→FFF8 corruption against the gold pin",
+            "verifier ACCEPTED FFF9->FFF8 corruption against the gold pin",
         )
         _require(
             len(pinned_fff8.mismatches) == 1 and pinned_fff8.mismatches[0].index == 0,
             f"expected 1 mismatch at index 0, got {pinned_fff8.mismatches}",
         )
         checks += 6
-        print("   ok: FFF9→FFF8 rejected by gold pin, accepted without it", file=stream)
+        print("   ok: FFF9->FFF8 rejected by gold pin, accepted without it", file=stream)
 
         junk_path = tmp / "parameters_output_weights_junk.mem"
         _write_mem(junk_path, [0] * 47 + [0xFFFF])
@@ -1592,6 +1631,88 @@ def self_test(stream=sys.stdout) -> bool:
             raise SelfTestFailure("read_utf8_text ACCEPTED invalid UTF-8")
         checks += 2
 
+        # A duplicated section must not pass as a complete run. Four
+        # individually clean results can be the wrong four.
+        hidden = next(r for r in shipped if "parameters_weights.mem" in r.name)
+        substituted = [hidden, hidden] + [
+            r
+            for r in shipped
+            if "parameters.mem" in r.name or "parameters_decay.mem" in r.name
+        ]
+        _require(
+            len(substituted) == EXPECTED_SECTIONS,
+            "the substitution fixture must keep the section count, or it would "
+            "be caught by the arity guard and prove nothing",
+        )
+        _require(
+            all(r.ok for r in substituted),
+            "every substituted section must be individually clean, or the "
+            "verdict would fail for the wrong reason",
+        )
+        subbed_out = io.StringIO()
+        _require(
+            not report(
+                substituted,
+                stream=subbed_out,
+                expected_sections=EXPECTED_SECTIONS,
+                expected_artifacts=EXPECTED_ARTIFACTS,
+            ),
+            "report() ACCEPTED a run that checked parameters_weights.mem twice "
+            "and parameters_output_weights.mem never",
+        )
+        _require(
+            "parameters_output_weights.mem was checked 0 time(s)"
+            in subbed_out.getvalue(),
+            "the failure must name the artifact that went unchecked",
+        )
+        # Negative control: without the identity guard the arity guard alone
+        # lets it through, so the new check is what is doing the work.
+        _require(
+            report(
+                substituted,
+                stream=io.StringIO(),
+                expected_sections=EXPECTED_SECTIONS,
+            ),
+            "the arity guard alone should still accept the substitution -- if "
+            "it does not, this section is not testing the identity guard",
+        )
+        checks += 5
+        print(
+            "   ok: a duplicated section FAILS on artifact identity "
+            "(arity alone accepts it)",
+            file=stream,
+        )
+
+        # Emitted text must survive a non-UTF-8 console. A Windows process
+        # under cp1252 raised UnicodeEncodeError on the arrows in the summary,
+        # so a *successful* verification exited 1 with a traceback.
+        source = Path(__file__).read_text(encoding="utf-8")
+        non_ascii = sorted({c for c in source if ord(c) > 127})
+        _require(
+            not non_ascii,
+            f"non-ASCII in this file may reach stdout: {non_ascii}",
+        )
+        cp1252_out = io.TextIOWrapper(
+            io.BytesIO(), encoding="cp1252", errors="strict", newline=""
+        )
+        try:
+            report(
+                shipped,
+                stream=cp1252_out,
+                expected_sections=EXPECTED_SECTIONS,
+                expected_artifacts=EXPECTED_ARTIFACTS,
+            )
+            cp1252_out.flush()
+        except UnicodeEncodeError as exc:
+            raise SelfTestFailure(
+                f"report() output is not encodable as cp1252: {exc}"
+            ) from exc
+        checks += 2
+        print(
+            "   ok: output is ASCII and encodes cleanly to a cp1252 console",
+            file=stream,
+        )
+
         # An unreadable-but-present artifact takes the same exit-2 path.
         # A read-protected file is the realistic case, but it cannot be
         # exercised as root, so a directory and a vanished path stand in --
@@ -1653,7 +1774,7 @@ def main(argv: list[str] | None = None) -> int:
     It handles ``SelfTestFailure``, ``ParseError``, ``Q88RangeError`` and
     ``json.JSONDecodeError``, and nothing else: there is no catch-all, so a
     bug in the verifier surfaces as a traceback rather than as a clean
-    verdict on the artifacts. That is deliberate — a checker that swallows
+    verdict on the artifacts. That is deliberate -- a checker that swallows
     its own defects and prints a verdict anyway is the failure this whole
     tool exists to prevent.
 
@@ -1687,7 +1808,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         return (
             0
-            if report(verify_shipped(), expected_sections=EXPECTED_SECTIONS)
+            if report(
+                verify_shipped(),
+                expected_sections=EXPECTED_SECTIONS,
+                expected_artifacts=EXPECTED_ARTIFACTS,
+            )
             else 1
         )
     except SelfTestFailure as exc:
