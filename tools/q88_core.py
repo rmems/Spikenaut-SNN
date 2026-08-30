@@ -107,6 +107,9 @@ Q88_MAX_INT = (1 << 15) - 1  # 32767 -> ~127.996
 Q88_MIN = Q88_MIN_INT / Q88_SCALE
 Q88_MAX = Q88_MAX_INT / Q88_SCALE
 
+# The only padding $readmemh treats as whitespace. Deliberately not
+# str.strip()'s default, which also removes NBSP and other Unicode blanks.
+ASCII_BLANK = " \t\x0b\x0c"
 HEX_LINE_RE = re.compile(r"^[0-9A-Fa-f]{4}$")
 
 
@@ -293,8 +296,17 @@ def parse_mem(path: Path) -> list[MemEntry]:
         raise ParseError(f"missing file: {path}")
     entries: list[MemEntry] = []
     text = read_utf8_text(path)
-    for lineno, raw_line in enumerate(text.splitlines(), start=1):
-        token = raw_line.strip()
+    # Split and pad on ASCII only. str.splitlines() also breaks on U+2028,
+    # U+2029, U+0085 and friends, and str.strip() removes non-ASCII whitespace
+    # such as NBSP -- so an image using those would parse into the right 48
+    # words and match the pin, while $readmemh does not treat those UTF-8 byte
+    # sequences as Verilog whitespace. That artifact is malformed; the verifier
+    # must not accept it. CRLF and bare CR are still normalised, because a
+    # Windows checkout is a legitimate encoding of the same image.
+    for lineno, raw_line in enumerate(
+        text.replace("\r\n", "\n").replace("\r", "\n").split("\n"), start=1
+    ):
+        token = raw_line.strip(ASCII_BLANK)
         if not token:
             continue
         if not HEX_LINE_RE.match(token):
@@ -355,7 +367,15 @@ def load_model(path: Path) -> dict:
     """
     if not path.is_file():
         raise ParseError(f"missing file: {path}")
-    model = json.loads(read_utf8_text(path))
+    try:
+        model = json.loads(read_utf8_text(path))
+    except json.JSONDecodeError:
+        raise
+    except ValueError as exc:
+        # CPython raises a bare ValueError for an integer literal longer than
+        # sys.get_int_max_str_digits() (4300 by default on 3.11+). It is not a
+        # JSONDecodeError, so it would escape main() as a traceback.
+        raise ParseError(f"{path.name}: unreadable JSON number: {exc}") from exc
     if not isinstance(model, dict):
         raise ParseError(
             f"{path.name}: expected a top-level JSON object, got "

@@ -29,35 +29,66 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
-from q88_core import (
-    EXPECTED_ARTIFACTS,
-    EXPECTED_SECTIONS,
-    MEM_HIDDEN,
-    MEM_OUTPUT,
-    MODEL_JSON,
-    N_INPUTS,
-    N_OUTPUT_WEIGHTS,
-    OUTPUT_WEIGHTS_CANON_SHA256,
-    OUTPUT_WEIGHTS_HEX,
-    ParseError,
-    Q88RangeError,
-    SectionResult,
-    SelfTestFailure,
-    ShippedPin,
-    as_finite_float,
-    canonical_mem_digest,
-    check_against_floats,
-    check_signed_section,
-    decode_q88,
-    encode_q88,
-    encode_q88_clamp_to_zero,
-    encode_q88_hex,
-    load_model,
-    parse_mem,
-    read_utf8_text,
-    verify_shipped,
-)
-from q88_report import report, worst_residual_lsb
+try:  # package import: `python3 -m tools.verify_q88`
+    from .q88_core import (
+        EXPECTED_ARTIFACTS,
+        EXPECTED_SECTIONS,
+        MEM_HIDDEN,
+        MEM_OUTPUT,
+        MODEL_JSON,
+        N_INPUTS,
+        N_OUTPUT_WEIGHTS,
+        OUTPUT_WEIGHTS_CANON_SHA256,
+        OUTPUT_WEIGHTS_HEX,
+        ParseError,
+        Q88RangeError,
+        SectionResult,
+        SelfTestFailure,
+        ShippedPin,
+        as_finite_float,
+        canonical_mem_digest,
+        check_against_floats,
+        check_signed_section,
+        decode_q88,
+        encode_q88,
+        encode_q88_clamp_to_zero,
+        encode_q88_hex,
+        load_model,
+        parse_mem,
+        read_utf8_text,
+        verify_shipped,
+    )
+    from .q88_report import report, worst_residual_lsb
+except ImportError:  # direct script: `python3 tools/verify_q88.py`
+    from q88_core import (
+        EXPECTED_ARTIFACTS,
+        EXPECTED_SECTIONS,
+        MEM_HIDDEN,
+        MEM_OUTPUT,
+        MODEL_JSON,
+        N_INPUTS,
+        N_OUTPUT_WEIGHTS,
+        OUTPUT_WEIGHTS_CANON_SHA256,
+        OUTPUT_WEIGHTS_HEX,
+        ParseError,
+        Q88RangeError,
+        SectionResult,
+        SelfTestFailure,
+        ShippedPin,
+        as_finite_float,
+        canonical_mem_digest,
+        check_against_floats,
+        check_signed_section,
+        decode_q88,
+        encode_q88,
+        encode_q88_clamp_to_zero,
+        encode_q88_hex,
+        load_model,
+        parse_mem,
+        read_utf8_text,
+        verify_shipped,
+    )
+    from q88_report import report, worst_residual_lsb
 
 def _require(condition: bool, message: str) -> None:
     """Assert a self-test invariant.
@@ -552,6 +583,71 @@ def _malformed_model_json_parse_error(tmp: Path, stream) -> int:
     return checks
 
 
+def _reject_non_ascii_mem_syntax(tmp: Path) -> int:
+    """A .mem using non-ASCII separators or padding must be REJECTED.
+
+    str.splitlines() breaks on U+2028/U+2029/U+0085 and str.strip() removes
+    NBSP, so an image built with those parses into the right words and matches
+    the pin -- while $readmemh does not read them as whitespace. Accepting one
+    would bless a malformed FPGA artifact.
+    """
+    checks = 0
+    words = [e.text for e in parse_mem(MEM_OUTPUT)]
+
+    for label, text in (
+        ("U+2028 line separator", "\u2028".join(words) + "\n"),
+        ("U+0085 next line", "\u0085".join(words) + "\n"),
+        ("NBSP padding", "\n".join("\u00a0" + w + "\u00a0" for w in words) + "\n"),
+    ):
+        path = tmp / f"mem_{label.split()[0].strip('+U')}.mem"
+        path.write_text(text, encoding="utf-8")
+        try:
+            parse_mem(path)
+        except ParseError:
+            checks += 1
+        else:
+            raise SelfTestFailure(
+                f"parse_mem ACCEPTED a .mem using {label}; $readmemh would not"
+            )
+
+    # Positive controls: the ASCII syntax the hardware reader does accept must
+    # still parse, or the guard is just breaking the tool.
+    for label, text in (
+        ("LF", "\n".join(words) + "\n"),
+        ("CRLF", "\r\n".join(words) + "\r\n"),
+        ("space and tab padding", "\n".join(" \t" + w + "\t " for w in words) + "\n"),
+    ):
+        path = tmp / f"mem_ok_{label.split()[0]}.mem"
+        path.write_text(text, encoding="utf-8")
+        _require(
+            len(parse_mem(path)) == N_OUTPUT_WEIGHTS,
+            f"parse_mem REJECTED a valid {label} image",
+        )
+        checks += 1
+    return checks
+
+
+def _reject_oversized_json_int(tmp: Path) -> int:
+    """An integer literal past CPython's digit limit must be a ParseError.
+
+    json.loads raises a bare ValueError -- not JSONDecodeError -- for a literal
+    longer than sys.get_int_max_str_digits() (4300 by default on 3.11+), so it
+    would escape main()'s handlers as a traceback and exit 1 instead of the
+    documented parse-error exit 2.
+    """
+    path = tmp / "model_huge_int.json"
+    path.write_text('{"neurons": [1' + "0" * 5000 + "]}", encoding="utf-8")
+    try:
+        load_model(path)
+    except ParseError:
+        return 1
+    except ValueError as exc:
+        raise SelfTestFailure(
+            f"load_model leaked {type(exc).__name__} on an oversized JSON integer"
+        ) from exc
+    raise SelfTestFailure("load_model ACCEPTED an oversized JSON integer")
+
+
 def _nonnumeric_fields_parse_error(tmp: Path, stream) -> int:
     """Nonnumeric and overflowing scalar fields exit through ParseError."""
     good_model = load_model(MODEL_JSON)
@@ -569,6 +665,7 @@ def _nonnumeric_fields_parse_error(tmp: Path, stream) -> int:
         "9. nonnumeric threshold/decay/weight values are REJECTED as ParseError",
         file=stream,
     )
+    checks += _reject_oversized_json_int(tmp)
 
     # Positive controls first: the guard must not reject valid numbers,
     # including a JSON integer, or it would just be breaking the tool.
@@ -886,11 +983,16 @@ def _invalid_utf8_parse_error(tmp: Path, stream) -> int:
     # Emitted text must survive a non-UTF-8 console. A Windows process
     # under cp1252 raised UnicodeEncodeError on the arrows in the summary,
     # so a *successful* verification exited 1 with a traceback.
-    source = Path(__file__).read_text(encoding="utf-8")
-    non_ascii = sorted({c for c in source if ord(c) > 127})
+    here = Path(__file__).parent
+    offenders = {}
+    for module in ("verify_q88.py", "q88_core.py", "q88_report.py", Path(__file__).name):
+        source = (here / module).read_text(encoding="utf-8")
+        found = sorted({c for c in source if ord(c) > 127})
+        if found:
+            offenders[module] = found
     _require(
-        not non_ascii,
-        f"non-ASCII in this file may reach stdout: {non_ascii}",
+        not offenders,
+        f"non-ASCII in {sorted(offenders)} may reach stdout: {offenders}",
     )
     cp1252_out = io.TextIOWrapper(
         io.BytesIO(), encoding="cp1252", errors="strict", newline=""
@@ -914,7 +1016,9 @@ def _invalid_utf8_parse_error(tmp: Path, stream) -> int:
     )
 
     checks += _reject_unreadable_artifacts(tmp)
+    checks += _reject_non_ascii_mem_syntax(tmp)
     print("   ok: invalid UTF-8 .mem raises ParseError, not UnicodeDecodeError", file=stream)
+    print("   ok: non-ASCII separators/padding rejected; LF, CRLF, space/tab accepted", file=stream)
     print("   ok: an unreadable artifact raises ParseError, not OSError", file=stream)
     print("", file=stream)
     return checks

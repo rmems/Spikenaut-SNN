@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import sys
 
-from q88_core import DATA_DIR, REPO_ROOT, SectionResult
+try:  # package import: `python3 -m tools.verify_q88`
+    from .q88_core import DATA_DIR, REPO_ROOT, SectionResult
+except ImportError:  # direct script: `python3 tools/verify_q88.py`
+    from q88_core import DATA_DIR, REPO_ROOT, SectionResult
 
 
 def worst_residual_lsb(results: list[SectionResult]) -> float:
@@ -26,6 +29,23 @@ def worst_residual_lsb(results: list[SectionResult]) -> float:
         if r.evidence.max_residual_lsb is not None
     ]
     return max(residuals) if residuals else 0.0
+
+
+def _stream_safe(text: str, stream) -> str:
+    """Render `text` so writing it to `stream` cannot raise.
+
+    Everything this tool emits is ASCII by construction except the checkout
+    path, which the user chooses. On a non-UTF-8 console (a Windows cp1252
+    process, say) a path holding an unencodable character made a *successful*
+    verification die with UnicodeEncodeError and exit 1. The path is
+    diagnostic, so escaping the offending characters beats crashing on them.
+    """
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        text.encode(encoding)
+    except (UnicodeEncodeError, LookupError):
+        return text.encode(encoding, "backslashreplace").decode(encoding)
+    return text
 
 
 def _structural_failures(
@@ -158,8 +178,11 @@ def report(
     no residual); the empty-set verdict is decided here, not there.
     """
     print("Q8.8 export verification", file=stream)
-    print(f"repo root: {REPO_ROOT}", file=stream)
-    print(f"artifacts: {DATA_DIR.relative_to(REPO_ROOT)}/", file=stream)
+    print(f"repo root: {_stream_safe(str(REPO_ROOT), stream)}", file=stream)
+    print(
+        f"artifacts: {_stream_safe(str(DATA_DIR.relative_to(REPO_ROOT)), stream)}/",
+        file=stream,
+    )
     print("", file=stream)
     for result in results:
         print(result.render(), file=stream)

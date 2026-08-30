@@ -45,15 +45,26 @@ import argparse
 import json
 import sys
 
-from q88_core import (
-    EXPECTED_ARTIFACTS,
-    EXPECTED_SECTIONS,
-    ParseError,
-    Q88RangeError,
-    SelfTestFailure,
-    verify_shipped,
-)
-from q88_report import report
+try:  # package import: `python3 -m tools.verify_q88`
+    from .q88_core import (
+        EXPECTED_ARTIFACTS,
+        EXPECTED_SECTIONS,
+        ParseError,
+        Q88RangeError,
+        SelfTestFailure,
+        verify_shipped,
+    )
+    from .q88_report import report
+except ImportError:  # direct script: `python3 tools/verify_q88.py`
+    from q88_core import (
+        EXPECTED_ARTIFACTS,
+        EXPECTED_SECTIONS,
+        ParseError,
+        Q88RangeError,
+        SelfTestFailure,
+        verify_shipped,
+    )
+    from q88_report import report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -95,7 +106,10 @@ def main(argv: list[str] | None = None) -> int:
             # Imported here, not at module scope: the self-test pulls in
             # tempfile and the whole scenario suite, which a plain
             # verification run has no use for.
-            from q88_selftest import self_test
+            try:
+                from .q88_selftest import self_test
+            except ImportError:
+                from q88_selftest import self_test
 
             self_test()
             return 0
