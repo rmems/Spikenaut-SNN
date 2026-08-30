@@ -190,8 +190,15 @@ impl TelemetrySource {
 
     /// Whether this source is one of the thermal pain receptors.
     ///
-    /// Channels 14–15 carry power and temperature; the network is trained to
-    /// treat them as a damage signal rather than as ordinary telemetry.
+    /// Channels 14-15 carry power and temperature. They are *intended* as the
+    /// network's pain receptors -- a damage signal rather than ordinary
+    /// telemetry -- but that is design intent, not shipped behaviour. No
+    /// reward signal or thermal penalty was wired into the training that
+    /// produced `merged_v2`, and the 85 C threshold belongs to the
+    /// `thalamic-relay` peer process, not to this network.
+    ///
+    /// Use this to decide how a *caller* escalates a reading. It is not
+    /// evidence that the model responds to one.
     #[must_use]
     pub const fn is_pain_receptor(self) -> bool {
         matches!(self, Self::Thermal)
