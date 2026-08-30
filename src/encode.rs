@@ -396,14 +396,21 @@ pub struct TelemetryEncoder {
 }
 
 impl TelemetryEncoder {
-    /// Build the encoder this model ships with.
+    /// Build this crate's default telemetry encoder.
     ///
     /// [`BASE_RATE_HZ`] to [`MAX_RATE_HZ`] over [`INPUT_RANGE`], stepped at
     /// [`DT_SECONDS`].
     ///
+    /// The step is derived from the model's clock, which `config.json`
+    /// records. Nothing else here is: the rates and range are this crate's
+    /// choices, and the layout is the [`CHANNEL_MAP`] proposal, which is not
+    /// established as `merged_v2`'s input contract -- see the
+    /// [module docs](self). A frame encoded here is not thereby compatible
+    /// with the shipped weights.
+    ///
     /// # Errors
     ///
-    /// Returns [`EncoderError`] if the shipped constants ever stop being a valid
+    /// Returns [`EncoderError`] if the default constants ever stop being a valid
     /// [`RateEncoder`] configuration. They are checked by the test suite, so in
     /// practice this is infallible.
     pub fn new() -> Result<Self, EncoderError> {
@@ -431,7 +438,7 @@ impl TelemetryEncoder {
     /// control into its own public contract. It is pinned by
     /// `the_streaming_drain_ceiling_is_1024_spikes_per_step` instead, so a
     /// change in that dependency surfaces as a failing test rather than as a
-    /// constructor that rejects the wrong configurations. The shipped
+    /// constructor that rejects the wrong configurations. The default
     /// constants are far below it: [`MAX_RATE_HZ`] * [`DT_SECONDS`] is 0.2.
     ///
     /// # Errors
@@ -584,8 +591,8 @@ mod tests {
     }
 
     #[test]
-    fn shipped_configuration_is_valid() {
-        let encoder = TelemetryEncoder::new().expect("shipped constants are a valid encoder");
+    fn default_configuration_is_valid() {
+        let encoder = TelemetryEncoder::new().expect("default constants are a valid encoder");
         assert_eq!(encoder.dt_seconds(), DT_SECONDS);
     }
 
