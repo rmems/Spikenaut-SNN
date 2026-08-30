@@ -473,3 +473,36 @@ fn axon_encoder_resolves_from_crates_io() {
         );
     }
 }
+
+/// A rate above one expected spike per step emits the whole count, not one.
+///
+/// Codex read `MAX_RATE_HZ`'s old doc comment as describing a
+/// one-spike-per-channel-per-step ceiling and concluded that a configuration
+/// with `max_rate_hz * dt_seconds > 1` would be silently capped, under-emitting
+/// and accumulating phase error. That ceiling belongs to `encode`, not
+/// `encode_step`: the streaming path queues whole spikes and drains up to 1024
+/// per channel per step. 200 Hz at a 10 ms step is 2.0 expected spikes per
+/// step, and that is what comes out.
+#[test]
+fn a_rate_above_one_spike_per_step_is_not_capped() {
+    let mut encoder = TelemetryEncoder::try_new(0.0, 200.0, INPUT_RANGE, 0.01)
+        .expect("200 Hz at a 10 ms step is a valid configuration");
+    let mut frame = [0.0f32; CHANNEL_COUNT];
+    frame[0] = INPUT_RANGE.1;
+
+    let steps = 100;
+    let mut spikes = 0usize;
+    for _ in 0..steps {
+        let output = encoder.encode_step(&frame).expect("a finite frame encodes");
+        spikes += output.spikes.iter().filter(|s| s.channel == 0).count();
+    }
+
+    // 200 Hz * 0.01 s * 100 steps = 200 expected. Allow the single trailing
+    // fractional phase that has not crossed 1.0 at the boundary.
+    let expected = 200;
+    assert!(
+        spikes >= expected - 1 && spikes <= expected,
+        "expected about {expected} spikes across {steps} steps, got {spikes}; \
+         a one-spike-per-step cap would have produced {steps}"
+    );
+}

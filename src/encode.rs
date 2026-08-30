@@ -6,13 +6,29 @@
 //! it *eats*. The shipped model takes 16 continuous telemetry channels
 //! (`n_channels` in `config.json`) and runs on a 1 kHz clock, so the input has
 //! to be a spike train, not a float vector. `axon-encoder`'s [`RateEncoder`]
-//! does that conversion, and [`TelemetryEncoder`] pins it to this model's
-//! channel map and time step.
+//! does that conversion, and [`TelemetryEncoder`] pins it to the layout below
+//! and to that clock.
+//!
+//! # This map is a proposal, not the shipped model's input contract
+//!
+//! [`CHANNEL_MAP`] is a *proposed* layout. Nothing in this repository
+//! establishes that the shipped `merged_v2` weights were trained on it, and it
+//! is not the map the recorded training-time encoder used: the deleted
+//! `dataset/generate_spike_data.py` routed on a record's top-level
+//! `blockchain` field, giving Kaspa channels 0-3, Monero 4-7 and Qubic 8-11,
+//! where this map puts Kaspa at 6-7.
+//!
+//! The two do not agree, and neither is established as the shipped weights'
+//! input contract -- those weights were imported from an external path, with
+//! no training run in this repository linking them to either encoder. So this
+//! module is a forward-looking contract, and encoding telemetry with it does
+//! not make a frame that `merged_v2` was trained to read. Do not present the
+//! two as matching components: pair them only once a training run exists that
+//! actually used this map.
 //!
 //! # Channel map
 //!
-//! [`CHANNEL_MAP`] is the documented 16-channel telemetry layout, two channels
-//! per source:
+//! Two channels per source:
 //!
 //! | Channels | Source                    | Function                                    |
 //! | -------- | ------------------------- | ------------------------------------------- |
@@ -91,8 +107,15 @@ pub const BASE_RATE_HZ: f32 = 5.0;
 
 /// Firing rate, in hertz, of a channel saturated at the top of [`INPUT_RANGE`].
 ///
-/// One fifth of the 1 kHz clock, so a saturated channel spikes every fifth tick
-/// and still leaves headroom below the one-spike-per-step ceiling.
+/// One fifth of the 1 kHz clock, so a saturated channel spikes roughly every
+/// fifth tick at [`DT_SECONDS`].
+///
+/// There is no one-spike-per-step ceiling in streaming mode to leave headroom
+/// below: [`TelemetryEncoder::encode_step`] queues whole spikes and drains up
+/// to 1024 per channel per step, so a configuration with
+/// `max_rate_hz * dt_seconds > 1` emits the whole count rather than truncating
+/// it. The at-most-one-spike rule belongs to [`TelemetryEncoder::encode`],
+/// which draws a single sample per channel per call.
 pub const MAX_RATE_HZ: f32 = 200.0;
 
 /// The span a frame value is normalised against before it is mapped to a rate.
@@ -316,7 +339,10 @@ impl fmt::Display for NonFiniteFrame {
 
 impl std::error::Error for NonFiniteFrame {}
 
-/// A rate encoder fixed to this model's channel map and 1 kHz clock.
+/// A rate encoder fixed to [`CHANNEL_MAP`] and the model's 1 kHz clock.
+///
+/// [`CHANNEL_MAP`] is a proposed layout, not the shipped weights' input
+/// contract -- see the [module docs](self).
 ///
 /// A thin wrapper over `axon-encoder`'s [`RateEncoder`]. The wrapper exists for
 /// the frame type: [`Encoder::encode`] takes any-width slice, while every method
