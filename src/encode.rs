@@ -563,10 +563,22 @@ impl TelemetryEncoder {
         self.inner.reset();
     }
 
-    /// The wrapped `axon-encoder` encoder.
+    /// Shared access to the wrapped `axon-encoder` encoder, for inspection.
     ///
-    /// An escape hatch for the parts of the [`RateEncoder`] surface this wrapper
-    /// does not re-expose, such as the neuromodulator-gain entry points.
+    /// This is a *read-only* view, and the tests use it to compare encoder
+    /// state -- that a rejected frame left the accumulators untouched, and that
+    /// this wrapper stays in step with a bare [`RateEncoder`] driven the same
+    /// way.
+    ///
+    /// There is deliberately no `&mut` counterpart. Every encoding entry point
+    /// on `RateEncoder` takes `&mut self`, including
+    /// `encode_step_with_modulators`, so handing out a mutable borrow would let
+    /// a caller drive the inner encoder directly and skip the atomic
+    /// non-finite-frame check in [`encode_step`](Self::encode_step) -- the one
+    /// guarantee this wrapper exists to add. The neuromodulator-gain entry
+    /// points are therefore not reachable from here, which also keeps
+    /// `neuromod`-shaped surface out of a crate that deliberately does not
+    /// depend on it.
     #[must_use]
     pub fn as_rate_encoder(&self) -> &RateEncoder {
         &self.inner
