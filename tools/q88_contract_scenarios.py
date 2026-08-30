@@ -201,6 +201,10 @@ def malformed_model_json_parse_error(tmp: Path, stream) -> int:
         "8. non-object model records are REJECTED as ParseError",
         file=stream,
     )
+    # The fixed neuron and weight indices below this line are safe unguarded:
+    # load_model enforces exactly NEURON_COUNT neurons and N_INPUTS weights per
+    # row, so a shorter model raises ParseError here rather than IndexError
+    # later. That is why the mutations start from a model that already loaded.
     good_model = load_model(MODEL_JSON)
 
     null_neuron_model = json.loads(json.dumps(good_model))

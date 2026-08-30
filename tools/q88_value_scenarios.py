@@ -242,6 +242,10 @@ def corrupted_hidden_weight_rejected(tmp: Path, stream) -> int:
         float(w) for neuron in model["neurons"] for w in neuron["weights"]
     ]
     corrupt_words = [e.word for e in hidden_entries]
+    # Index 137 is safe unguarded because scenario 2 runs first and asserts the
+    # shipped artifacts verify, which includes their arity -- a short
+    # parameters_weights.mem fails there, before this line is reached. Keep
+    # shipped_artifacts_verify ahead of this scenario in _scenarios().
     corrupt_words[137] ^= 0x0001  # one LSB, the smallest possible drift
     corrupt_path = tmp / "parameters_weights_corrupt.mem"
     _write_mem(corrupt_path, corrupt_words)
