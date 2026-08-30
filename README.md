@@ -102,7 +102,7 @@ No learned SNN, LLM, FPGA controller, or online-training loop may disable or rai
 | 12-13 | Verus | CPU-heavy validator tracking (AVX-512) |
 | 14-15 | Thermal | Pain receptors — power and temperature |
 
-Channels 14-15 are *intended* as the network's pain receptors. **This is design intent, not shipped behaviour.** This repository contains nine files — four `.mem` artifacts, `snn_model.json`, `config.json` and documentation — and no code: there is no reward signal, no online weight update, and no runtime. The 85 °C threshold also belongs to `thalamic-relay`, a peer process listed below, not to the SNN. Wiring a thermal penalty into training is future work.
+Channels 14-15 are *intended* as the network's pain receptors. **This is design intent, not shipped behaviour.** The repository now carries code, but none of it is a runtime: `tools/` verifies the Q8.8 export and `src/` lifts the model into a NIR graph, and neither consumes a pain signal. There is no reward signal, no online weight update, and nothing that acts on a temperature reading. The 85 °C threshold also belongs to `thalamic-relay`, a peer process listed below, not to the SNN. Wiring a thermal penalty into training is future work.
 
 ### Which map the shipped weights use is unknown
 
@@ -194,7 +194,21 @@ dataset/merged_v2/
 ├── parameters_weights.mem         # 16x16 weight matrix (Q8.8 hex)
 ├── parameters_output_weights.mem  # Output layer weights (signed Q8.8)
 └── snn_model.json                 # Full model definition (float values)
+
+tools/                             # Python, standard library only
+└── verify_q88.py                  # Re-derives every Q8.8 word from the JSON
+                                   # floats and checks it against the .mem
+                                   # files; --self-test proves it can fail
+
+src/                               # Rust, `spikenaut-snn`
+├── model.rs                       # Decodes snn_model.json, validated
+├── graph.rs                       # Builds the NIR graph
+└── json.rs                        # Strict reader, so the dependency list
+                                   # stays at what Cargo.toml declares
 ```
+
+The artifacts are the product; the code exists to check them and to hand them
+to consumers in a standard form. Nothing here runs the network.
 
 ### Loading on FPGA
 
