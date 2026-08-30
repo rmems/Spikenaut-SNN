@@ -91,15 +91,25 @@ except ImportError:  # direct script: `python3 tools/verify_q88.py`
     from q88_report import report, worst_residual_lsb
 
 def _require(condition: bool, message: str) -> None:
-    """Assert a self-test invariant.
+    """Assert a self-test invariant, and count the assertion.
+
+    ``_require.calls`` counts every call since self_test() last reset it.
+    Each scenario reports its own assertion count as a hand-maintained
+    ``checks += N`` literal, and those have drifted; the invariant at the end
+    of self_test() uses this counter to prove the reported total is the number
+    of assertions actually run.
 
     Raises:
         SelfTestFailure: ``condition`` is false. Used instead of bare
             ``assert`` so the checks survive ``python -O``.
 
     """
+    _require.calls += 1
     if not condition:
         raise SelfTestFailure(message)
+
+
+_require.calls = 0
 
 
 def _write_mem(path: Path, words: list[int]) -> None:
@@ -115,6 +125,12 @@ def _write_mem(path: Path, words: list[int]) -> None:
 # a section deleted or accidentally skipped fails loudly instead of silently
 # shrinking the suite.
 SELF_TEST_SECTIONS = 11
+
+# The two halves of the assertion total the scenarios report between them:
+# _require calls, and assertions made by a try/except/else proving a call
+# raised. Asserted by _suite_is_fully_accounted_for().
+EXPECTED_REQUIRE_CALLS = 66
+EXPECTED_GUARD_CHECKS = 31
 
 
 def _codec_unit_vectors(stream) -> int:
@@ -270,6 +286,7 @@ def _clamp_to_zero_rejected(tmp: Path, stream) -> int:
         "shipped output weights have no negatives; self-test cannot "
         "demonstrate the clamp regression",
     )
+    checks += 1
 
     clamped_path = tmp / "parameters_output_weights_clamped.mem"
     _write_mem(clamped_path, [encode_q88_clamp_to_zero(v) for v in real_floats])
@@ -513,6 +530,7 @@ def _shipped_file_matches_its_pins(gold, real) -> int:
         gold[0] == "FFF9",
         f"self-test expects shipped word 0 to be FFF9, got {gold[0]}",
     )
+    checks += 4
     return checks
 
 
@@ -554,7 +572,7 @@ def _gold_pin_rejects_swapped_word(tmp, stream, real, gold) -> int:
         len(pinned_fff8.mismatches) == 1 and pinned_fff8.mismatches[0].index == 0,
         f"expected 1 mismatch at index 0, got {pinned_fff8.mismatches}",
     )
-    checks += 6
+    checks += 3
     return checks
 
 
@@ -731,7 +749,7 @@ def _finite_float_positive_controls() -> int:
         raise SelfTestFailure("encode_q88 leaked OverflowError on 1e308") from exc
     else:
         raise SelfTestFailure("encode_q88 ACCEPTED 1e308")
-    checks += 4
+    checks += 5
     return checks
 
 
@@ -898,7 +916,7 @@ def _crlf_and_lf_fixtures_agree(tmp) -> int:
         f"a CRLF copy of the shipped output weights failed verification: "
         f"{crlf_result.notes}",
     )
-    checks += 5
+    checks += 6
     return checks
 
 
@@ -1142,10 +1160,45 @@ _TEMPDIR_SCENARIOS: tuple[Callable[[Path, object], int], ...] = (
 )
 
 
+def _suite_is_fully_accounted_for(sections_run, scenario_checks) -> int:
+    """The suite ran every section, and reported every assertion it ran.
+
+    Two independent books have to agree. Sections are counted against
+    SELF_TEST_SECTIONS so a dropped scenario cannot shrink the suite quietly.
+    Assertions are counted twice over: _require keeps its own tally, which no
+    edit to a ``checks += N`` literal can fake, and the remainder must be the
+    hand-counted try/except guards. Both halves are pinned because both have
+    been wrong -- _shipped_file_matches_its_pins() ran four assertions and
+    returned zero, and three scenarios were each short by one.
+    """
+    scenario_requires = _require.calls
+    _require(
+        sections_run == SELF_TEST_SECTIONS,
+        f"self-test ran {sections_run} numbered sections, expected "
+        f"{SELF_TEST_SECTIONS} -- a scenario was dropped",
+    )
+    _require(
+        scenario_requires == EXPECTED_REQUIRE_CALLS,
+        f"scenarios made {scenario_requires} _require calls, expected "
+        f"{EXPECTED_REQUIRE_CALLS} -- an assertion was added or removed "
+        f"without updating its scenario's count",
+    )
+    _require(
+        scenario_checks - scenario_requires == EXPECTED_GUARD_CHECKS,
+        f"scenarios reported {scenario_checks} assertions against "
+        f"{scenario_requires} _require calls, leaving "
+        f"{scenario_checks - scenario_requires} try/except guards, expected "
+        f"{EXPECTED_GUARD_CHECKS} -- a reported count does not match the "
+        f"assertions actually run",
+    )
+    return 3
+
+
 def self_test(stream=sys.stdout) -> bool:
     """Prove this checker actually rejects real regressions."""
     print("Q8.8 verifier self-test", file=stream)
     print("", file=stream)
+    _require.calls = 0
     checks = 0
     sections_run = 0
 
@@ -1159,12 +1212,7 @@ def self_test(stream=sys.stdout) -> bool:
             checks += scenario(tmp, stream)
             sections_run += 1
 
-    _require(
-        sections_run == SELF_TEST_SECTIONS,
-        f"self-test ran {sections_run} numbered sections, expected "
-        f"{SELF_TEST_SECTIONS} -- a scenario was dropped",
-    )
-    checks += 1
+    checks += _suite_is_fully_accounted_for(sections_run, checks)
 
     print(
         f"SELF-TEST PASSED: {checks} assertions across {sections_run} sections.\n"
