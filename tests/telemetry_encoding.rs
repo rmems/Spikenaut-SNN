@@ -12,7 +12,7 @@ use axon_encoder::encoders::RateEncoder;
 use axon_encoder::error::EncoderError;
 use axon_encoder::types::EncodedOutput;
 use spikenaut_snn::encode::{
-    BASE_RATE_HZ, CHANNEL_COUNT, CHANNEL_MAP, DT_SECONDS, INPUT_RANGE, MAX_RATE_HZ,
+    BASE_RATE_HZ, CHANNEL_COUNT, CHANNEL_MAP, DT_SECONDS, INPUT_RANGE, MAX_RATE_HZ, NonFiniteFrame,
     TelemetryEncoder, TelemetrySource,
 };
 use spikenaut_snn::model::NEURON_COUNT;
@@ -268,6 +268,51 @@ fn a_raw_non_finite_sample_silently_drops_below_the_liveness_floor() {
 
 /// The test that pins the fix: a rejected frame is a no-op.
 ///
+/// The rejection must name the offending channel, and name it as thermal.
+///
+/// Every accessor is checked, not just one: `count`, `first_channel`,
+/// `contains` and `touches_pain_receptor` are four independent readings of the
+/// same bitset, and a bug in any one of them would otherwise go unseen.
+fn assert_rejection_identifies_the_pain_channel(rejected: &NonFiniteFrame, label: &str) {
+    assert_eq!(rejected.count(), 1, "{label}");
+    assert_eq!(rejected.first_channel(), PAIN_CHANNEL, "{label}");
+    assert!(rejected.contains(PAIN_CHANNEL), "{label}");
+    assert!(rejected.touches_pain_receptor(), "{label}");
+    assert!(
+        rejected
+            .to_string()
+            .contains(TelemetrySource::Thermal.label()),
+        "{label}: the error must name the source, got {rejected}",
+    );
+}
+
+/// After a rejection the channel fires at its mapped rate again, with no
+/// `reset()` -- tick for tick against a control that never saw a bad frame.
+fn assert_channel_recovers(
+    victim: &mut TelemetryEncoder,
+    control: &mut TelemetryEncoder,
+    frame: &[f32; CHANNEL_COUNT],
+    label: &str,
+) {
+    let mut totals = [0_usize; CHANNEL_COUNT];
+    for tick in 0..TICKS_PER_SECOND {
+        let expected = control.encode_step(frame).expect("a finite frame encodes");
+        let actual = victim.encode_step(frame).expect("a finite frame encodes");
+        assert_eq!(actual, expected, "{label}: tick {tick} after the rejection");
+        for (channel, count) in counts_per_channel(&actual).into_iter().enumerate() {
+            totals[channel] += count;
+        }
+    }
+
+    let expected_rate = expected_rate_hz(frame[PAIN_CHANNEL]);
+    assert!(
+        (totals[PAIN_CHANNEL] as f32 - expected_rate).abs() <= 1.0,
+        "{label}: channel {PAIN_CHANNEL} fired {} times after the rejection, \
+         expected ~{expected_rate} Hz — the accumulator was poisoned",
+        totals[PAIN_CHANNEL],
+    );
+}
+
 /// A `NaN` or either infinity on a thermal channel comes back as an error that
 /// names it, and the encoder that saw it stays identical — state and output —
 /// to one that never did. The channel is *not* poisoned: it goes straight back
@@ -297,16 +342,7 @@ fn a_rejected_frame_leaves_the_channel_working() {
             .encode_step(&faulty)
             .expect_err("a non-finite frame must be rejected");
 
-        assert_eq!(rejected.count(), 1, "{label}");
-        assert_eq!(rejected.first_channel(), PAIN_CHANNEL, "{label}");
-        assert!(rejected.contains(PAIN_CHANNEL), "{label}");
-        assert!(rejected.touches_pain_receptor(), "{label}");
-        assert!(
-            rejected
-                .to_string()
-                .contains(TelemetrySource::Thermal.label()),
-            "{label}: the error must name the source, got {rejected}",
-        );
+        assert_rejection_identifies_the_pain_channel(&rejected, label);
 
         // Nothing moved. `RateEncoder` compares its whole accumulator state, so
         // this covers every channel, not just the offending one.
@@ -318,23 +354,7 @@ fn a_rejected_frame_leaves_the_channel_working() {
 
         // And the encoder still works, tick for tick, on the channel that
         // carried the bad sample.
-        let mut totals = [0_usize; CHANNEL_COUNT];
-        for tick in 0..TICKS_PER_SECOND {
-            let expected = control.encode_step(&frame).expect("a finite frame encodes");
-            let actual = victim.encode_step(&frame).expect("a finite frame encodes");
-            assert_eq!(actual, expected, "{label}: tick {tick} after the rejection");
-            for (channel, count) in counts_per_channel(&actual).into_iter().enumerate() {
-                totals[channel] += count;
-            }
-        }
-
-        let expected_rate = expected_rate_hz(frame[PAIN_CHANNEL]);
-        assert!(
-            (totals[PAIN_CHANNEL] as f32 - expected_rate).abs() <= 1.0,
-            "{label}: channel {PAIN_CHANNEL} fired {} times after the rejection, \
-             expected ~{expected_rate} Hz — the accumulator was poisoned",
-            totals[PAIN_CHANNEL],
-        );
+        assert_channel_recovers(&mut victim, &mut control, &frame, label);
     }
 }
 

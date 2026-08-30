@@ -320,16 +320,28 @@ impl NonFiniteFrame {
     }
 }
 
+impl NonFiniteFrame {
+    /// Render the affected channels as ` 3 (label), 7 (label)`.
+    ///
+    /// Split out of [`fmt::Display::fmt`] so neither half carries the whole
+    /// message's branching: the list needs a loop and a first-element case,
+    /// the message around it needs a plural and an escalation clause.
+    fn write_channel_list(self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (position, channel) in self.channels().enumerate() {
+            let separator = if position == 0 { " " } else { ", " };
+            write!(f, "{separator}{channel} ({})", CHANNEL_MAP[channel].label())?;
+        }
+        Ok(())
+    }
+}
+
 impl fmt::Display for NonFiniteFrame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("non-finite telemetry on channel")?;
         if self.count() > 1 {
             f.write_str("s")?;
         }
-        for (position, channel) in self.channels().enumerate() {
-            let separator = if position == 0 { " " } else { ", " };
-            write!(f, "{separator}{channel} ({})", CHANNEL_MAP[channel].label())?;
-        }
+        self.write_channel_list(f)?;
         if self.touches_pain_receptor() {
             f.write_str("; the thermal pain receptors are affected")?;
         }
