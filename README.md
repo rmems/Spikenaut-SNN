@@ -279,7 +279,7 @@ Spikenaut-SNN is a weights and model repository that now also carries a thin Rus
 | Component | Role | Relationship |
 |---|---|---|
 | [`nir-rs`](https://crates.io/crates/nir-rs) 0.4.2 | NIR graph interchange | **Declared** in `Cargo.toml`, resolved from crates.io — [#8](https://github.com/rmems/Spikenaut-SNN/issues/8) |
-| [`axon-encoder`](https://crates.io/crates/axon-encoder) 0.4.0 | Telemetry → spike encoding | crates.io dependency — [#9](https://github.com/rmems/Spikenaut-SNN/issues/9) |
+| [`axon-encoder`](https://crates.io/crates/axon-encoder) 0.4.0 | Telemetry → spike encoding | **Declared** in `Cargo.toml`, resolved from crates.io — [#9](https://github.com/rmems/Spikenaut-SNN/issues/9) |
 | [`neuromod`](https://crates.io/crates/neuromod) 0.5.2 | LIF engine, learning rules, neuromodulators | crates.io dependency |
 | `silicon-bridge` | Q8.8 `.mem` export | Dependency once published — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
 | `kinetic-signals` | Feature math for channels 0–13 | Dependency once published — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14) |
