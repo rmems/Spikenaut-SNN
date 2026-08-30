@@ -5,12 +5,14 @@
 # Qodana analyses one language per configuration file, so a hybrid repository
 # needs one config per linter. This is the Rust half; qodana.yaml is Python.
 #
-# Two caveats, both from JetBrains' own documentation:
-#   - qodana-rust is Early Access. JetBrains state it "may not be reliable,
-#     may not work as intended, and may contain errors".
-#   - It requires an Ultimate or Ultimate Plus licence, as qodana-python does.
-#     If the Qodana Cloud project behind QODANA_TOKEN_983296264 is not on one
-#     of those, this leg will fail and should be dropped.
+# The licence is covered: this account is on Ultimate Plus, which is what
+# qodana-rust requires (the same tier qodana-python already needs).
+#
+# One caveat remains, and it is JetBrains' own: qodana-rust is Early Access.
+# They state it "may not be reliable, may not work as intended, and may
+# contain errors". Treat a finding from this leg as worth reading rather than
+# as authoritative, and if the leg becomes noisy or flaky, drop it -- the
+# cargo gate in .github/workflows/ci.yml is the check that must stay green.
 #
 # Static analysis only: this does not build or test the crate. The cargo
 # gate in .github/workflows/ci.yml is what actually runs the test suite.
