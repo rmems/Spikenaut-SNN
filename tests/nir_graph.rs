@@ -360,25 +360,6 @@ fn matches_a_hand_built_nir_graph() {
     assert_eq!(ours, reference);
 }
 
-/// Split a `Cargo.toml` into the two scopes the pin check needs: every line of
-/// every dependency table, and the names declared by the runtime
-/// `[dependencies]` table alone.
-///
-/// The two claims are different sizes, so one scope cannot serve both.
-///
-/// The wide scope is every dependency table there is: `[dependencies]`,
-/// `[dev-dependencies]`, `[build-dependencies]`, `[target.'cfg(..)'.dependencies]`
-/// and the `[dependencies.<name>]` table form. A `git =` or `path =` pin is
-/// forbidden in all of them, so that scan must not narrow.
-///
-/// The narrow scope is `[dependencies]` alone, in either spelling. Only that
-/// table has to read exactly `nir-rs`: issue #8 asks for registry resolution,
-/// not a ban on dev-dependencies, and a future test helper must not trip the
-/// check with a message about nir-rs.
-///
-/// Comments are stripped first, which also keeps `[lib] path` and the prose
-/// about this rule out of the scan; the manifest has no `#` inside a string, so
-/// cutting at the first one is exact.
 /// The dependency-table kind, with any `[target.<cfg or triple>.…]` prefix
 /// removed.
 ///
@@ -399,6 +380,25 @@ fn dependency_table_kind(section: &str) -> &str {
     rest
 }
 
+/// Split a `Cargo.toml` into the two scopes the pin check needs: every line of
+/// every dependency table, and the names declared by the runtime
+/// `[dependencies]` table alone.
+///
+/// The two claims are different sizes, so one scope cannot serve both.
+///
+/// The wide scope is every dependency table there is: `[dependencies]`,
+/// `[dev-dependencies]`, `[build-dependencies]`, `[target.'cfg(..)'.dependencies]`
+/// and the `[dependencies.<name>]` table form. A `git =` or `path =` pin is
+/// forbidden in all of them, so that scan must not narrow.
+///
+/// The narrow scope is `[dependencies]` alone, in either spelling. Only that
+/// table has to read exactly `nir-rs`: issue #8 asks for registry resolution,
+/// not a ban on dev-dependencies, and a future test helper must not trip the
+/// check with a message about nir-rs.
+///
+/// Comments are stripped first, which also keeps `[lib] path` and the prose
+/// about this rule out of the scan; the manifest has no `#` inside a string, so
+/// cutting at the first one is exact.
 fn dependency_tables(manifest: &str) -> (Vec<&str>, Vec<String>) {
     let mut section = String::new();
     let mut pinned: Vec<&str> = Vec::new();
