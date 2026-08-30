@@ -7,9 +7,17 @@
 //! into the [Neuromorphic Intermediate Representation][nir], so the graph can
 //! leave the repository in the standard interchange form.
 //!
-//! [`encode`] is the matching front end: the model's 16 telemetry channels are
-//! continuous signals, and the population eats spikes, so `axon-encoder` turns
-//! one into the other at the model's 1 kHz clock.
+//! [`encode`] turns continuous telemetry into spikes at the model's 1 kHz
+//! clock, because the population eats spikes and telemetry is not one.
+//!
+//! It is **not** established as this model's front end. Its [`CHANNEL_MAP`] is
+//! a proposal: it disagrees with the recorded training-time mapping, and
+//! nothing in this repository establishes which mapping -- if either -- the
+//! shipped weights correspond to. Encoding with it does not produce a frame
+//! `merged_v2` was trained to read, so do not present the two as matching
+//! components. See the [`encode`] module docs.
+//!
+//! [`CHANNEL_MAP`]: encode::CHANNEL_MAP
 //!
 //! It has exactly two dependencies, [`nir_rs`] and [`axon_encoder`], both from
 //! crates.io.

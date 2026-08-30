@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Telemetry → spikes, the front end of the 16-LIF population.
+//! Telemetry → spikes, a proposed front end for a 16-LIF population.
 //!
 //! [`crate::graph`] describes what the network *is*; this module describes what
 //! it *eats*. The shipped model takes 16 continuous telemetry channels
