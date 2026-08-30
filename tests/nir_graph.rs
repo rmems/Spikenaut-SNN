@@ -490,15 +490,15 @@ fn nir_rs_resolves_from_crates_io() {
         .unwrap_or_else(|e| panic!("read {}: {e}", lock_path.display()));
     let entry = lock
         .split("[[package]]")
-        .find(|block| block.contains(r#"name = "nir-rs""#))
+        .find(|block| block.contains("name = \"nir-rs\""))
         .expect("Cargo.lock has a nir-rs package entry");
 
     assert!(
-        entry.contains(r#"source = "registry+https://github.com/rust-lang/crates.io-index""#),
+        entry.contains("source = \"registry+https://github.com/rust-lang/crates.io-index\""),
         "nir-rs must come from the crates.io registry, got:\n{entry}",
     );
     assert!(
-        entry.contains(r#"version = "0.4."#),
+        entry.contains("version = \"0.4."),
         "nir-rs must resolve to 0.4.x, got:\n{entry}",
     );
 }
