@@ -269,6 +269,34 @@ pub fn build_lif_graph_with_provenance(
     let lif = lif_parameters(model, timestep_seconds, &shape)?;
 
     let mut graph = NirGraph::new();
+    insert_population_nodes(&mut graph, shape, weight, lif)?;
+
+    graph.add_edge(INPUT_NODE, LINEAR_NODE);
+    graph.add_edge(LINEAR_NODE, LIF_NODE);
+    graph.add_edge(LIF_NODE, OUTPUT_NODE);
+
+    stamp_metadata(&mut graph, timestep_seconds, provenance);
+
+    graph.validate_structure()?;
+    Ok(graph)
+}
+
+/// Build the LIF node's four parameter tensors from the model.
+///
+/// Every value is checked against the Q8.8 grid on the way through: the
+/// shipped artifact is a Q8.8 export, so a parameter that cannot be
+/// represented in Q8.8 did not come from it.
+/// Check every value in a per-neuron column against the Q8.8 grid.
+///
+/// The shipped artifact is a Q8.8 export, so a parameter that cannot be
+/// represented in Q8.8 did not come from it. Errors name the offending neuron.
+/// Insert the four nodes of the population, in graph order.
+fn insert_population_nodes(
+    graph: &mut NirGraph,
+    shape: Vec<usize>,
+    weight: Tensor,
+    lif: Lif,
+) -> Result<(), ModelError> {
     graph.insert_node(
         INPUT_NODE,
         NirNode::Input(Input {
@@ -293,22 +321,28 @@ pub fn build_lif_graph_with_provenance(
             metadata: Default::default(),
         }),
     )?;
-
-    graph.add_edge(INPUT_NODE, LINEAR_NODE);
-    graph.add_edge(LINEAR_NODE, LIF_NODE);
-    graph.add_edge(LIF_NODE, OUTPUT_NODE);
-
-    stamp_metadata(&mut graph, timestep_seconds, provenance);
-
-    graph.validate_structure()?;
-    Ok(graph)
+    Ok(())
 }
 
-/// Build the LIF node's four parameter tensors from the model.
+/// Membrane resistance per unit, as a tensor.
 ///
-/// Every value is checked against the Q8.8 grid on the way through: the
-/// shipped artifact is a Q8.8 export, so a parameter that cannot be
-/// represented in Q8.8 did not come from it.
+/// NIR steps a LIF as `v[t+1] = decay*v[t] + R*(1-decay)*I`, so `R` must be
+/// `1/(1-decay)` for the input to arrive at its trained magnitude.
+fn resistance_tensor(decay_rates: Vec<f64>, shape: &[usize]) -> Result<Tensor, ModelError> {
+    let resistances = decay_rates
+        .into_iter()
+        .map(resistance_from_decay)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Tensor::from_f64(shape.to_vec(), resistances)?)
+}
+
+fn check_q8_8_column(field: &str, values: &[f64]) -> Result<(), ModelError> {
+    for (index, &value) in values.iter().enumerate() {
+        check_q8_8(&format!("neuron {index} {field}"), value)?;
+    }
+    Ok(())
+}
+
 fn lif_parameters(
     model: &SnnModel,
     timestep_seconds: f64,
@@ -317,23 +351,15 @@ fn lif_parameters(
     let tau = Tensor::from_f64(shape.to_vec(), model.taus_seconds(timestep_seconds)?)?;
 
     let thresholds = model.thresholds();
-    for (index, &threshold) in thresholds.iter().enumerate() {
-        check_q8_8(&format!("neuron {index} threshold"), threshold)?;
-    }
+    check_q8_8_column("threshold", &thresholds)?;
     let v_threshold = Tensor::from_f64(shape.to_vec(), thresholds)?;
 
     let decay_rates = model.decay_rates();
-    for (index, &decay_rate) in decay_rates.iter().enumerate() {
-        check_q8_8(&format!("neuron {index} decay_rate"), decay_rate)?;
-    }
-    let resistances = decay_rates
-        .into_iter()
-        .map(resistance_from_decay)
-        .collect::<Result<Vec<_>, _>>()?;
+    check_q8_8_column("decay_rate", &decay_rates)?;
 
     Ok(Lif {
         tau,
-        r: Tensor::from_f64(shape.to_vec(), resistances)?,
+        r: resistance_tensor(decay_rates, shape)?,
         v_leak: Tensor::from_f64(shape.to_vec(), vec![RESTING_POTENTIAL; shape[0]])?,
         v_threshold,
         // Absent on the wire: NIR reads it as zeros_like(v_threshold),

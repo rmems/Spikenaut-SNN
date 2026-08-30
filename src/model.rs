@@ -271,15 +271,7 @@ impl SnnModel {
     pub fn from_json_str(text: &str) -> Result<Self, ModelError> {
         let document = json::parse(text)?;
         reject_unknown_members("the document", &document, &["neurons"])?;
-        let entries = document
-            .get("neurons")
-            .ok_or_else(|| ModelError::Schema("missing top-level `neurons` key".into()))?
-            .as_array()
-            .ok_or_else(|| ModelError::Schema("`neurons` is not an array".into()))?;
-
-        if entries.is_empty() {
-            return Err(ModelError::Schema("`neurons` is empty".into()));
-        }
+        let entries = neuron_entries(&document)?;
 
         let neurons = entries
             .iter()
@@ -403,6 +395,37 @@ fn require_merged_v2_width(model: &SnnModel) -> Result<(), ModelError> {
 /// [`ModelError::Schema`], naming the unit and the field, if a member is
 /// missing, has the wrong JSON type, breaks one of the invariants above, or is
 /// not read by this decoder at all.
+/// The neuron array, rejecting a document that does not carry a non-empty one.
+fn neuron_entries(document: &Json) -> Result<&[Json], ModelError> {
+    let entries = document
+        .get("neurons")
+        .ok_or_else(|| ModelError::Schema("missing top-level `neurons` key".into()))?
+        .as_array()
+        .ok_or_else(|| ModelError::Schema("`neurons` is not an array".into()))?;
+    if entries.is_empty() {
+        return Err(ModelError::Schema("`neurons` is empty".into()));
+    }
+    Ok(entries)
+}
+
+/// Decode the three scalars, in the order their errors must surface.
+fn parse_neuron_scalars(fields: &NeuronFields<'_>) -> Result<(f64, f64, f64), ModelError> {
+    let index = fields.index;
+    let decay_rate = decay_field(
+        &format!("neuron {index} field `decay_rate`"),
+        fields.number("decay_rate")?,
+    )?;
+    let membrane_potential = q8_8_field(
+        &format!("neuron {index} field `membrane_potential`"),
+        fields.number("membrane_potential")?,
+    )?;
+    let threshold = q8_8_field(
+        &format!("neuron {index} field `threshold`"),
+        fields.number("threshold")?,
+    )?;
+    Ok((decay_rate, membrane_potential, threshold))
+}
+
 /// Field accessors for one neuron's JSON object.
 ///
 /// Exists so every error message names the neuron and field it came from
@@ -499,19 +522,12 @@ fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<N
     let weights = parse_neuron_weights(&fields, expected_weights)?;
     let last_spike = fields.boolean("last_spike")?;
 
+    let (decay_rate, membrane_potential, threshold) = parse_neuron_scalars(&fields)?;
+
     Ok(Neuron {
-        decay_rate: decay_field(
-            &format!("neuron {index} field `decay_rate`"),
-            fields.number("decay_rate")?,
-        )?,
-        membrane_potential: q8_8_field(
-            &format!("neuron {index} field `membrane_potential`"),
-            fields.number("membrane_potential")?,
-        )?,
-        threshold: q8_8_field(
-            &format!("neuron {index} field `threshold`"),
-            fields.number("threshold")?,
-        )?,
+        decay_rate,
+        membrane_potential,
+        threshold,
         last_spike,
         weights,
     })
