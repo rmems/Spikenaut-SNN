@@ -506,3 +506,30 @@ fn a_rate_above_one_spike_per_step_is_not_capped() {
          a one-spike-per-step cap would have produced {steps}"
     );
 }
+
+/// The streaming drain ceiling is 1024 spikes per channel per step.
+///
+/// Pins `axon-encoder`'s limit rather than validating against it in
+/// `try_new`: the figure is that crate's internal constant, so this test is
+/// where a change in it should surface. A configuration demanding more than
+/// 1024 spikes per step under-emits permanently, because the queue fills
+/// faster than it drains -- which is why `try_new` documents the ceiling.
+#[test]
+fn the_streaming_drain_ceiling_is_1024_spikes_per_step() {
+    // 2 000 000 Hz at a 1 ms step asks for 2000 spikes per step.
+    let mut encoder = TelemetryEncoder::try_new(0.0, 2_000_000.0, INPUT_RANGE, 0.001)
+        .expect("an over-ceiling rate is accepted, by design");
+    let mut frame = [0.0f32; CHANNEL_COUNT];
+    frame[0] = INPUT_RANGE.1;
+
+    for step in 0..10 {
+        let output = encoder.encode_step(&frame).expect("a finite frame encodes");
+        let spikes = output.spikes.iter().filter(|s| s.channel == 0).count();
+        assert_eq!(
+            spikes, 1024,
+            "step {step}: expected the 1024-spike drain cap, got {spikes}. \
+             If axon-encoder changed its cap, update TelemetryEncoder::try_new's \
+             documented ceiling to match."
+        );
+    }
+}

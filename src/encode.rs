@@ -404,11 +404,31 @@ impl TelemetryEncoder {
     /// substitute its 100 ms compatibility step, which is a hundred ticks of
     /// this model's clock.
     ///
+    /// # Streaming ceiling
+    ///
+    /// [`encode_step`] drains at most 1024 spikes per channel per step. A
+    /// configuration whose `max_rate_hz * dt_seconds` exceeds that will
+    /// sustainedly under-emit on a saturated channel: the excess queues, and
+    /// because the queue fills faster than it drains it never catches up.
+    /// Measured, 2 000 000 Hz at a 1 ms step emits 1024 spikes per step
+    /// against 2000 expected.
+    ///
+    /// This is not rejected here. The 1024 figure belongs to `axon-encoder`'s
+    /// streaming implementation, not to this model, and validating against
+    /// another crate's internal constant would put a limit this crate does not
+    /// control into its own public contract. It is pinned by
+    /// `the_streaming_drain_ceiling_is_1024_spikes_per_step` instead, so a
+    /// change in that dependency surfaces as a failing test rather than as a
+    /// constructor that rejects the wrong configurations. The shipped
+    /// constants are far below it: [`MAX_RATE_HZ`] * [`DT_SECONDS`] is 0.2.
+    ///
     /// # Errors
     ///
     /// Returns [`EncoderError`] if the rates are not finite and non-negative
     /// with `base_rate_hz <= max_rate_hz`, if `range` is not a finite increasing
     /// span, or if `dt_seconds` is not finite and strictly positive.
+    ///
+    /// [`encode_step`]: TelemetryEncoder::encode_step
     pub fn try_new(
         base_rate_hz: f32,
         max_rate_hz: f32,
@@ -426,12 +446,22 @@ impl TelemetryEncoder {
         self.inner.dt_seconds()
     }
 
-    /// Encode one frame as a single 1 ms tick (streaming, deterministic).
+    /// Encode one frame as a single configured step (streaming, deterministic).
+    ///
+    /// One call advances [`dt_seconds`], which is 1 ms for [`new`] and the
+    /// shipped clock but is whatever [`try_new`] was given otherwise. Driving
+    /// this at 1 kHz on an encoder built with a different step runs the model
+    /// at the wrong wall-clock rate -- a 10 ms configuration ticked every
+    /// millisecond fires ten times too fast.
     ///
     /// Each channel accumulates `rate_hz * dt_seconds` and emits a spike when
     /// the accumulator crosses 1.0, so consecutive calls form a spike train at
     /// the channel's mapped rate. This is the mode that matches the hardware
     /// tick; see the [module docs](self#batch-and-streaming).
+    ///
+    /// [`dt_seconds`]: TelemetryEncoder::dt_seconds
+    /// [`new`]: TelemetryEncoder::new
+    /// [`try_new`]: TelemetryEncoder::try_new
     ///
     /// # Errors
     ///
