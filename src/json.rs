@@ -151,6 +151,8 @@ struct Parser<'a> {
 }
 
 impl Parser<'_> {
+    /// A `JsonError` carrying the current byte offset, so a failure deep in
+    /// a nested document can be located in the source text.
     fn error(&self, message: impl Into<String>) -> JsonError {
         JsonError {
             message: message.into(),
@@ -158,16 +160,19 @@ impl Parser<'_> {
         }
     }
 
+    /// The byte at the cursor, or `None` at end of input.
     fn peek(&self) -> Option<u8> {
         self.bytes.get(self.pos).copied()
     }
 
+    /// Advance past the four bytes RFC 8259 counts as whitespace.
     fn skip_whitespace(&mut self) {
         while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
             self.pos += 1;
         }
     }
 
+    /// Consume `byte`, or fail naming what was expected.
     fn expect(&mut self, byte: u8) -> Result<(), JsonError> {
         if self.peek() == Some(byte) {
             self.pos += 1;
@@ -177,6 +182,7 @@ impl Parser<'_> {
         }
     }
 
+    /// Consume one of the three bare words (`null`, `true`, `false`).
     fn literal(&mut self, word: &str, value: Json) -> Result<Json, JsonError> {
         if self.bytes[self.pos..].starts_with(word.as_bytes()) {
             self.pos += word.len();
@@ -186,6 +192,10 @@ impl Parser<'_> {
         }
     }
 
+    /// Dispatch on the first byte to the parser for that value type.
+    ///
+    /// `depth` guards against a document nested deeply enough to overflow
+    /// the stack, since this parser recurses.
     fn parse_value(&mut self, depth: usize) -> Result<Json, JsonError> {
         if depth > MAX_DEPTH {
             return Err(self.error(format!("nesting deeper than {MAX_DEPTH} levels")));
@@ -203,6 +213,7 @@ impl Parser<'_> {
         }
     }
 
+    /// `[` value `,` value `]`, rejecting a trailing comma.
     fn parse_array(&mut self, depth: usize) -> Result<Json, JsonError> {
         self.expect(b'[')?;
         let mut items = Vec::new();
@@ -226,6 +237,7 @@ impl Parser<'_> {
         }
     }
 
+    /// `{` member `,` member `}`, rejecting a trailing comma.
     fn parse_object(&mut self, depth: usize) -> Result<Json, JsonError> {
         self.expect(b'{')?;
         let mut map = BTreeMap::new();
@@ -273,6 +285,11 @@ impl Parser<'_> {
         Ok(())
     }
 
+    /// Sign, integer, optional fraction, optional exponent, then `f64`.
+    ///
+    /// The span is matched byte-by-byte against the grammar before it is
+    /// handed to `str::parse`, so a JSON-invalid literal Rust happens to
+    /// accept -- `1.`, `.5`, `0x10`, `inf` -- is refused here.
     fn parse_number(&mut self) -> Result<Json, JsonError> {
         let start = self.pos;
         if self.peek() == Some(b'-') {
@@ -328,12 +345,14 @@ impl Parser<'_> {
         Ok(())
     }
 
+    /// Advance over a run of ASCII digits.
     fn skip_digits(&mut self) {
         while self.peek().is_some_and(|c| c.is_ascii_digit()) {
             self.pos += 1;
         }
     }
 
+    /// A quoted string, with escapes decoded and control bytes refused.
     fn parse_string(&mut self) -> Result<String, JsonError> {
         self.expect(b'"')?;
         let mut out = String::new();
@@ -376,6 +395,7 @@ impl Parser<'_> {
         );
     }
 
+    /// One escape sequence, the cursor already past the backslash.
     fn parse_escape(&mut self, out: &mut String) -> Result<(), JsonError> {
         let escape = self
             .peek()
@@ -423,6 +443,7 @@ impl Parser<'_> {
         Ok(())
     }
 
+    /// Exactly four hex digits, as in a `\\uXXXX` escape.
     fn parse_hex4(&mut self) -> Result<u16, JsonError> {
         let end = self.pos + 4;
         let digits = self

@@ -336,6 +336,7 @@ fn resistance_tensor(decay_rates: Vec<f64>, shape: &[usize]) -> Result<Tensor, M
     Ok(Tensor::from_f64(shape.to_vec(), resistances)?)
 }
 
+/// Every value in one per-unit column must sit exactly on the Q8.8 grid.
 fn check_q8_8_column(field: &str, values: &[f64]) -> Result<(), ModelError> {
     for (index, &value) in values.iter().enumerate() {
         check_q8_8(&format!("neuron {index} {field}"), value)?;

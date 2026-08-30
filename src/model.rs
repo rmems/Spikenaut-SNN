@@ -503,6 +503,10 @@ fn parse_neuron_weights(
         .collect()
 }
 
+/// Decode one neuron record: its weight row, then its scalars.
+///
+/// `index` appears in every error this raises, so a bad value in a
+/// 16-record document names the record it came from.
 fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<Neuron, ModelError> {
     reject_unknown_members(
         &format!("neuron {index}"),
