@@ -358,6 +358,38 @@ fn a_rejected_frame_leaves_the_channel_working() {
     }
 }
 
+/// A per-step spike demand that overflows to infinity is refused.
+///
+/// Both factors can be finite while `max_rate_hz * dt_seconds` is not, and
+/// `RateEncoder` validates each factor rather than the product. Left
+/// unchecked, one saturated frame adds infinity to the streaming accumulator
+/// and draining cannot reduce it: every later step emits at the drain cap even
+/// at minimum input, until `reset()`. That is unrecoverable in a way the
+/// documented finite backlog is not, so the constructor refuses it.
+#[test]
+fn an_overflowing_per_step_demand_is_rejected() {
+    let err = TelemetryEncoder::try_new(0.0, f32::MAX, INPUT_RANGE, 2.0)
+        .expect_err("an infinite per-step demand must not construct an encoder");
+    assert!(
+        matches!(
+            err,
+            EncoderError::NonFiniteRate {
+                parameter: "max_rate_hz * dt_seconds"
+            }
+        ),
+        "the error must name the product, not one of its factors: {err:?}"
+    );
+    assert!(
+        (f32::MAX * 2.0).is_infinite() && f32::MAX.is_finite() && 2.0_f32.is_finite(),
+        "the premise: both factors are finite and the product is not"
+    );
+
+    // The configuration one step below the overflow still constructs, so the
+    // guard rejects the arithmetic rather than large rates in general.
+    TelemetryEncoder::try_new(0.0, f32::MAX, INPUT_RANGE, 1.0)
+        .expect("a finite product, however large, is still accepted");
+}
+
 /// Rejection is atomic, not per-channel.
 ///
 /// `RateEncoder::encode_step` walks channels in order and mutates each

@@ -461,9 +461,30 @@ impl TelemetryEncoder {
         range: (f32, f32),
         dt_seconds: f32,
     ) -> Result<Self, EncoderError> {
-        Ok(Self {
-            inner: RateEncoder::try_new(base_rate_hz, max_rate_hz, range, dt_seconds)?,
-        })
+        // `max_rate_hz * dt_seconds` is the spikes-per-step demand, and it is
+        // this crate's own arithmetic rather than anything the dependency
+        // owns. Both factors can be finite while their product is not --
+        // f32::MAX with a 2 s step overflows to infinity -- and RateEncoder
+        // checks each factor, not the product. An infinite demand poisons the
+        // streaming accumulator permanently: draining spikes cannot reduce
+        // infinity, so a single saturated frame leaves every later step
+        // emitting at the drain cap even at minimum input, until `reset()`.
+        //
+        // That is a different failure from the finite backlog documented
+        // below, which does drain in principle. Refusing it here costs
+        // nothing: no useful configuration has an infinite per-step demand.
+        //
+        // Checked *after* RateEncoder, so a bad factor still gets named
+        // precisely: a NaN dt_seconds should report dt_seconds, not the
+        // product it happens to poison. Only a finite-factor, infinite-product
+        // combination reaches this line.
+        let inner = RateEncoder::try_new(base_rate_hz, max_rate_hz, range, dt_seconds)?;
+        if !(max_rate_hz * dt_seconds).is_finite() {
+            return Err(EncoderError::NonFiniteRate {
+                parameter: "max_rate_hz * dt_seconds",
+            });
+        }
+        Ok(Self { inner })
     }
 
     /// The configured step duration, in seconds.
