@@ -1,0 +1,5 @@
+# GitHub-side only. The repository root marks *.png as LFS; this carrier stores
+# the rendered diagram as an ordinary blob so a clone without git-lfs gets the
+# real image rather than a pointer file. Not part of the Hugging Face payload --
+# the file destined for the HF repo root is dot-gitattributes.
+*.png -filter -diff -merge -text

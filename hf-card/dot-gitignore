@@ -1,0 +1,7 @@
+# This repository holds published artifacts only -- there is no build here.
+# Editor and OS scratch files, so a local checkout stays clean.
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

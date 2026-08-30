@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 560" width="900" height="560" font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <rect width="900" height="560" rx="10" fill="#fbfbfa"/>
+  <text x="34" y="42" font-size="19" font-weight="600" fill="#1a1a19">Spikenaut-SNN-v2 — shipped artifact</text>
+  <text x="34" y="65" font-size="13.5" fill="#6b6b68">Four-node graph. Each stage names the file that supplies its parameters.</text>
+
+  <!-- stage boxes -->
+  <g stroke-width="1.5">
+    <rect x="34" y="98"  width="330" height="58" rx="8" fill="#eef2f6" stroke="#c3cedb"/>
+    <rect x="34" y="196" width="330" height="58" rx="8" fill="#eef2f6" stroke="#c3cedb"/>
+    <rect x="34" y="294" width="330" height="76" rx="8" fill="#eef2f6" stroke="#c3cedb"/>
+    <rect x="34" y="410" width="330" height="58" rx="8" fill="#fdf0ef" stroke="#e5b7b2"/>
+  </g>
+
+  <g font-size="15" font-weight="600" fill="#1a1a19">
+    <text x="54" y="127">Input</text>
+    <text x="54" y="225">Linear</text>
+    <text x="54" y="323">LIF population</text>
+    <text x="54" y="439">Output</text>
+  </g>
+  <g font-size="13" fill="#5c5c58">
+    <text x="54" y="146">16 telemetry channels</text>
+    <text x="54" y="244">16 × 16 weight matrix</text>
+    <text x="54" y="342">16 neurons — threshold, decay</text>
+    <text x="54" y="360" font-size="12.5">tau = -dt / ln(decay),  dt = 1 ms</text>
+    <text x="54" y="458">3 rows</text>
+  </g>
+
+  <!-- arrows -->
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8a8a85"/>
+    </marker>
+  </defs>
+  <g stroke="#8a8a85" stroke-width="1.6" marker-end="url(#a)" fill="none">
+    <path d="M199,156 L199,190"/>
+    <path d="M199,254 L199,288"/>
+    <path d="M199,370 L199,404"/>
+  </g>
+
+  <!-- parameter files -->
+  <g font-size="12.5">
+    <g stroke="#c3cedb" stroke-width="1.2" stroke-dasharray="4 3" fill="none">
+      <path d="M364,225 L470,225"/>
+      <path d="M364,326 L470,326"/>
+      <path d="M364,439 L470,439"/>
+    </g>
+    <g fill="#1a1a19" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+      <text x="478" y="221">parameters_weights.mem</text>
+      <text x="478" y="316">parameters.mem</text>
+      <text x="478" y="338">parameters_decay.mem</text>
+      <text x="478" y="435">parameters_output_weights.mem</text>
+    </g>
+    <g fill="#6b6b68">
+      <text x="478" y="239">256 words · Q8.8 · unsigned</text>
+      <text x="478" y="356">16 + 16 words · Q8.8</text>
+      <text x="478" y="453">48 words · Q8.8 · signed</text>
+    </g>
+  </g>
+
+  <!-- caveats -->
+  <g font-size="12.5" fill="#9a4a42">
+    <text x="478" y="257">degenerate: a linear ramp reproduces all 256</text>
+    <text x="478" y="374">decay rates are sample defaults, never learned</text>
+    <text x="478" y="471">untrained — an unseeded random readout</text>
+  </g>
+
+  <rect x="34" y="492" width="832" height="46" rx="7" fill="#f2eee4" stroke="#cfc6b0" stroke-width="1.2"/>
+  <text x="52" y="513" font-size="12.5" fill="#4a4a46">The graph shape is verifiable from these files. The values are not established as trained —</text>
+  <text x="52" y="530" font-size="12.5" fill="#4a4a46">every parameter needs validation or replacement. See “Status — read this first”.</text>
+</svg>
