@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'releases/*'
+
+# A newer push makes an in-flight run irrelevant; cancel it rather than pay
+# for both and race two sets of results onto the same PR.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The crate arrives with #24. Until that merges there is no manifest to
+      # build, and an unguarded job would fail every pull request on a file
+      # that is not supposed to exist yet.
+      - name: Look for a crate
+        id: crate
+        run: |
+          if [ -f Cargo.toml ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Cargo.toml at the repository root yet; skipping the Rust checks."
+          fi
+
+      # rust-toolchain.toml pins 1.97.1 with rustfmt and clippy -- the MSRV
+      # that nir-rs 0.4.2 and axon-encoder 0.4.0 both declare. `rustup show`
+      # installs exactly that, so CI cannot drift onto a newer compiler and
+      # quietly accept code the pinned toolchain would reject.
+      - name: Install the pinned toolchain
+        if: steps.crate.outputs.found == 'true'
+        run: rustup show && rustc --version && cargo --version
+
+      - name: Cache cargo registry and build
+        if: steps.crate.outputs.found == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Format
+        if: steps.crate.outputs.found == 'true'
+        run: cargo fmt --check
+
+      - name: Clippy
+        if: steps.crate.outputs.found == 'true'
+        run: cargo clippy --all-targets -- -D warnings
+
+      # --locked so a dependency cannot resolve to something Cargo.lock does
+      # not name. Issues #8 and #9 both require crates.io resolution and the
+      # suite asserts it; this keeps CI from papering over a drifted lockfile.
+      - name: Test
+        if: steps.crate.outputs.found == 'true'
+        run: cargo test --locked
+
+      - name: Docs
+        if: steps.crate.outputs.found == 'true'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps
+
+  python:
+    name: Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned rather than floating, so a new interpreter release cannot
+      # change a verdict about the shipped artifacts without a commit saying
+      # so. The verifier is standard library only and its syntax parses back
+      # to 3.8, so this is a reproducibility choice, not a hard floor -- with
+      # one exception worth recording: the oversized-JSON-integer scenario
+      # relies on CPython's 4300-digit integer-string limit, which only
+      # exists from 3.11. On an older interpreter that scenario still passes,
+      # but by way of a different ParseError, so it would stop exercising the
+      # mechanism it is named for.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Standard library only, by design -- there is nothing to install.
+
+      # Both invocations, because the package and direct-script import paths
+      # resolve differently and have broken independently of each other.
+      - name: Verify the shipped Q8.8 artifacts
+        run: |
+          python3 tools/verify_q88.py
+          python3 -m tools.verify_q88
+
+      - name: Prove the verifier can fail
+        run: |
+          python3 tools/verify_q88.py --self-test
+          python3 -m tools.verify_q88 --self-test
