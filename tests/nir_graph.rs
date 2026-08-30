@@ -379,6 +379,26 @@ fn matches_a_hand_built_nir_graph() {
 /// Comments are stripped first, which also keeps `[lib] path` and the prose
 /// about this rule out of the scan; the manifest has no `#` inside a string, so
 /// cutting at the first one is exact.
+/// The dependency-table kind, with any `[target.<cfg or triple>.…]` prefix
+/// removed.
+///
+/// Cargo nests dependency tables under `target.'cfg(...)'` and under bare
+/// target triples, and a cfg expression can itself contain dots, so this
+/// searches for the table name rather than splitting on the first separator.
+/// `dev-` and `build-` tables keep their prefix, so they stay out of the
+/// runtime set whether or not they are target-specific.
+fn dependency_table_kind(section: &str) -> &str {
+    let Some(rest) = section.strip_prefix("target.") else {
+        return section;
+    };
+    for kind in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        if let Some(at) = rest.rfind(&format!(".{kind}")) {
+            return &rest[at + 1..];
+        }
+    }
+    rest
+}
+
 fn dependency_tables(manifest: &str) -> (Vec<&str>, Vec<String>) {
     let mut section = String::new();
     let mut pinned: Vec<&str> = Vec::new();
@@ -389,7 +409,7 @@ fn dependency_tables(manifest: &str) -> (Vec<&str>, Vec<String>) {
             section = header.trim_end_matches(']').to_string();
             // `[dependencies.nir-rs]` names its dependency in the header, so
             // the body below carries no `name =` line to pick it up from.
-            if let Some(name) = section.strip_prefix("dependencies.") {
+            if let Some(name) = dependency_table_kind(&section).strip_prefix("dependencies.") {
                 runtime.push(name.to_string());
             }
             continue;
@@ -398,7 +418,7 @@ fn dependency_tables(manifest: &str) -> (Vec<&str>, Vec<String>) {
             continue;
         }
         pinned.push(line);
-        if section == "dependencies" {
+        if dependency_table_kind(&section) == "dependencies" {
             runtime.push(line.split('=').next().unwrap_or("").trim().to_string());
         }
     }
@@ -449,6 +469,22 @@ fn the_dependency_scan_scopes_each_claim_correctly() {
     assert!(
         pinned.iter().any(|line| line.starts_with("version")),
         "and its body is still scanned for pins: {pinned:?}"
+    );
+
+    // A target-specific dependency is linked into the build like any other,
+    // so it has to reach the runtime assertion -- otherwise a manifest could
+    // add exactly the crates the non-goals forbid and still pass the
+    // exact-set check. Both spellings, plus the dev- form that must stay out.
+    let manifest = "[dependencies]\nnir-rs = \"0.4.2\"\n\n\
+         [target.'cfg(unix)'.dependencies]\nneuromod = \"0.5\"\n\n\
+         [target.'cfg(windows)'.dependencies.silicon-bridge]\nversion = \"0.1\"\n\n\
+         [target.'cfg(unix)'.dev-dependencies]\nproptest = \"1\"\n";
+    let (_, runtime) = dependency_tables(manifest);
+    assert_eq!(
+        runtime,
+        ["nir-rs", "neuromod", "silicon-bridge"],
+        "target-specific dependencies are runtime dependencies; \
+         target-specific dev-dependencies are not"
     );
 
     // `[lib] path` is not a path pin. Only comment stripping and the section
