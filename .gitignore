@@ -1,3 +1,7 @@
+# Python
+__pycache__/
+*.py[cod]
+
 # Rust
 /target/
 actions-runner/
