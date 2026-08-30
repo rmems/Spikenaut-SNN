@@ -451,10 +451,15 @@ impl Parser<'_> {
             .get(self.pos..end)
             .ok_or_else(|| self.error("truncated `\\u` escape"))?;
         let mut value: u16 = 0;
-        for &digit in digits {
-            let nibble = (digit as char)
-                .to_digit(16)
-                .ok_or_else(|| self.error("`\\u` escape needs four hex digits"))?;
+        // Enumerated because `self.pos` stays on the first digit for the whole
+        // loop -- it only advances once all four are read. Reporting `self.pos`
+        // would point every bad digit at the first one, so `\u0G00` and `\uG000`
+        // would be indistinguishable in the error.
+        for (index, &digit) in digits.iter().enumerate() {
+            let nibble = (digit as char).to_digit(16).ok_or_else(|| JsonError {
+                message: "`\\u` escape needs four hex digits".into(),
+                offset: self.pos + index,
+            })?;
             // Four hex digits always fit in u16.
             value = value * 16 + nibble as u16;
         }
@@ -535,6 +540,35 @@ mod tests {
             "\"raw\ncontrol\"",
         ] {
             assert!(parse(bad).is_err(), "expected {bad:?} to be rejected");
+        }
+    }
+
+    /// A bad hex digit reports its own offset, not the escape's first digit.
+    ///
+    /// `parse_hex4` reads four bytes before advancing `self.pos`, so an error
+    /// built from `self.pos` alone points at the first digit whichever one is
+    /// actually wrong. These four inputs differ only in which position holds
+    /// the `G`, so they pin the offset apart; before the fix all four reported
+    /// the same offset.
+    #[test]
+    fn a_bad_hex_digit_reports_its_own_offset() {
+        for (src, expected) in [
+            (r#""\uG000""#, 3),
+            (r#""\u0G00""#, 4),
+            (r#""\u00G0""#, 5),
+            (r#""\u000G""#, 6),
+        ] {
+            let err = parse(src).unwrap_err();
+            assert_eq!(
+                err.offset, expected,
+                "{src} should fault at offset {expected}, got {}",
+                err.offset
+            );
+            assert_eq!(
+                src.as_bytes()[err.offset],
+                b'G',
+                "offset must land on the G"
+            );
         }
     }
 
