@@ -515,10 +515,15 @@ fn nir_rs_resolves_from_crates_io() {
             "no dependency in any table may be pinned with `{forbidden}`, found in:\n{dependencies}",
         );
     }
+    // The allowed set is exact, so a third dependency (issue #9 added
+    // `axon-encoder`) or a rename still fails here. Sorted, so the manifest's
+    // declaration order is not part of the contract.
+    let mut names = runtime.clone();
+    names.sort_unstable();
     assert_eq!(
-        runtime,
-        ["nir-rs"],
-        "`[dependencies]` must declare nir-rs and nothing else, found: {runtime:?}",
+        names,
+        ["axon-encoder", "nir-rs"],
+        "`[dependencies]` must declare exactly axon-encoder and nir-rs, found: {names:?}",
     );
 
     let lock_path: PathBuf = root.join("Cargo.lock");

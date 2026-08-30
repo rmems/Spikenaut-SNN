@@ -102,7 +102,7 @@ No learned SNN, LLM, FPGA controller, or online-training loop may disable or rai
 | 12-13 | Verus | CPU-heavy validator tracking (AVX-512) |
 | 14-15 | Thermal | Pain receptors — power and temperature |
 
-Channels 14-15 are *intended* as the network's pain receptors. **This is design intent, not shipped behaviour.** The repository now carries code, but none of it is a runtime: `tools/` verifies the Q8.8 export and `src/` lifts the model into a NIR graph, and neither consumes a pain signal. There is no reward signal, no online weight update, and nothing that acts on a temperature reading. The 85 °C threshold also belongs to `thalamic-relay`, a peer process listed below, not to the SNN. Wiring a thermal penalty into training is future work.
+Channels 14-15 are *intended* as the network's pain receptors. **This is design intent, not shipped behaviour.** The repository now carries code, but none of it is a runtime. `tools/` verifies the Q8.8 export, `src/` lifts the model into a NIR graph, and `src/encode.rs` does read channels 14-15 — it turns them into spikes and can report that a rejected frame touched them. That is routing and diagnostics, not a response: there is still no reward signal, no online weight update, and nothing that acts on a temperature reading. The 85 °C threshold also belongs to `thalamic-relay`, a peer process listed below, not to the SNN. Wiring a thermal penalty into training is future work.
 
 ### Which map the shipped weights use is unknown
 
@@ -203,6 +203,9 @@ tools/                             # Python, standard library only
 src/                               # Rust, `spikenaut-snn`
 ├── model.rs                       # Decodes snn_model.json, validated
 ├── graph.rs                       # Builds the NIR graph
+├── encode.rs                      # Telemetry -> spikes, on the proposed
+                                   # channel map; not a runtime, and not
+                                   # the shipped weights' input contract
 └── json.rs                        # Strict reader, so the dependency list
                                    # stays at what Cargo.toml declares
 ```
@@ -293,7 +296,7 @@ Spikenaut-SNN is a weights and model repository that now also carries a thin Rus
 | Component | Role | Relationship |
 |---|---|---|
 | [`nir-rs`](https://crates.io/crates/nir-rs) 0.4.2 | NIR graph interchange | **Declared** in `Cargo.toml`, resolved from crates.io — [#8](https://github.com/rmems/Spikenaut-SNN/issues/8) |
-| [`axon-encoder`](https://crates.io/crates/axon-encoder) 0.4.0 | Telemetry → spike encoding | crates.io dependency — [#9](https://github.com/rmems/Spikenaut-SNN/issues/9) |
+| [`axon-encoder`](https://crates.io/crates/axon-encoder) 0.4.0 | Telemetry → spike encoding | **Declared** in `Cargo.toml`, resolved from crates.io — [#9](https://github.com/rmems/Spikenaut-SNN/issues/9) |
 | [`neuromod`](https://crates.io/crates/neuromod) 0.5.2 | LIF engine, learning rules, neuromodulators | crates.io dependency |
 | `silicon-bridge` | Q8.8 `.mem` export | Dependency once published — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
 | `kinetic-signals` | Feature math for channels 0–13 | Dependency once published — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14) |

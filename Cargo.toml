@@ -3,7 +3,7 @@ name = "spikenaut-snn"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97.1"
-description = "Loads the Spikenaut-SNN merged_v2 16-LIF model and builds a Neuromorphic Intermediate Representation (NIR) graph from it."
+description = "Loads the Spikenaut-SNN merged_v2 16-LIF model, builds a Neuromorphic Intermediate Representation (NIR) graph from it, and rate-encodes its 16-channel telemetry frame into spikes."
 repository = "https://github.com/rmems/Spikenaut-SNN"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
@@ -11,11 +11,16 @@ keywords = ["nir", "neuromorphic", "snn", "spiking", "lif"]
 categories = ["science"]
 publish = false
 
-# The only dependency of this repository, resolved from crates.io.
+# The only dependencies of this repository, both resolved from crates.io.
 # Deliberately unpinned to any checkout: the lockfile must resolve
-# `registry+https://github.com/rust-lang/crates.io-index`.
+# `registry+https://github.com/rust-lang/crates.io-index` for each.
 #
-# The `hdf5` feature (`.nir` file I/O) links the system libhdf5 and is left off
-# on purpose; the in-memory graph model has no native dependencies.
+# nir-rs: the `hdf5` feature (`.nir` file I/O) links the system libhdf5 and is
+# left off on purpose; the in-memory graph model has no native dependencies.
+#
+# axon-encoder: 0.4.x is experimental pre-1.0, so `"0.4"` is `>=0.4.0, <0.5.0`.
+# Default features are empty; the optional `serde` and `ndarray` features are
+# left off, and neuromod stays out of the tree on purpose.
 [dependencies]
+axon-encoder = "0.4"
 nir-rs = "0.4.2"

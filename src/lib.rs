@@ -7,7 +7,20 @@
 //! into the [Neuromorphic Intermediate Representation][nir], so the graph can
 //! leave the repository in the standard interchange form.
 //!
-//! It has exactly one dependency, [`nir_rs`] from crates.io.
+//! [`encode`] turns continuous telemetry into spikes at the model's 1 kHz
+//! clock, because the population eats spikes and telemetry is not one.
+//!
+//! It is **not** established as this model's front end. Its [`CHANNEL_MAP`] is
+//! a proposal: it disagrees with the recorded training-time mapping, and
+//! nothing in this repository establishes which mapping -- if either -- the
+//! shipped weights correspond to. Encoding with it does not produce a frame
+//! `merged_v2` was trained to read, so do not present the two as matching
+//! components. See the [`encode`] module docs.
+//!
+//! [`CHANNEL_MAP`]: encode::CHANNEL_MAP
+//!
+//! It has exactly two dependencies, [`nir_rs`] and [`axon_encoder`], both from
+//! crates.io.
 //!
 //! The graph [`load_default_lif_graph`] returns is the shipped `merged_v2`
 //! artifact ([`model::MERGED_V2_PROVENANCE`]): 16-neuron LIF with known
@@ -43,6 +56,9 @@
 //!
 //! # Scope
 //!
+//! [`encode`] converts a 16-wide telemetry frame into spikes and nothing else;
+//! feeding that spike train through the graph is its own ticket.
+//!
 //! [`graph`] builds the `Input → Linear → LIF → Output` layer graph and nothing
 //! else: the learned 16×16 weights ride the `Linear` node, and the LIF
 //! resistances are scaled so one NIR step reproduces the model's fixed-point
@@ -58,10 +74,12 @@
 
 #![warn(missing_docs)]
 
+pub mod encode;
 pub mod graph;
 pub mod json;
 pub mod model;
 
+pub use encode::{CHANNEL_COUNT, CHANNEL_MAP, NonFiniteFrame, TelemetryEncoder, TelemetrySource};
 pub use graph::{
     Provenance, build_lif_graph, build_lif_graph_with_provenance, load_default_lif_graph,
     resistance_from_decay,

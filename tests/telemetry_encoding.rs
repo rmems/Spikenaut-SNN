@@ -1,0 +1,587 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Smoke test for the `axon-encoder` integration (issue #9): a 16-wide frame
+//! shaped like the documented channel map must rate-encode into a defined spike
+//! count at the model's 1 kHz clock, and `axon-encoder` must resolve from
+//! crates.io.
+
+use std::path::Path;
+
+use axon_encoder::Encoder;
+use axon_encoder::encoders::RateEncoder;
+use axon_encoder::error::EncoderError;
+use axon_encoder::types::EncodedOutput;
+use spikenaut_snn::encode::{
+    BASE_RATE_HZ, CHANNEL_COUNT, CHANNEL_MAP, DT_SECONDS, INPUT_RANGE, MAX_RATE_HZ, NonFiniteFrame,
+    TelemetryEncoder, TelemetrySource,
+};
+use spikenaut_snn::model::NEURON_COUNT;
+
+/// One second of ticks at the model's 1 kHz clock.
+const TICKS_PER_SECOND: usize = 1000;
+
+/// Ticks between spikes on a saturated channel: `MAX_RATE_HZ * DT_SECONDS` is
+/// `0.2`, so the accumulator crosses 1.0 on every fifth tick.
+const TICKS_PER_SPIKE: usize = 5;
+
+/// The first thermal pain receptor: GPU power. Channel 15 is its temperature
+/// twin, so `PAIN_CHANNEL + 1` is the other half of the pair.
+const PAIN_CHANNEL: usize = 14;
+
+/// A 16-wide frame shaped like the documented channel map: each telemetry
+/// source drives its own channel pair at its own intensity, spanning the whole
+/// of [`INPUT_RANGE`] from an idle DNX feed to a saturated thermal reading.
+fn telemetry_frame() -> [f32; CHANNEL_COUNT] {
+    let sources = TelemetrySource::ALL.len();
+    let mut frame = [0.0_f32; CHANNEL_COUNT];
+    for (index, source) in TelemetrySource::ALL.into_iter().enumerate() {
+        let intensity = index as f32 / (sources - 1) as f32;
+        for channel in source.channels() {
+            frame[channel] = intensity;
+        }
+    }
+    frame
+}
+
+/// The firing rate a frame value maps to, in hertz.
+fn expected_rate_hz(value: f32) -> f32 {
+    let (min, max) = INPUT_RANGE;
+    let normalized = ((value - min) / (max - min)).clamp(0.0, 1.0);
+    BASE_RATE_HZ + normalized * (MAX_RATE_HZ - BASE_RATE_HZ)
+}
+
+/// Spikes per channel in one [`EncodedOutput`].
+fn counts_per_channel(output: &EncodedOutput) -> [usize; CHANNEL_COUNT] {
+    let mut counts = [0_usize; CHANNEL_COUNT];
+    for spike in &output.spikes {
+        counts[usize::from(spike.channel)] += 1;
+    }
+    counts
+}
+
+/// Acceptance criterion from issue #9: `RateEncoder::try_new` with an explicit
+/// `dt_seconds` accepts the shipped configuration and encodes a 16-wide frame
+/// without panicking.
+#[test]
+fn a_sixteen_wide_frame_encodes_without_panicking() {
+    let mut encoder = RateEncoder::try_new(BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, DT_SECONDS)
+        .expect("the shipped configuration is a valid RateEncoder");
+
+    // The 1 kHz clock is the whole point of passing `dt_seconds` explicitly:
+    // `RateEncoder::new` would have substituted a 100 ms compatibility step.
+    assert_eq!(encoder.dt_seconds(), DT_SECONDS);
+    assert_ne!(DT_SECONDS, RateEncoder::DEFAULT_DT_SECONDS);
+
+    let frame = telemetry_frame();
+    assert_eq!(frame.len(), NEURON_COUNT, "one channel per LIF unit");
+
+    let output = encoder.encode(&frame);
+    assert!(
+        output.spikes.len() <= CHANNEL_COUNT,
+        "batch mode emits at most one spike per channel, got {}",
+        output.spikes.len(),
+    );
+    for spike in &output.spikes {
+        assert!(
+            usize::from(spike.channel) < CHANNEL_COUNT,
+            "spike on channel {} is outside the map",
+            spike.channel,
+        );
+        assert!(spike.polarity, "rate encoding emits positive spikes only");
+    }
+}
+
+/// Streaming mode is deterministic: over one second of 1 ms ticks every channel
+/// emits its mapped firing rate, so the spike count is defined rather than
+/// merely non-panicking.
+#[test]
+fn one_second_of_ticks_reproduces_the_mapped_rates() {
+    let mut encoder = TelemetryEncoder::new().expect("shipped encoder");
+    let frame = telemetry_frame();
+
+    let mut totals = [0_usize; CHANNEL_COUNT];
+    for _ in 0..TICKS_PER_SECOND {
+        let output = encoder.encode_step(&frame).expect("a finite frame encodes");
+        for (channel, count) in counts_per_channel(&output).into_iter().enumerate() {
+            totals[channel] += count;
+        }
+    }
+
+    for (channel, &count) in totals.iter().enumerate() {
+        // One second of ticks, so the count is the rate in hertz, up to the one
+        // spike still sitting in the accumulator.
+        let expected = expected_rate_hz(frame[channel]);
+        assert!(
+            (count as f32 - expected).abs() <= 1.0,
+            "channel {channel} ({}) fired {count} times, expected ~{expected} Hz",
+            CHANNEL_MAP[channel].label(),
+        );
+    }
+
+    // The idle DNX pair still ticks (a silent channel would be indistinguishable
+    // from a dead feed) and the saturated thermal pair is the loudest.
+    assert!(totals[0] > 0, "the base rate keeps an idle channel alive");
+    for source in TelemetrySource::ALL {
+        let [low, high] = source.channels();
+        assert_eq!(totals[low], totals[high], "{}", source.label());
+        assert!(
+            totals[low] <= totals[CHANNEL_COUNT - 1],
+            "thermal is saturated, so no source outruns it",
+        );
+    }
+}
+
+/// Every fifth tick, and only every fifth tick, a saturated frame fires all 16
+/// channels: 200 Hz at a 1 ms step is exactly one spike per five ticks.
+#[test]
+fn a_saturated_frame_fires_every_fifth_tick() {
+    let mut encoder = TelemetryEncoder::new().expect("shipped encoder");
+    let frame = [INPUT_RANGE.1; CHANNEL_COUNT];
+
+    let per_tick = MAX_RATE_HZ * DT_SECONDS;
+    assert!(
+        (per_tick * TICKS_PER_SPIKE as f32 - 1.0).abs() < 1e-6,
+        "{TICKS_PER_SPIKE} ticks of {per_tick} expected spikes must make one spike",
+    );
+
+    for tick in 1..=(TICKS_PER_SPIKE * 3) {
+        let fired = encoder
+            .encode_step(&frame)
+            .expect("a finite frame encodes")
+            .spikes
+            .len();
+        let expected = if tick % TICKS_PER_SPIKE == 0 {
+            CHANNEL_COUNT
+        } else {
+            0
+        };
+        assert_eq!(fired, expected, "tick {tick}");
+    }
+
+    // A cold start is a cold start: the accumulators go back to zero.
+    encoder.reset();
+    for tick in 1..TICKS_PER_SPIKE {
+        assert!(
+            encoder
+                .encode_step(&frame)
+                .expect("a finite frame encodes")
+                .spikes
+                .is_empty(),
+            "tick {tick}",
+        );
+    }
+    assert_eq!(
+        encoder
+            .encode_step(&frame)
+            .expect("a finite frame encodes")
+            .spikes
+            .len(),
+        CHANNEL_COUNT,
+    );
+}
+
+/// An invalid configuration comes back as an error, not a panic. `try_new` is
+/// the reason to prefer it over `RateEncoder::new`, which unwraps.
+#[test]
+fn an_invalid_configuration_is_an_error() {
+    for (dt_seconds, label) in [(0.0, "zero"), (-0.001, "negative"), (f32::NAN, "NaN")] {
+        let error = TelemetryEncoder::try_new(BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, dt_seconds)
+            .expect_err("a non-positive or non-finite time step must be rejected");
+        assert_eq!(
+            error,
+            EncoderError::NonPositiveOrNonFinite {
+                parameter: "dt_seconds",
+            },
+            "{label} dt_seconds",
+        );
+    }
+
+    assert_eq!(
+        TelemetryEncoder::try_new(MAX_RATE_HZ, BASE_RATE_HZ, INPUT_RANGE, DT_SECONDS)
+            .expect_err("base_rate above max_rate must be rejected"),
+        EncoderError::RateOrder,
+    );
+    assert_eq!(
+        TelemetryEncoder::try_new(BASE_RATE_HZ, MAX_RATE_HZ, (1.0, 1.0), DT_SECONDS)
+            .expect_err("a degenerate range must be rejected"),
+        EncoderError::InvalidRange { parameter: "range" },
+    );
+}
+
+/// The wrapper is a wrapper: it must agree tick for tick with a bare
+/// `axon-encoder` `RateEncoder`, proving we exercise the real crate rather than
+/// a local stand-in.
+#[test]
+fn the_wrapper_matches_a_bare_rate_encoder() {
+    let mut wrapped = TelemetryEncoder::new().expect("shipped encoder");
+    let mut bare = RateEncoder::try_new(BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, DT_SECONDS)
+        .expect("shipped configuration");
+    let frame = telemetry_frame();
+
+    for tick in 0..64 {
+        assert_eq!(
+            wrapped.encode_step(&frame).expect("a finite frame encodes"),
+            bare.encode_step(&frame),
+            "tick {tick}",
+        );
+    }
+    assert_eq!(wrapped.as_rate_encoder(), &bare, "state must stay in step");
+}
+
+/// The reason the wrapper validates instead of trusting the encoder underneath.
+///
+/// Handed a raw `NaN`, `axon-encoder` 0.4.0 maps the channel to a 0 Hz rate for
+/// that step; a future 0.4.x could instead let it through into the accumulator,
+/// which is the poisoning this fix is about. Either way the observable result is
+/// the same and the assertion below holds: the bad channel drops *below* the
+/// [`BASE_RATE_HZ`] liveness floor, and the floor is non-zero precisely so a
+/// live-but-idle feed stays distinguishable from a dead one. Its healthy twin
+/// keeps firing, so nothing downstream can tell the frame was ever bad — on the
+/// thermal pain receptors, that is the hardware-protection input going dark in
+/// silence.
+#[test]
+fn a_raw_non_finite_sample_silently_drops_below_the_liveness_floor() {
+    let mut bare = RateEncoder::try_new(BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, DT_SECONDS)
+        .expect("shipped configuration");
+    let mut frame = [INPUT_RANGE.1; CHANNEL_COUNT];
+    frame[PAIN_CHANNEL] = f32::NAN;
+
+    let mut totals = [0_usize; CHANNEL_COUNT];
+    for _ in 0..TICKS_PER_SECOND {
+        let output = bare.encode_step(&frame);
+        for (channel, count) in counts_per_channel(&output).into_iter().enumerate() {
+            totals[channel] += count;
+        }
+    }
+
+    assert!(
+        (totals[PAIN_CHANNEL] as f32) < BASE_RATE_HZ,
+        "the poisoned channel fired {} times in a second, at or above the \
+         {BASE_RATE_HZ} Hz liveness floor",
+        totals[PAIN_CHANNEL],
+    );
+    assert!(
+        totals[PAIN_CHANNEL + 1] > 0,
+        "its healthy twin keeps firing, so nothing flags the frame",
+    );
+}
+
+/// The test that pins the fix: a rejected frame is a no-op.
+///
+/// The rejection must name the offending channel, and name it as thermal.
+///
+/// Every accessor is checked, not just one: `count`, `first_channel`,
+/// `contains` and `touches_pain_receptor` are four independent readings of the
+/// same bitset, and a bug in any one of them would otherwise go unseen.
+fn assert_rejection_identifies_the_pain_channel(rejected: &NonFiniteFrame, label: &str) {
+    assert_eq!(rejected.count(), 1, "{label}");
+    assert_eq!(rejected.first_channel(), PAIN_CHANNEL, "{label}");
+    assert!(rejected.contains(PAIN_CHANNEL), "{label}");
+    assert!(rejected.touches_pain_receptor(), "{label}");
+    assert!(
+        rejected
+            .to_string()
+            .contains(TelemetrySource::Thermal.label()),
+        "{label}: the error must name the source, got {rejected}",
+    );
+}
+
+/// After a rejection the channel fires at its mapped rate again, with no
+/// `reset()` -- tick for tick against a control that never saw a bad frame.
+fn assert_channel_recovers(
+    victim: &mut TelemetryEncoder,
+    control: &mut TelemetryEncoder,
+    frame: &[f32; CHANNEL_COUNT],
+    label: &str,
+) {
+    let mut totals = [0_usize; CHANNEL_COUNT];
+    for tick in 0..TICKS_PER_SECOND {
+        let expected = control.encode_step(frame).expect("a finite frame encodes");
+        let actual = victim.encode_step(frame).expect("a finite frame encodes");
+        assert_eq!(actual, expected, "{label}: tick {tick} after the rejection");
+        for (channel, count) in counts_per_channel(&actual).into_iter().enumerate() {
+            totals[channel] += count;
+        }
+    }
+
+    let expected_rate = expected_rate_hz(frame[PAIN_CHANNEL]);
+    assert!(
+        (totals[PAIN_CHANNEL] as f32 - expected_rate).abs() <= 1.0,
+        "{label}: channel {PAIN_CHANNEL} fired {} times after the rejection, \
+         expected ~{expected_rate} Hz — the accumulator was poisoned",
+        totals[PAIN_CHANNEL],
+    );
+}
+
+/// A `NaN` or either infinity on a thermal channel comes back as an error that
+/// names it, and the encoder that saw it stays identical — state and output —
+/// to one that never did. The channel is *not* poisoned: it goes straight back
+/// to firing at its mapped rate on the next finite frame, with no `reset()`.
+#[test]
+fn a_rejected_frame_leaves_the_channel_working() {
+    for (bad_value, label) in [
+        (f32::NAN, "NaN"),
+        (f32::INFINITY, "+inf"),
+        (f32::NEG_INFINITY, "-inf"),
+    ] {
+        let mut victim = TelemetryEncoder::new().expect("shipped encoder");
+        let mut control = TelemetryEncoder::new().expect("shipped encoder");
+        let frame = telemetry_frame();
+
+        // Warm both to a mid-cycle, non-zero accumulator state, so "unchanged"
+        // is a real claim rather than "both still at a cold start".
+        for _ in 0..(TICKS_PER_SPIKE * 2 + 1) {
+            let expected = control.encode_step(&frame).expect("a finite frame encodes");
+            let actual = victim.encode_step(&frame).expect("a finite frame encodes");
+            assert_eq!(actual, expected, "{label}: warm-up");
+        }
+
+        let mut faulty = frame;
+        faulty[PAIN_CHANNEL] = bad_value;
+        let rejected = victim
+            .encode_step(&faulty)
+            .expect_err("a non-finite frame must be rejected");
+
+        assert_rejection_identifies_the_pain_channel(&rejected, label);
+
+        // Nothing moved. `RateEncoder` compares its whole accumulator state, so
+        // this covers every channel, not just the offending one.
+        assert_eq!(
+            victim.as_rate_encoder(),
+            control.as_rate_encoder(),
+            "{label}: a rejected frame must not advance any accumulator",
+        );
+
+        // And the encoder still works, tick for tick, on the channel that
+        // carried the bad sample.
+        assert_channel_recovers(&mut victim, &mut control, &frame, label);
+    }
+}
+
+/// A per-step spike demand that overflows to infinity is refused.
+///
+/// Both factors can be finite while `max_rate_hz * dt_seconds` is not, and
+/// `RateEncoder` validates each factor rather than the product. Left
+/// unchecked, one saturated frame adds infinity to the streaming accumulator
+/// and draining cannot reduce it: every later step emits at the drain cap even
+/// at minimum input, until `reset()`. That is unrecoverable in a way the
+/// documented finite backlog is not, so the constructor refuses it.
+#[test]
+fn an_overflowing_per_step_demand_is_rejected() {
+    let err = TelemetryEncoder::try_new(0.0, f32::MAX, INPUT_RANGE, 2.0)
+        .expect_err("an infinite per-step demand must not construct an encoder");
+    assert!(
+        matches!(
+            err,
+            EncoderError::NonFiniteRate {
+                parameter: "max_rate_hz * dt_seconds"
+            }
+        ),
+        "the error must name the product, not one of its factors: {err:?}"
+    );
+    assert!(
+        (f32::MAX * 2.0).is_infinite() && f32::MAX.is_finite() && 2.0_f32.is_finite(),
+        "the premise: both factors are finite and the product is not"
+    );
+
+    // The configuration one step below the overflow still constructs, so the
+    // guard rejects the arithmetic rather than large rates in general.
+    TelemetryEncoder::try_new(0.0, f32::MAX, INPUT_RANGE, 1.0)
+        .expect("a finite product, however large, is still accepted");
+}
+
+/// Rejection is atomic, not per-channel.
+///
+/// `RateEncoder::encode_step` walks channels in order and mutates each
+/// accumulator as it goes, so a validator that bailed out when it reached the
+/// bad channel would already have advanced every channel before it. Put the
+/// encoder one tick short of firing and reject a frame whose *last* channel is
+/// bad: if channels 0–14 had been advanced, they would fire a tick ahead of
+/// channel 15 and the population would split.
+#[test]
+fn a_rejected_frame_does_not_partially_advance_other_channels() {
+    let mut encoder = TelemetryEncoder::new().expect("shipped encoder");
+    let saturated = [INPUT_RANGE.1; CHANNEL_COUNT];
+
+    for tick in 1..TICKS_PER_SPIKE {
+        assert!(
+            encoder
+                .encode_step(&saturated)
+                .expect("a finite frame encodes")
+                .spikes
+                .is_empty(),
+            "tick {tick}",
+        );
+    }
+
+    let mut faulty = saturated;
+    faulty[CHANNEL_COUNT - 1] = f32::NAN;
+    let rejected = encoder
+        .encode_step(&faulty)
+        .expect_err("a non-finite frame must be rejected");
+    assert_eq!(rejected.first_channel(), CHANNEL_COUNT - 1);
+    assert_eq!(rejected.count(), 1);
+
+    // The fifth *finite* tick is still the one that fires, and all sixteen
+    // channels fire on it together.
+    let output = encoder
+        .encode_step(&saturated)
+        .expect("a finite frame encodes");
+    assert_eq!(
+        output.spikes.len(),
+        CHANNEL_COUNT,
+        "the rejected frame stole or granted a tick somewhere",
+    );
+    assert_eq!(
+        counts_per_channel(&output),
+        [1; CHANNEL_COUNT],
+        "every channel must fire exactly once, in phase",
+    );
+}
+
+/// One upstream fault usually takes out a whole source, so the error names every
+/// offending channel rather than stopping at the first.
+#[test]
+fn a_rejection_names_every_offending_channel() {
+    let mut encoder = TelemetryEncoder::new().expect("shipped encoder");
+    let mut frame = telemetry_frame();
+    frame[0] = f32::NAN;
+    frame[PAIN_CHANNEL] = f32::INFINITY;
+    frame[PAIN_CHANNEL + 1] = f32::NEG_INFINITY;
+
+    let rejected = encoder
+        .encode_step(&frame)
+        .expect_err("a non-finite frame must be rejected");
+    assert_eq!(
+        rejected.channels().collect::<Vec<_>>(),
+        [0, PAIN_CHANNEL, PAIN_CHANNEL + 1],
+    );
+    assert_eq!(rejected.count(), 3);
+    assert_eq!(rejected.first_channel(), 0);
+    assert!(rejected.touches_pain_receptor());
+
+    let message = rejected.to_string();
+    for source in [TelemetrySource::Dnx, TelemetrySource::Thermal] {
+        assert!(
+            message.contains(source.label()),
+            "{} must appear in {message}",
+            source.label(),
+        );
+    }
+}
+
+/// The stochastic path is an entry point too. It carries no accumulator to
+/// poison, but it would just as silently drop the channel from the draw.
+#[test]
+fn the_batch_path_rejects_non_finite_frames_too() {
+    let mut encoder = TelemetryEncoder::new().expect("shipped encoder");
+
+    for bad_value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let mut frame = telemetry_frame();
+        frame[PAIN_CHANNEL] = bad_value;
+        let rejected = encoder
+            .encode(&frame)
+            .expect_err("the stochastic path must validate too");
+        assert_eq!(rejected.first_channel(), PAIN_CHANNEL);
+        assert!(rejected.touches_pain_receptor());
+    }
+
+    let output = encoder
+        .encode(&telemetry_frame())
+        .expect("a finite frame encodes");
+    assert!(output.spikes.len() <= CHANNEL_COUNT);
+}
+
+/// Acceptance criterion from issue #9: `axon-encoder` resolves to 0.4.x from
+/// crates.io, not from a git or sibling-path pin, and it does not drag
+/// `neuromod` or `silicon-bridge` into the tree.
+#[test]
+fn axon_encoder_resolves_from_crates_io() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let lock = std::fs::read_to_string(root.join("Cargo.lock")).expect("read Cargo.lock");
+
+    let entry = lock
+        .split("[[package]]")
+        .find(|block| block.contains(r#"name = "axon-encoder""#))
+        .expect("Cargo.lock has an axon-encoder package entry");
+
+    assert!(
+        entry.contains(r#"source = "registry+https://github.com/rust-lang/crates.io-index""#),
+        "axon-encoder must come from the crates.io registry, got:\n{entry}",
+    );
+    assert!(
+        entry.contains(r#"version = "0.4."#),
+        "axon-encoder must resolve to 0.4.x, got:\n{entry}",
+    );
+    // The `"0.4"` requirement is `>=0.4.0, <0.5.0`; nothing may pin a checkout.
+    assert!(
+        !lock.contains("source = \"git+") && !lock.contains("[[patch"),
+        "every locked package must come from the registry",
+    );
+    for forbidden in ["neuromod", "silicon-bridge"] {
+        assert!(
+            !lock.contains(&format!("name = \"{forbidden}\"")),
+            "{forbidden} must stay out of the dependency tree",
+        );
+    }
+}
+
+/// A rate above one expected spike per step emits the whole count, not one.
+///
+/// Codex read `MAX_RATE_HZ`'s old doc comment as describing a
+/// one-spike-per-channel-per-step ceiling and concluded that a configuration
+/// with `max_rate_hz * dt_seconds > 1` would be silently capped, under-emitting
+/// and accumulating phase error. That ceiling belongs to `encode`, not
+/// `encode_step`: the streaming path queues whole spikes and drains up to 1024
+/// per channel per step. 200 Hz at a 10 ms step is 2.0 expected spikes per
+/// step, and that is what comes out.
+#[test]
+fn a_rate_above_one_spike_per_step_is_not_capped() {
+    let mut encoder = TelemetryEncoder::try_new(0.0, 200.0, INPUT_RANGE, 0.01)
+        .expect("200 Hz at a 10 ms step is a valid configuration");
+    let mut frame = [0.0f32; CHANNEL_COUNT];
+    frame[0] = INPUT_RANGE.1;
+
+    let steps = 100;
+    let mut spikes = 0usize;
+    for _ in 0..steps {
+        let output = encoder.encode_step(&frame).expect("a finite frame encodes");
+        spikes += output.spikes.iter().filter(|s| s.channel == 0).count();
+    }
+
+    // 200 Hz * 0.01 s * 100 steps = 200 expected. Allow the single trailing
+    // fractional phase that has not crossed 1.0 at the boundary.
+    let expected = 200;
+    assert!(
+        spikes >= expected - 1 && spikes <= expected,
+        "expected about {expected} spikes across {steps} steps, got {spikes}; \
+         a one-spike-per-step cap would have produced {steps}"
+    );
+}
+
+/// The streaming drain ceiling is 1024 spikes per channel per step.
+///
+/// Pins `axon-encoder`'s limit rather than validating against it in
+/// `try_new`: the figure is that crate's internal constant, so this test is
+/// where a change in it should surface. A configuration demanding more than
+/// 1024 spikes per step under-emits permanently, because the queue fills
+/// faster than it drains -- which is why `try_new` documents the ceiling.
+#[test]
+fn the_streaming_drain_ceiling_is_1024_spikes_per_step() {
+    // 2 000 000 Hz at a 1 ms step asks for 2000 spikes per step.
+    let mut encoder = TelemetryEncoder::try_new(0.0, 2_000_000.0, INPUT_RANGE, 0.001)
+        .expect("an over-ceiling rate is accepted, by design");
+    let mut frame = [0.0f32; CHANNEL_COUNT];
+    frame[0] = INPUT_RANGE.1;
+
+    for step in 0..10 {
+        let output = encoder.encode_step(&frame).expect("a finite frame encodes");
+        let spikes = output.spikes.iter().filter(|s| s.channel == 0).count();
+        assert_eq!(
+            spikes, 1024,
+            "step {step}: expected the 1024-spike drain cap, got {spikes}. \
+             If axon-encoder changed its cap, update TelemetryEncoder::try_new's \
+             documented ceiling to match."
+        );
+    }
+}
