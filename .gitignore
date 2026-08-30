@@ -1,11 +1,14 @@
-# Python
-__pycache__/
-*.py[cod]
-
 # Rust
 /target/
 actions-runner/
 **/*.rs.bk
+
+# Python
+# tools/verify_q88.py is importable, so running or importing it writes bytecode
+# next to the source. Never tracked.
+__pycache__/
+*.py[cod]
+.pytest_cache/
 
 # IDE
 .idea/

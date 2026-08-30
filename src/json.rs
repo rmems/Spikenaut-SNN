@@ -151,6 +151,8 @@ struct Parser<'a> {
 }
 
 impl Parser<'_> {
+    /// A `JsonError` carrying the current byte offset, so a failure deep in
+    /// a nested document can be located in the source text.
     fn error(&self, message: impl Into<String>) -> JsonError {
         JsonError {
             message: message.into(),
@@ -158,16 +160,19 @@ impl Parser<'_> {
         }
     }
 
+    /// The byte at the cursor, or `None` at end of input.
     fn peek(&self) -> Option<u8> {
         self.bytes.get(self.pos).copied()
     }
 
+    /// Advance past the four bytes RFC 8259 counts as whitespace.
     fn skip_whitespace(&mut self) {
         while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
             self.pos += 1;
         }
     }
 
+    /// Consume `byte`, or fail naming what was expected.
     fn expect(&mut self, byte: u8) -> Result<(), JsonError> {
         if self.peek() == Some(byte) {
             self.pos += 1;
@@ -177,6 +182,7 @@ impl Parser<'_> {
         }
     }
 
+    /// Consume one of the three bare words (`null`, `true`, `false`).
     fn literal(&mut self, word: &str, value: Json) -> Result<Json, JsonError> {
         if self.bytes[self.pos..].starts_with(word.as_bytes()) {
             self.pos += word.len();
@@ -186,6 +192,10 @@ impl Parser<'_> {
         }
     }
 
+    /// Dispatch on the first byte to the parser for that value type.
+    ///
+    /// `depth` guards against a document nested deeply enough to overflow
+    /// the stack, since this parser recurses.
     fn parse_value(&mut self, depth: usize) -> Result<Json, JsonError> {
         if depth > MAX_DEPTH {
             return Err(self.error(format!("nesting deeper than {MAX_DEPTH} levels")));
@@ -203,6 +213,7 @@ impl Parser<'_> {
         }
     }
 
+    /// `[` value `,` value `]`, rejecting a trailing comma.
     fn parse_array(&mut self, depth: usize) -> Result<Json, JsonError> {
         self.expect(b'[')?;
         let mut items = Vec::new();
@@ -226,6 +237,7 @@ impl Parser<'_> {
         }
     }
 
+    /// `{` member `,` member `}`, rejecting a trailing comma.
     fn parse_object(&mut self, depth: usize) -> Result<Json, JsonError> {
         self.expect(b'{')?;
         let mut map = BTreeMap::new();
@@ -235,19 +247,7 @@ impl Parser<'_> {
             return Ok(Json::Object(map));
         }
         loop {
-            self.skip_whitespace();
-            let key_offset = self.pos;
-            let key = self.parse_string()?;
-            self.skip_whitespace();
-            self.expect(b':')?;
-            self.skip_whitespace();
-            let value = self.parse_value(depth + 1)?;
-            if map.insert(key.clone(), value).is_some() {
-                return Err(JsonError {
-                    message: format!("duplicate object key {key:?}"),
-                    offset: key_offset,
-                });
-            }
+            self.parse_member(&mut map, depth)?;
             self.skip_whitespace();
             match self.peek() {
                 Some(b',') => self.pos += 1,
@@ -260,6 +260,36 @@ impl Parser<'_> {
         }
     }
 
+    /// Read one `"key": value` pair into `map`.
+    ///
+    /// The offset of the *key* is captured before parsing so a duplicate is
+    /// reported where the second key starts, not where its value ends.
+    fn parse_member(
+        &mut self,
+        map: &mut BTreeMap<String, Json>,
+        depth: usize,
+    ) -> Result<(), JsonError> {
+        self.skip_whitespace();
+        let key_offset = self.pos;
+        let key = self.parse_string()?;
+        self.skip_whitespace();
+        self.expect(b':')?;
+        self.skip_whitespace();
+        let value = self.parse_value(depth + 1)?;
+        if map.insert(key.clone(), value).is_some() {
+            return Err(JsonError {
+                message: format!("duplicate object key {key:?}"),
+                offset: key_offset,
+            });
+        }
+        Ok(())
+    }
+
+    /// Sign, integer, optional fraction, optional exponent, then `f64`.
+    ///
+    /// The span is matched byte-by-byte against the grammar before it is
+    /// handed to `str::parse`, so a JSON-invalid literal Rust happens to
+    /// accept -- `1.`, `.5`, `0x10`, `inf` -- is refused here.
     fn parse_number(&mut self) -> Result<Json, JsonError> {
         let start = self.pos;
         if self.peek() == Some(b'-') {
@@ -271,23 +301,8 @@ impl Parser<'_> {
             Some(c) if c.is_ascii_digit() => self.skip_digits(),
             _ => return Err(self.error("expected a digit")),
         }
-        if self.peek() == Some(b'.') {
-            self.pos += 1;
-            if !self.peek().is_some_and(|c| c.is_ascii_digit()) {
-                return Err(self.error("expected a digit after the decimal point"));
-            }
-            self.skip_digits();
-        }
-        if matches!(self.peek(), Some(b'e' | b'E')) {
-            self.pos += 1;
-            if matches!(self.peek(), Some(b'+' | b'-')) {
-                self.pos += 1;
-            }
-            if !self.peek().is_some_and(|c| c.is_ascii_digit()) {
-                return Err(self.error("expected a digit in the exponent"));
-            }
-            self.skip_digits();
-        }
+        self.scan_fraction()?;
+        self.scan_exponent()?;
 
         // The span was matched byte-by-byte against the ASCII number grammar.
         let text = std::str::from_utf8(&self.bytes[start..self.pos])
@@ -301,12 +316,43 @@ impl Parser<'_> {
         Ok(Json::Number(value))
     }
 
+    /// The optional fraction: `.` then at least one digit. A bare `1.` is a
+    /// syntax error in JSON, unlike in Rust.
+    fn scan_fraction(&mut self) -> Result<(), JsonError> {
+        if self.peek() == Some(b'.') {
+            self.pos += 1;
+            if !self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                return Err(self.error("expected a digit after the decimal point"));
+            }
+            self.skip_digits();
+        }
+        Ok(())
+    }
+
+    /// The optional exponent: `e` or `E`, an optional sign, then at least one
+    /// digit. A bare `1e` is a syntax error.
+    fn scan_exponent(&mut self) -> Result<(), JsonError> {
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            self.pos += 1;
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.pos += 1;
+            }
+            if !self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                return Err(self.error("expected a digit in the exponent"));
+            }
+            self.skip_digits();
+        }
+        Ok(())
+    }
+
+    /// Advance over a run of ASCII digits.
     fn skip_digits(&mut self) {
         while self.peek().is_some_and(|c| c.is_ascii_digit()) {
             self.pos += 1;
         }
     }
 
+    /// A quoted string, with escapes decoded and control bytes refused.
     fn parse_string(&mut self) -> Result<String, JsonError> {
         self.expect(b'"')?;
         let mut out = String::new();
@@ -324,25 +370,32 @@ impl Parser<'_> {
                 Some(c) if c < 0x20 => {
                     return Err(self.error("unescaped control character in string"));
                 }
-                Some(_) => {
-                    // The input is a `&str`, so the bytes from here to the next
-                    // ASCII delimiter form whole UTF-8 sequences.
-                    let start = self.pos;
-                    while self
-                        .peek()
-                        .is_some_and(|c| c != b'"' && c != b'\\' && c >= 0x20)
-                    {
-                        self.pos += 1;
-                    }
-                    out.push_str(
-                        std::str::from_utf8(&self.bytes[start..self.pos])
-                            .expect("slice of a &str at char boundaries"),
-                    );
-                }
+                Some(_) => self.take_literal_run(&mut out),
             }
         }
     }
 
+    /// Consume the run of literal characters up to the next `"`, `\\` or
+    /// control byte, and append it whole.
+    ///
+    /// The input is a `&str`, so the bytes from here to the next ASCII
+    /// delimiter form whole UTF-8 sequences -- the slice can never split a
+    /// multi-byte character.
+    fn take_literal_run(&mut self, out: &mut String) {
+        let start = self.pos;
+        while self
+            .peek()
+            .is_some_and(|c| c != b'"' && c != b'\\' && c >= 0x20)
+        {
+            self.pos += 1;
+        }
+        out.push_str(
+            std::str::from_utf8(&self.bytes[start..self.pos])
+                .expect("slice of a &str at char boundaries"),
+        );
+    }
+
+    /// One escape sequence, the cursor already past the backslash.
     fn parse_escape(&mut self, out: &mut String) -> Result<(), JsonError> {
         let escape = self
             .peek()
@@ -390,6 +443,7 @@ impl Parser<'_> {
         Ok(())
     }
 
+    /// Exactly four hex digits, as in a `\\uXXXX` escape.
     fn parse_hex4(&mut self) -> Result<u16, JsonError> {
         let end = self.pos + 4;
         let digits = self
