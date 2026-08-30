@@ -324,6 +324,70 @@ def parse_mem(path: Path) -> list[MemEntry]:
     return entries
 
 
+def _decode_model_json(path: Path) -> object:
+    """Read and decode the model file, keeping every failure in contract."""
+    try:
+        return json.loads(read_utf8_text(path))
+    except json.JSONDecodeError:
+        raise
+    except ValueError as exc:
+        # CPython raises a bare ValueError for an integer literal longer than
+        # sys.get_int_max_str_digits() (4300 by default on 3.11+). It is not a
+        # JSONDecodeError, so it would escape main() as a traceback.
+        raise ParseError(f"{path.name}: unreadable JSON number: {exc}") from exc
+
+
+def _model_neurons(path: Path, model: object) -> list:
+    """Return the neuron list, rejecting any container that is not one.
+
+    Validated before any field is read, so a top-level list/scalar cannot leak
+    an AttributeError or TypeError past the ParseError contract.
+    """
+    if not isinstance(model, dict):
+        raise ParseError(
+            f"{path.name}: expected a top-level JSON object, got "
+            f"{type(model).__name__}"
+        )
+    neurons = model.get("neurons")
+    if not isinstance(neurons, list):
+        raise ParseError(f"{path.name}: expected a top-level 'neurons' list")
+    if len(neurons) != N_NEURONS:
+        raise ParseError(
+            f"{path.name}: expected {N_NEURONS} neurons, found {len(neurons)}"
+        )
+    return neurons
+
+
+def _validate_neuron(path: Path, index: int, neuron: object) -> None:
+    """Assert one neuron has the expected shape and finite numeric scalars."""
+    if not isinstance(neuron, dict):
+        raise ParseError(
+            f"{path.name}: neuron {index} is not a JSON object, got "
+            f"{type(neuron).__name__}"
+        )
+    for key in ("threshold", "decay_rate", "weights"):
+        if key not in neuron:
+            raise ParseError(f"{path.name}: neuron {index} is missing {key!r}")
+    weights = neuron["weights"]
+    if not isinstance(weights, list):
+        raise ParseError(
+            f"{path.name}: neuron {index} 'weights' is not a list, got "
+            f"{type(weights).__name__}"
+        )
+    if len(weights) != N_INPUTS:
+        raise ParseError(
+            f"{path.name}: neuron {index} has {len(weights)} weights, "
+            f"expected {N_INPUTS}"
+        )
+    # Scalar types, not just container shape: the float() conversions
+    # downstream must never see a None, a bool, a string, a container, or
+    # a non-finite float.
+    as_finite_float(neuron["threshold"], f"{path.name}: neuron {index} 'threshold'")
+    as_finite_float(neuron["decay_rate"], f"{path.name}: neuron {index} 'decay_rate'")
+    for j, weight in enumerate(weights):
+        as_finite_float(weight, f"{path.name}: neuron {index} weight {j}")
+
+
 def load_model(path: Path) -> dict:
     """Load snn_model.json and assert it has the shape the checker assumes.
 
@@ -367,53 +431,10 @@ def load_model(path: Path) -> dict:
     """
     if not path.is_file():
         raise ParseError(f"missing file: {path}")
-    try:
-        model = json.loads(read_utf8_text(path))
-    except json.JSONDecodeError:
-        raise
-    except ValueError as exc:
-        # CPython raises a bare ValueError for an integer literal longer than
-        # sys.get_int_max_str_digits() (4300 by default on 3.11+). It is not a
-        # JSONDecodeError, so it would escape main() as a traceback.
-        raise ParseError(f"{path.name}: unreadable JSON number: {exc}") from exc
-    if not isinstance(model, dict):
-        raise ParseError(
-            f"{path.name}: expected a top-level JSON object, got "
-            f"{type(model).__name__}"
-        )
-    neurons = model.get("neurons")
-    if not isinstance(neurons, list):
-        raise ParseError(f"{path.name}: expected a top-level 'neurons' list")
-    if len(neurons) != N_NEURONS:
-        raise ParseError(
-            f"{path.name}: expected {N_NEURONS} neurons, found {len(neurons)}"
-        )
+    model = _decode_model_json(path)
+    neurons = _model_neurons(path, model)
     for i, neuron in enumerate(neurons):
-        if not isinstance(neuron, dict):
-            raise ParseError(
-                f"{path.name}: neuron {i} is not a JSON object, got "
-                f"{type(neuron).__name__}"
-            )
-        for key in ("threshold", "decay_rate", "weights"):
-            if key not in neuron:
-                raise ParseError(f"{path.name}: neuron {i} is missing {key!r}")
-        if not isinstance(neuron["weights"], list):
-            raise ParseError(
-                f"{path.name}: neuron {i} 'weights' is not a list, got "
-                f"{type(neuron['weights']).__name__}"
-            )
-        if len(neuron["weights"]) != N_INPUTS:
-            raise ParseError(
-                f"{path.name}: neuron {i} has {len(neuron['weights'])} weights, "
-                f"expected {N_INPUTS}"
-            )
-        # Scalar types, not just container shape: the float() conversions
-        # downstream must never see a None, a bool, a string, a container, or
-        # a non-finite float.
-        as_finite_float(neuron["threshold"], f"{path.name}: neuron {i} 'threshold'")
-        as_finite_float(neuron["decay_rate"], f"{path.name}: neuron {i} 'decay_rate'")
-        for j, weight in enumerate(neuron["weights"]):
-            as_finite_float(weight, f"{path.name}: neuron {i} weight {j}")
+        _validate_neuron(path, i, neuron)
     return model
 
 
@@ -707,6 +728,30 @@ def _check_canonical_round_trip(entries: list[MemEntry]) -> CheckOutcome:
     return notes, mismatches, failed
 
 
+def _sign_census(entries: list[MemEntry]) -> tuple[list[MemEntry], list[MemEntry]]:
+    """Split entries into two's-complement negatives and strict positives.
+
+    Zero belongs to neither, which is what makes the counts in the range note
+    add up to the section length only when every word is accounted for.
+    """
+    return (
+        [e for e in entries if e.word >= 0x8000],
+        [e for e in entries if 0 < e.word < 0x8000],
+    )
+
+
+def _range_note(entries: list[MemEntry], negatives: list, positives: list) -> list[str]:
+    """One line describing the section's span and its sign census."""
+    if not entries:
+        return []
+    values = [e.value for e in entries]
+    return [
+        f"range {min(values):+.7f} .. {max(values):+.7f}  "
+        f"({len(negatives)} inhibitory, {len(positives)} excitatory, "
+        f"{len(entries) - len(negatives) - len(positives)} zero)"
+    ]
+
+
 def _check_sign_integrity(entries: list[MemEntry]) -> CheckOutcome:
     """Report the value range, then assert the section is genuinely signed.
 
@@ -714,17 +759,8 @@ def _check_sign_integrity(entries: list[MemEntry]) -> CheckOutcome:
     must still contain negative (inhibitory) weights. A clamp-to-zero encoder
     produces a file with none -- the issue #15 hazard.
     """
-    notes: list[str] = []
-    negatives = [e for e in entries if e.word >= 0x8000]
-    positives = [e for e in entries if 0 < e.word < 0x8000]
-    values = [e.value for e in entries]
-
-    if entries:
-        notes.append(
-            f"range {min(values):+.7f} .. {max(values):+.7f}  "
-            f"({len(negatives)} inhibitory, {len(positives)} excitatory, "
-            f"{len(entries) - len(negatives) - len(positives)} zero)"
-        )
+    negatives, positives = _sign_census(entries)
+    notes = _range_note(entries, negatives, positives)
 
     if not negatives:
         notes.append(
@@ -812,6 +848,17 @@ def check_signed_section(
 # ---------------------------------------------------------------------------
 
 
+def _hidden_weight_column(neurons: list) -> tuple[list[float], list[str]]:
+    """Flatten the 16x16 hidden matrix row-major, with a label per value."""
+    hidden: list[float] = []
+    labels: list[str] = []
+    for i, neuron in enumerate(neurons):
+        for j, weight in enumerate(neuron["weights"]):
+            hidden.append(as_finite_float(weight, f"neurons[{i}].weights[{j}]"))
+            labels.append(f"neuron {i:2d} <- input {j:2d}")
+    return hidden, labels
+
+
 def verify_shipped() -> list[SectionResult]:
     """Run all four section checks against the artifacts shipped in the repo.
 
@@ -839,12 +886,7 @@ def verify_shipped() -> list[SectionResult]:
         as_finite_float(n["decay_rate"], f"neurons[{i}].decay_rate")
         for i, n in enumerate(neurons)
     ]
-    hidden: list[float] = []
-    hidden_labels: list[str] = []
-    for i, neuron in enumerate(neurons):
-        for j, weight in enumerate(neuron["weights"]):
-            hidden.append(as_finite_float(weight, f"neurons[{i}].weights[{j}]"))
-            hidden_labels.append(f"neuron {i:2d} <- input {j:2d}")
+    hidden, hidden_labels = _hidden_weight_column(neurons)
 
     return [
         check_against_floats(

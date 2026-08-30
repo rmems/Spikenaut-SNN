@@ -181,31 +181,40 @@ def _shipped_artifacts_verify(stream) -> int:
     return checks
 
 
-def _clamp_to_zero_rejected(tmp: Path, stream) -> int:
-    """Reject output weights re-encoded by the issue #15 clamp-to-zero encoder.
-
-    The one that matters. The clamped file is still 48 valid hex lines, so
-    only a sign-aware check catches it -- and it must be caught both against
-    the true floats and by the standalone signed-section invariants.
-    """
+def _clamp_rejected_by_sign_invariants(clamped, stream) -> int:
+    """The signed-section check rejects the clamped file with no float reference."""
     checks = 0
+    # 3b. and the standalone signed-section check must reject it too,
+    #     without needing any float reference at all.
+    invariants = check_signed_section(
+        "output weights (clamp-to-zero candidate)",
+        "signed two's-complement invariants",
+        clamped,
+        N_OUTPUT_WEIGHTS,
+    )
+    _require(
+        not invariants.ok,
+        "sign-integrity check ACCEPTED a clamp-to-zero file -- the shipped "
+        "output weights would not be protected, since snn_model.json has "
+        "no output layer to compare against",
+    )
+    _require(
+        any("SIGN INTEGRITY FAILURE" in n for n in invariants.notes),
+        "clamp-to-zero file was rejected, but not for losing its negative "
+        f"weights; notes were {invariants.notes}",
+    )
+    checks += 2
     print(
-        "3. clamp-to-zero output weights are REJECTED (issue #15 hazard)",
+        "   ok: sign-integrity check also rejects it with no float "
+        "reference needed",
         file=stream,
     )
-    real = parse_mem(MEM_OUTPUT)
-    real_floats = [e.value for e in real]
-    n_negative = sum(1 for v in real_floats if v < 0)
-    _require(
-        n_negative > 0,
-        "shipped output weights have no negatives; self-test cannot "
-        "demonstrate the clamp regression",
-    )
+    return checks
 
-    clamped_path = tmp / "parameters_output_weights_clamped.mem"
-    _write_mem(clamped_path, [encode_q88_clamp_to_zero(v) for v in real_floats])
-    clamped = parse_mem(clamped_path)
 
+def _clamp_flagged_against_floats(real_floats, clamped, n_negative, stream) -> int:
+    """Against the true float vector, every inhibitory weight must be flagged."""
+    checks = 0
     # 3a. against the true float vector, every negative must be flagged.
     against_truth = check_against_floats(
         "output weights (clamp-to-zero candidate)",
@@ -238,32 +247,37 @@ def _clamp_to_zero_rejected(tmp: Path, stream) -> int:
             f"       ... and {len(against_truth.mismatches) - 3} more",
             file=stream,
         )
+    return checks
 
-    # 3b. and the standalone signed-section check must reject it too,
-    #     without needing any float reference at all.
-    invariants = check_signed_section(
-        "output weights (clamp-to-zero candidate)",
-        "signed two's-complement invariants",
-        clamped,
-        N_OUTPUT_WEIGHTS,
-    )
-    _require(
-        not invariants.ok,
-        "sign-integrity check ACCEPTED a clamp-to-zero file -- the shipped "
-        "output weights would not be protected, since snn_model.json has "
-        "no output layer to compare against",
-    )
-    _require(
-        any("SIGN INTEGRITY FAILURE" in n for n in invariants.notes),
-        "clamp-to-zero file was rejected, but not for losing its negative "
-        f"weights; notes were {invariants.notes}",
-    )
-    checks += 2
+
+def _clamp_to_zero_rejected(tmp: Path, stream) -> int:
+    """Reject output weights re-encoded by the issue #15 clamp-to-zero encoder.
+
+    The one that matters. The clamped file is still 48 valid hex lines, so
+    only a sign-aware check catches it -- and it must be caught both against
+    the true floats and by the standalone signed-section invariants.
+    """
+    checks = 0
     print(
-        "   ok: sign-integrity check also rejects it with no float "
-        "reference needed",
+        "3. clamp-to-zero output weights are REJECTED (issue #15 hazard)",
         file=stream,
     )
+    real = parse_mem(MEM_OUTPUT)
+    real_floats = [e.value for e in real]
+    n_negative = sum(1 for v in real_floats if v < 0)
+    _require(
+        n_negative > 0,
+        "shipped output weights have no negatives; self-test cannot "
+        "demonstrate the clamp regression",
+    )
+
+    clamped_path = tmp / "parameters_output_weights_clamped.mem"
+    _write_mem(clamped_path, [encode_q88_clamp_to_zero(v) for v in real_floats])
+    clamped = parse_mem(clamped_path)
+
+    checks += _clamp_flagged_against_floats(real_floats, clamped, n_negative, stream)
+
+    checks += _clamp_rejected_by_sign_invariants(clamped, stream)
     print("", file=stream)
     return checks
 
@@ -324,6 +338,73 @@ def _truncated_file_rejected(tmp: Path, stream) -> int:
     return checks
 
 
+def _signed_only_run_passes() -> int:
+    """A signed-only run passes and claims only the pin, with a 0.0 residual."""
+    checks = 0
+    # The signed-only path (max_residual_lsb is None) must still pass and
+    # must still report 0.0 rather than raising.
+    signed_only = [
+        check_signed_section(
+            "output weights (no residual)",
+            "pin + signed invariants",
+            parse_mem(MEM_OUTPUT),
+            N_OUTPUT_WEIGHTS,
+            pin=ShippedPin(
+                hex_words=OUTPUT_WEIGHTS_HEX,
+                canon_sha256=OUTPUT_WEIGHTS_CANON_SHA256,
+            ),
+        )
+    ]
+    _require(
+        all(r.evidence.max_residual_lsb is None for r in signed_only),
+        "signed-only section must carry no residual data (this is the crash path)",
+    )
+    _require(
+        worst_residual_lsb(signed_only) == 0.0,
+        "signed-only sections must report 0.0 residual, not raise",
+    )
+    silent = io.StringIO()
+    signed_ok = report(signed_only, stream=silent)
+    _require(signed_ok, "signed-only report() should pass and not raise")
+    _require(
+        "cross-validated" not in silent.getvalue(),
+        f"signed-only report() claimed a float cross-validation that never "
+        f"happened: {silent.getvalue()!r}",
+    )
+    checks += 4
+    return checks
+
+
+def _short_run_fails(shipped) -> int:
+    """A run missing a section fails even though every section it has is clean."""
+    checks = 0
+    # A short run -- a section dropped upstream -- must fail too, even
+    # though every section it does contain verifies cleanly.
+    _require(
+        shipped[0].ok,
+        "sanity: the first shipped section must itself verify, or the "
+        "short-run assertion below would prove nothing",
+    )
+    silent = io.StringIO()
+    short_run_ok = report(
+        shipped[:1],
+        stream=silent,
+        expected_sections=EXPECTED_SECTIONS,
+        expected_artifacts=EXPECTED_ARTIFACTS,
+    )
+    _require(
+        not short_run_ok,
+        f"report() accepted 1 of {EXPECTED_SECTIONS} sections as a clean run",
+    )
+    _require(
+        "INCOMPLETE RUN" in silent.getvalue(),
+        f"short run was rejected, but not as an incomplete run: "
+        f"{silent.getvalue()!r}",
+    )
+    checks += 3
+    return checks
+
+
 def _empty_result_set_fails(tmp: Path, stream) -> int:
     """An empty or short result set FAILS, and worst_residual_lsb stays crash-safe."""
     del tmp  # uniform scenario signature; this one writes no scratch files
@@ -368,62 +449,9 @@ def _empty_result_set_fails(tmp: Path, stream) -> int:
     )
     checks += 4
 
-    # A short run -- a section dropped upstream -- must fail too, even
-    # though every section it does contain verifies cleanly.
-    _require(
-        shipped[0].ok,
-        "sanity: the first shipped section must itself verify, or the "
-        "short-run assertion below would prove nothing",
-    )
-    silent = io.StringIO()
-    short_run_ok = report(
-        shipped[:1],
-        stream=silent,
-        expected_sections=EXPECTED_SECTIONS,
-        expected_artifacts=EXPECTED_ARTIFACTS,
-    )
-    _require(
-        not short_run_ok,
-        f"report() accepted 1 of {EXPECTED_SECTIONS} sections as a clean run",
-    )
-    _require(
-        "INCOMPLETE RUN" in silent.getvalue(),
-        f"short run was rejected, but not as an incomplete run: "
-        f"{silent.getvalue()!r}",
-    )
-    checks += 3
+    checks += _short_run_fails(shipped)
 
-    # The signed-only path (max_residual_lsb is None) must still pass and
-    # must still report 0.0 rather than raising.
-    signed_only = [
-        check_signed_section(
-            "output weights (no residual)",
-            "pin + signed invariants",
-            parse_mem(MEM_OUTPUT),
-            N_OUTPUT_WEIGHTS,
-            pin=ShippedPin(
-                hex_words=OUTPUT_WEIGHTS_HEX,
-                canon_sha256=OUTPUT_WEIGHTS_CANON_SHA256,
-            ),
-        )
-    ]
-    _require(
-        all(r.evidence.max_residual_lsb is None for r in signed_only),
-        "signed-only section must carry no residual data (this is the crash path)",
-    )
-    _require(
-        worst_residual_lsb(signed_only) == 0.0,
-        "signed-only sections must report 0.0 residual, not raise",
-    )
-    silent = io.StringIO()
-    signed_ok = report(signed_only, stream=silent)
-    _require(signed_ok, "signed-only report() should pass and not raise")
-    _require(
-        "cross-validated" not in silent.getvalue(),
-        f"signed-only report() claimed a float cross-validation that never "
-        f"happened: {silent.getvalue()!r}",
-    )
-    checks += 4
+    checks += _signed_only_run_passes()
     print(
         "   ok: report([]) and a 1-of-4-section run both FAIL; "
         "worst_residual_lsb([]) returns 0.0;\n"
@@ -434,23 +462,41 @@ def _empty_result_set_fails(tmp: Path, stream) -> int:
     return checks
 
 
-def _wellformed_corruption_rejected(tmp: Path, stream) -> int:
-    """Reject well-formed output-weight corruption that still round-trips.
-
-    An FFF9->FFF8 swap decodes and re-encodes cleanly, so only the
-    shipped-file pin catches it.
-    """
-    real = parse_mem(MEM_OUTPUT)
+def _gold_pin_rejects_zeroed_image(tmp, stream, gold) -> int:
+    """47 zeros plus FFFF is well-formed and signed; only the gold pin catches it."""
     checks = 0
-    #
-    # Sign-integrity + decode->re-encode accept any well-formed 48-word
-    # file with at least one high-bit word. The gold pin is what makes
-    # FFF9->FFF8 and "47 zeros + FFFF" fail.
-    print(
-        "7. well-formed output-weight corruption is REJECTED (shipped-file pin)",
-        file=stream,
+
+    junk_path = tmp / "parameters_output_weights_junk.mem"
+    _write_mem(junk_path, [0] * 47 + [0xFFFF])
+    unpinned_junk = check_signed_section(
+        "output weights (47 zeros + FFFF, no pin)",
+        "sign-integrity + round-trip only",
+        parse_mem(junk_path),
+        N_OUTPUT_WEIGHTS,
     )
-    gold = tuple(e.text.upper() for e in real)
+    _require(
+        unpinned_junk.ok,
+        "sanity: 47 zeros + FFFF still passes sign+round-trip; the pin is load-bearing",
+    )
+    pinned_junk = check_signed_section(
+        "output weights (47 zeros + FFFF)",
+        "gold hex pin",
+        parse_mem(junk_path),
+        N_OUTPUT_WEIGHTS,
+        pin=ShippedPin(hex_words=gold),
+    )
+    _require(
+        not pinned_junk.ok,
+        "verifier ACCEPTED 47 zeros + one FFFF against the gold pin",
+    )
+    checks += 2
+    print("   ok: 47 zeros + FFFF rejected by gold pin, accepted without it", file=stream)
+    return checks
+
+
+def _shipped_file_matches_its_pins(gold, real) -> int:
+    """The shipped file must match both pins before it can serve as the gold reference."""
+    checks = 0
     _require(
         gold == OUTPUT_WEIGHTS_HEX,
         "gold tuple derived from the shipped file does not match the pin",
@@ -467,6 +513,17 @@ def _wellformed_corruption_rejected(tmp: Path, stream) -> int:
         gold[0] == "FFF9",
         f"self-test expects shipped word 0 to be FFF9, got {gold[0]}",
     )
+    return checks
+
+
+def _gold_pin_rejects_swapped_word(tmp, stream, real, gold) -> int:
+    """An FFF9->FFF8 swap round-trips cleanly; only the gold pin catches it."""
+    checks = 0
+    print(
+        "7. well-formed output-weight corruption is REJECTED (shipped-file pin)",
+        file=stream,
+    )
+    checks += _shipped_file_matches_its_pins(gold, real)
 
     mutated_words = [e.word for e in real]
     mutated_words[0] = 0xFFF8
@@ -498,33 +555,25 @@ def _wellformed_corruption_rejected(tmp: Path, stream) -> int:
         f"expected 1 mismatch at index 0, got {pinned_fff8.mismatches}",
     )
     checks += 6
-    print("   ok: FFF9->FFF8 rejected by gold pin, accepted without it", file=stream)
+    return checks
 
-    junk_path = tmp / "parameters_output_weights_junk.mem"
-    _write_mem(junk_path, [0] * 47 + [0xFFFF])
-    unpinned_junk = check_signed_section(
-        "output weights (47 zeros + FFFF, no pin)",
-        "sign-integrity + round-trip only",
-        parse_mem(junk_path),
-        N_OUTPUT_WEIGHTS,
-    )
-    _require(
-        unpinned_junk.ok,
-        "sanity: 47 zeros + FFFF still passes sign+round-trip; the pin is load-bearing",
-    )
-    pinned_junk = check_signed_section(
-        "output weights (47 zeros + FFFF)",
-        "gold hex pin",
-        parse_mem(junk_path),
-        N_OUTPUT_WEIGHTS,
-        pin=ShippedPin(hex_words=gold),
-    )
-    _require(
-        not pinned_junk.ok,
-        "verifier ACCEPTED 47 zeros + one FFFF against the gold pin",
-    )
-    checks += 2
-    print("   ok: 47 zeros + FFFF rejected by gold pin, accepted without it", file=stream)
+
+def _wellformed_corruption_rejected(tmp: Path, stream) -> int:
+    """Reject well-formed output-weight corruption that still round-trips.
+
+    An FFF9->FFF8 swap decodes and re-encodes cleanly, so only the
+    shipped-file pin catches it.
+    """
+    real = parse_mem(MEM_OUTPUT)
+    gold = tuple(e.text.upper() for e in real)
+    checks = 0
+    #
+    # Sign-integrity + decode->re-encode accept any well-formed 48-word
+    # file with at least one high-bit word. The gold pin is what makes
+    # FFF9->FFF8 and "47 zeros + FFFF" fail.
+    checks += _gold_pin_rejects_swapped_word(tmp, stream, real, gold)
+    print("   ok: FFF9->FFF8 rejected by gold pin, accepted without it", file=stream)
+    checks += _gold_pin_rejects_zeroed_image(tmp, stream, gold)
     print("", file=stream)
     return checks
 
@@ -648,25 +697,9 @@ def _reject_oversized_json_int(tmp: Path) -> int:
     raise SelfTestFailure("load_model ACCEPTED an oversized JSON integer")
 
 
-def _nonnumeric_fields_parse_error(tmp: Path, stream) -> int:
-    """Nonnumeric and overflowing scalar fields exit through ParseError."""
-    good_model = load_model(MODEL_JSON)
+def _finite_float_positive_controls() -> int:
+    """The scalar guard must not reject valid numbers, or it is just breaking the tool."""
     checks = 0
-    #
-    # Codex: load_model() validated container shape but not scalar type,
-    # so a model with the right shape and {"threshold": null} -- or an
-    # object-valued weight -- passed every check and then raised an
-    # uncaught TypeError at float(), tracebacking instead of honoring the
-    # documented exit-code-2 parse-error contract.
-    #
-    # bool is the subtle one: it subclasses int, so isinstance(True, int)
-    # is True and a naive numeric guard would silently encode True as 1.0.
-    print(
-        "9. nonnumeric threshold/decay/weight values are REJECTED as ParseError",
-        file=stream,
-    )
-    checks += _reject_oversized_json_int(tmp)
-
     # Positive controls first: the guard must not reject valid numbers,
     # including a JSON integer, or it would just be breaking the tool.
     _require(
@@ -699,27 +732,72 @@ def _nonnumeric_fields_parse_error(tmp: Path, stream) -> int:
     else:
         raise SelfTestFailure("encode_q88 ACCEPTED 1e308")
     checks += 4
+    return checks
 
-    bad_scalars = [
-        ("null threshold", "threshold", None),
-        ("string threshold", "threshold", "0.5"),
-        ("object threshold", "threshold", {"value": 0.5}),
-        ("bool threshold", "threshold", True),
-        ("nan threshold", "threshold", float("nan")),
-        ("posinf threshold", "threshold", float("inf")),
-        ("null decay", "decay_rate", None),
-        ("list decay", "decay_rate", [0.9]),
-        ("bool decay", "decay_rate", False),
-        ("neginf decay", "decay_rate", float("-inf")),
-        ("huge finite threshold", "threshold", 1e308),
-    ]
-    bad_weights = [
-        ("null weight", None),
-        ("object weight", {"w": 0.1}),
-        ("string weight", "0.1"),
-        ("bool weight", True),
-        ("nan weight", float("nan")),
-    ]
+
+# Scalar payloads load_model must reject, as (label, field, value). bool is the
+# subtle one: it subclasses int, so isinstance(True, int) is True and a naive
+# numeric guard would silently encode True as 1.0.
+BAD_SCALARS: list[tuple[str, str, object]] = [
+    ("null threshold", "threshold", None),
+    ("string threshold", "threshold", "0.5"),
+    ("object threshold", "threshold", {"value": 0.5}),
+    ("bool threshold", "threshold", True),
+    ("nan threshold", "threshold", float("nan")),
+    ("posinf threshold", "threshold", float("inf")),
+    ("null decay", "decay_rate", None),
+    ("list decay", "decay_rate", [0.9]),
+    ("bool decay", "decay_rate", False),
+    ("neginf decay", "decay_rate", float("-inf")),
+    ("huge finite threshold", "threshold", 1e308),
+]
+
+# The same, for one entry of a neuron's weight row.
+BAD_WEIGHTS: list[tuple[str, object]] = [
+    ("null weight", None),
+    ("object weight", {"w": 0.1}),
+    ("string weight", "0.1"),
+    ("bool weight", True),
+    ("nan weight", float("nan")),
+]
+
+
+def _reject_each_bad_scalar(bad_scalars, bad_weights, _reject, good_model, tmp) -> int:
+    """Every bad scalar and bad weight must raise ParseError."""
+    checks = 0
+    for label, field, payload in bad_scalars:
+        broken = json.loads(json.dumps(good_model))
+        broken["neurons"][2][field] = payload
+        _reject(label, broken, tmp / f"model_{label.replace(' ', '_')}.json")
+        checks += 1
+    for label, payload in bad_weights:
+        broken = json.loads(json.dumps(good_model))
+        broken["neurons"][5]["weights"][7] = payload
+        _reject(label, broken, tmp / f"model_{label.replace(' ', '_')}.json")
+        checks += 1
+    return checks
+
+
+def _nonnumeric_fields_parse_error(tmp: Path, stream) -> int:
+    """Nonnumeric and overflowing scalar fields exit through ParseError."""
+    good_model = load_model(MODEL_JSON)
+    checks = 0
+    #
+    # Codex: load_model() validated container shape but not scalar type,
+    # so a model with the right shape and {"threshold": null} -- or an
+    # object-valued weight -- passed every check and then raised an
+    # uncaught TypeError at float(), tracebacking instead of honoring the
+    # documented exit-code-2 parse-error contract.
+    #
+    # bool is the subtle one: it subclasses int, so isinstance(True, int)
+    # is True and a naive numeric guard would silently encode True as 1.0.
+    print(
+        "9. nonnumeric threshold/decay/weight values are REJECTED as ParseError",
+        file=stream,
+    )
+    checks += _reject_oversized_json_int(tmp)
+
+    checks += _finite_float_positive_controls()
 
     def _reject(label: str, payload: object, bad_path: Path) -> None:
         """Assert load_model(bad_path) raises ParseError, nothing else."""
@@ -737,20 +815,11 @@ def _nonnumeric_fields_parse_error(tmp: Path, stream) -> int:
             f"{label}: load_model ACCEPTED a nonnumeric field"
         )
 
-    for label, field, payload in bad_scalars:
-        broken = json.loads(json.dumps(good_model))
-        broken["neurons"][2][field] = payload
-        _reject(label, broken, tmp / f"model_{label.replace(' ', '_')}.json")
-        checks += 1
-    for label, payload in bad_weights:
-        broken = json.loads(json.dumps(good_model))
-        broken["neurons"][5]["weights"][7] = payload
-        _reject(label, broken, tmp / f"model_{label.replace(' ', '_')}.json")
-        checks += 1
+    checks += _reject_each_bad_scalar(BAD_SCALARS, BAD_WEIGHTS, _reject, good_model, tmp)
 
     print(
-        f"   ok: {len(bad_scalars)} bad thresholds/decays and "
-        f"{len(bad_weights)} bad weights all raise ParseError\n"
+        f"   ok: {len(BAD_SCALARS)} bad thresholds/decays and "
+        f"{len(BAD_WEIGHTS)} bad weights all raise ParseError\n"
         f"       (null, string, object/list, bool, NaN, +-inf, 1e308); "
         f"valid ints and floats still accepted",
         file=stream,
@@ -759,23 +828,26 @@ def _nonnumeric_fields_parse_error(tmp: Path, stream) -> int:
     return checks
 
 
-def _crlf_checkout_still_verifies(tmp: Path, stream) -> int:
-    """A CRLF checkout of the output-weight image still verifies.
-
-    The pin hashes canonical tokens, not raw bytes, precisely so this holds.
-    """
-    real = parse_mem(MEM_OUTPUT)
+def _canonicalisation_ignores_case_and_padding(tmp, real) -> int:
+    """Lower-case words with padding are the same artifact; canonicalization must say so."""
     checks = 0
-    #
-    # Codex: the pin used to hash the file's raw bytes. On a Windows
-    # checkout with Git's core.autocrlf, the same 48 words materialize
-    # with CRLF endings, so the hash failed on a semantically unchanged
-    # artifact. The pin now hashes the canonical token sequence instead
-    # (and .gitattributes pins *.mem to LF as defense in depth).
-    print(
-        "10. a CRLF-line-ending copy of the shipped file still verifies",
-        file=stream,
+    # Same idea one step further: lower-case words with padding around
+    # them are the same artifact, and canonicalization must say so.
+    noisy_path = tmp / "parameters_output_weights_noisy.mem"
+    noisy_path.write_text(
+        "".join(f"  {e.text.lower()}  \r\n" for e in real), encoding="utf-8"
     )
+    _require(
+        canonical_mem_digest(parse_mem(noisy_path)) == OUTPUT_WEIGHTS_CANON_SHA256,
+        "canonicalization must normalize hex case and surrounding whitespace",
+    )
+    checks += 1
+    return checks
+
+
+def _crlf_and_lf_fixtures_agree(tmp) -> int:
+    """LF and CRLF forms of the same image must both verify against the pin."""
+    checks = 0
     # Both fixtures are *constructed*, never assumed from the checkout.
     # Reading the file and calling it the LF form is wrong on a CRLF
     # checkout -- there the two fixtures come out identical and the
@@ -827,18 +899,29 @@ def _crlf_checkout_still_verifies(tmp: Path, stream) -> int:
         f"{crlf_result.notes}",
     )
     checks += 5
+    return checks
 
-    # Same idea one step further: lower-case words with padding around
-    # them are the same artifact, and canonicalization must say so.
-    noisy_path = tmp / "parameters_output_weights_noisy.mem"
-    noisy_path.write_text(
-        "".join(f"  {e.text.lower()}  \r\n" for e in real), encoding="utf-8"
+
+def _crlf_checkout_still_verifies(tmp: Path, stream) -> int:
+    """A CRLF checkout of the output-weight image still verifies.
+
+    The pin hashes canonical tokens, not raw bytes, precisely so this holds.
+    """
+    real = parse_mem(MEM_OUTPUT)
+    checks = 0
+    #
+    # Codex: the pin used to hash the file's raw bytes. On a Windows
+    # checkout with Git's core.autocrlf, the same 48 words materialize
+    # with CRLF endings, so the hash failed on a semantically unchanged
+    # artifact. The pin now hashes the canonical token sequence instead
+    # (and .gitattributes pins *.mem to LF as defense in depth).
+    print(
+        "10. a CRLF-line-ending copy of the shipped file still verifies",
+        file=stream,
     )
-    _require(
-        canonical_mem_digest(parse_mem(noisy_path)) == OUTPUT_WEIGHTS_CANON_SHA256,
-        "canonicalization must normalize hex case and surrounding whitespace",
-    )
-    checks += 1
+    checks += _crlf_and_lf_fixtures_agree(tmp)
+
+    checks += _canonicalisation_ignores_case_and_padding(tmp, real)
     print(
         "   ok: CRLF copy verifies against both pins "
         "(raw bytes differ, canonical tokens do not);\n"
@@ -931,55 +1014,9 @@ def _reject_unreadable_artifacts(tmp: Path) -> int:
     return checks
 
 
-def _invalid_utf8_parse_error(tmp: Path, stream) -> int:
-    """Invalid-UTF-8 and unreadable .mem files exit through ParseError."""
-    shipped = verify_shipped()
+def _output_survives_cp1252(shipped) -> int:
+    """Emitted text must survive a non-UTF-8 console."""
     checks = 0
-    #
-    # Codex: parse_mem() opened the file as UTF-8 and iterated lines;
-    # a corrupted image with invalid UTF-8 raised UnicodeDecodeError,
-    # which main() does not catch. Wrap the decode as ParseError
-    # (same pattern as the JSON read path). Temp file only -- never
-    # mutate dataset/merged_v2.
-    print(
-        "11. a .mem with invalid UTF-8 is REJECTED as ParseError",
-        file=stream,
-    )
-    bad_utf8_path = tmp / "parameters_output_weights_bad_utf8.mem"
-    bad_utf8_path.write_bytes(b"FFF9\n\xff\xfe\n001E\n")
-    try:
-        parse_mem(bad_utf8_path)
-    except ParseError:
-        pass
-    except UnicodeDecodeError as exc:
-        raise SelfTestFailure(
-            "parse_mem leaked UnicodeDecodeError on invalid UTF-8"
-        ) from exc
-    except Exception as exc:
-        raise SelfTestFailure(
-            f"parse_mem raised {type(exc).__name__}({exc}), expected ParseError"
-        ) from exc
-    else:
-        raise SelfTestFailure("parse_mem ACCEPTED a .mem with invalid UTF-8")
-    try:
-        read_utf8_text(bad_utf8_path)
-    except ParseError:
-        pass
-    except UnicodeDecodeError as exc:
-        raise SelfTestFailure(
-            "read_utf8_text leaked UnicodeDecodeError"
-        ) from exc
-    else:
-        raise SelfTestFailure("read_utf8_text ACCEPTED invalid UTF-8")
-    checks += 2
-
-    checks += _reject_substituted_sections(shipped)
-    print(
-        "   ok: a duplicated section FAILS on artifact identity "
-        "(arity alone accepts it)",
-        file=stream,
-    )
-
     # Emitted text must survive a non-UTF-8 console. A Windows process
     # under cp1252 raised UnicodeEncodeError on the arrows in the summary,
     # so a *successful* verification exited 1 with a traceback.
@@ -1010,6 +1047,66 @@ def _invalid_utf8_parse_error(tmp: Path, stream) -> int:
             f"report() output is not encodable as cp1252: {exc}"
         ) from exc
     checks += 2
+    return checks
+
+
+def _invalid_utf8_raises_parse_error(tmp) -> int:
+    """Both readers must surface invalid UTF-8 as ParseError, never UnicodeDecodeError."""
+    checks = 0
+    bad_utf8_path = tmp / "parameters_output_weights_bad_utf8.mem"
+    bad_utf8_path.write_bytes(b"FFF9\n\xff\xfe\n001E\n")
+    try:
+        parse_mem(bad_utf8_path)
+    except ParseError:
+        pass
+    except UnicodeDecodeError as exc:
+        raise SelfTestFailure(
+            "parse_mem leaked UnicodeDecodeError on invalid UTF-8"
+        ) from exc
+    except Exception as exc:
+        raise SelfTestFailure(
+            f"parse_mem raised {type(exc).__name__}({exc}), expected ParseError"
+        ) from exc
+    else:
+        raise SelfTestFailure("parse_mem ACCEPTED a .mem with invalid UTF-8")
+    try:
+        read_utf8_text(bad_utf8_path)
+    except ParseError:
+        pass
+    except UnicodeDecodeError as exc:
+        raise SelfTestFailure(
+            "read_utf8_text leaked UnicodeDecodeError"
+        ) from exc
+    else:
+        raise SelfTestFailure("read_utf8_text ACCEPTED invalid UTF-8")
+    checks += 2
+    return checks
+
+
+def _invalid_utf8_parse_error(tmp: Path, stream) -> int:
+    """Invalid-UTF-8 and unreadable .mem files exit through ParseError."""
+    shipped = verify_shipped()
+    checks = 0
+    #
+    # Codex: parse_mem() opened the file as UTF-8 and iterated lines;
+    # a corrupted image with invalid UTF-8 raised UnicodeDecodeError,
+    # which main() does not catch. Wrap the decode as ParseError
+    # (same pattern as the JSON read path). Temp file only -- never
+    # mutate dataset/merged_v2.
+    print(
+        "11. a .mem with invalid UTF-8 is REJECTED as ParseError",
+        file=stream,
+    )
+    checks += _invalid_utf8_raises_parse_error(tmp)
+
+    checks += _reject_substituted_sections(shipped)
+    print(
+        "   ok: a duplicated section FAILS on artifact identity "
+        "(arity alone accepts it)",
+        file=stream,
+    )
+
+    checks += _output_survives_cp1252(shipped)
     print(
         "   ok: output is ASCII and encodes cleanly to a cp1252 console",
         file=stream,

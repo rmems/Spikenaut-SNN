@@ -48,6 +48,33 @@ def _stream_safe(text: str, stream) -> str:
     return text
 
 
+def _artifact_coverage_failures(
+    results: list[SectionResult], expected_artifacts: tuple[str, ...] | None
+) -> list[str]:
+    """Each expected artifact must be covered by exactly one section.
+
+    Counting sections is not enough: duplicating one entry while dropping
+    another keeps the arity right and still leaves an artifact unread.
+    """
+    if expected_artifacts is None:
+        return []
+    # Which artifact each section actually read, taken from its label.
+    seen = [
+        artifact
+        for artifact in expected_artifacts
+        for r in results
+        if artifact in r.name
+    ]
+    return [
+        f"INCOMPLETE RUN: {artifact} was checked {seen.count(artifact)} "
+        f"time(s), expected exactly 1. A duplicated or missing "
+        f"section keeps the count right while leaving an "
+        f"artifact unverified."
+        for artifact in expected_artifacts
+        if seen.count(artifact) != 1
+    ]
+
+
 def _structural_failures(
     results: list[SectionResult],
     expected_sections: int | None,
@@ -71,23 +98,7 @@ def _structural_failures(
             f"{expected_sections}. A section was dropped, so this verdict "
             f"would cover less than the artifact set it claims."
         )
-    if expected_artifacts is not None:
-        # Which artifact each section actually read, taken from its label.
-        seen = [
-            artifact
-            for artifact in expected_artifacts
-            for r in results
-            if artifact in r.name
-        ]
-        for artifact in expected_artifacts:
-            covered = seen.count(artifact)
-            if covered != 1:
-                structural.append(
-                    f"INCOMPLETE RUN: {artifact} was checked {covered} "
-                    f"time(s), expected exactly 1. A duplicated or missing "
-                    f"section keeps the count right while leaving an "
-                    f"artifact unverified."
-                )
+    structural.extend(_artifact_coverage_failures(results, expected_artifacts))
     if sum(r.count for r in results) == 0:
         structural.append(
             "NOTHING WAS CHECKED: sections were present but held 0 values."
