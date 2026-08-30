@@ -274,11 +274,11 @@ M3 enforces a two-clock rule: a fast loop for telemetry → spikes → inference
 
 ## Ecosystem
 
-Spikenaut-SNN is currently a **weights and model repository** — there is no `Cargo.toml` yet. The table below is the intended dependency contract ([#5](https://github.com/rmems/Spikenaut-SNN/issues/5)), which deliberately distinguishes libraries this repo will depend on from peer processes it must not.
+Spikenaut-SNN is a weights and model repository that now also carries a thin Rust package. The table below is the dependency contract ([#5](https://github.com/rmems/Spikenaut-SNN/issues/5)), which deliberately distinguishes libraries this repo depends on — or will — from peer processes it must not. **Declared** marks what `Cargo.toml` actually resolves today; everything else remains intent.
 
 | Component | Role | Relationship |
 |---|---|---|
-| [`nir-rs`](https://crates.io/crates/nir-rs) 0.4.2 | NIR graph interchange | crates.io dependency — [#8](https://github.com/rmems/Spikenaut-SNN/issues/8) |
+| [`nir-rs`](https://crates.io/crates/nir-rs) 0.4.2 | NIR graph interchange | **Declared** in `Cargo.toml`, resolved from crates.io — [#8](https://github.com/rmems/Spikenaut-SNN/issues/8) |
 | [`axon-encoder`](https://crates.io/crates/axon-encoder) 0.4.0 | Telemetry → spike encoding | crates.io dependency — [#9](https://github.com/rmems/Spikenaut-SNN/issues/9) |
 | [`neuromod`](https://crates.io/crates/neuromod) 0.5.2 | LIF engine, learning rules, neuromodulators | crates.io dependency |
 | `silicon-bridge` | Q8.8 `.mem` export | Dependency once published — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
