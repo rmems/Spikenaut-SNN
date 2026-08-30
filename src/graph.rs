@@ -266,25 +266,9 @@ pub fn build_lif_graph_with_provenance(
     let shape = vec![units];
 
     let weight = model.weight_tensor()?;
-    let tau = Tensor::from_f64(shape.clone(), model.taus_seconds(timestep_seconds)?)?;
-    let thresholds = model.thresholds();
-    for (index, &threshold) in thresholds.iter().enumerate() {
-        check_q8_8(&format!("neuron {index} threshold"), threshold)?;
-    }
-    let v_threshold = Tensor::from_f64(shape.clone(), thresholds)?;
-    let decay_rates = model.decay_rates();
-    for (index, &decay_rate) in decay_rates.iter().enumerate() {
-        check_q8_8(&format!("neuron {index} decay_rate"), decay_rate)?;
-    }
-    let resistances = decay_rates
-        .into_iter()
-        .map(resistance_from_decay)
-        .collect::<Result<Vec<_>, _>>()?;
-    let r = Tensor::from_f64(shape.clone(), resistances)?;
-    let v_leak = Tensor::from_f64(shape.clone(), vec![RESTING_POTENTIAL; units])?;
+    let lif = lif_parameters(model, timestep_seconds, &shape)?;
 
     let mut graph = NirGraph::new();
-
     graph.insert_node(
         INPUT_NODE,
         NirNode::Input(Input {
@@ -301,19 +285,7 @@ pub fn build_lif_graph_with_provenance(
             metadata: Default::default(),
         }),
     )?;
-    graph.insert_node(
-        LIF_NODE,
-        NirNode::Lif(Lif {
-            tau,
-            r,
-            v_leak,
-            v_threshold,
-            // Absent on the wire: NIR reads it as zeros_like(v_threshold),
-            // which is the zero baseline this model resets to.
-            v_reset: None,
-            metadata: Default::default(),
-        }),
-    )?;
+    graph.insert_node(LIF_NODE, NirNode::Lif(lif))?;
     graph.insert_node(
         OUTPUT_NODE,
         NirNode::Output(Output {
@@ -326,13 +298,61 @@ pub fn build_lif_graph_with_provenance(
     graph.add_edge(LINEAR_NODE, LIF_NODE);
     graph.add_edge(LIF_NODE, OUTPUT_NODE);
 
-    // How the graph was built: a fact about this call, true for every model.
+    stamp_metadata(&mut graph, timestep_seconds, provenance);
+
+    graph.validate_structure()?;
+    Ok(graph)
+}
+
+/// Build the LIF node's four parameter tensors from the model.
+///
+/// Every value is checked against the Q8.8 grid on the way through: the
+/// shipped artifact is a Q8.8 export, so a parameter that cannot be
+/// represented in Q8.8 did not come from it.
+fn lif_parameters(
+    model: &SnnModel,
+    timestep_seconds: f64,
+    shape: &[usize],
+) -> Result<Lif, ModelError> {
+    let tau = Tensor::from_f64(shape.to_vec(), model.taus_seconds(timestep_seconds)?)?;
+
+    let thresholds = model.thresholds();
+    for (index, &threshold) in thresholds.iter().enumerate() {
+        check_q8_8(&format!("neuron {index} threshold"), threshold)?;
+    }
+    let v_threshold = Tensor::from_f64(shape.to_vec(), thresholds)?;
+
+    let decay_rates = model.decay_rates();
+    for (index, &decay_rate) in decay_rates.iter().enumerate() {
+        check_q8_8(&format!("neuron {index} decay_rate"), decay_rate)?;
+    }
+    let resistances = decay_rates
+        .into_iter()
+        .map(resistance_from_decay)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(Lif {
+        tau,
+        r: Tensor::from_f64(shape.to_vec(), resistances)?,
+        v_leak: Tensor::from_f64(shape.to_vec(), vec![RESTING_POTENTIAL; shape[0]])?,
+        v_threshold,
+        // Absent on the wire: NIR reads it as zeros_like(v_threshold),
+        // which is the zero baseline this model resets to.
+        v_reset: None,
+        metadata: Default::default(),
+    })
+}
+
+/// Stamp how the graph was built, and where its parameters came from.
+///
+/// `timestep_seconds` is a fact about this call and is always recorded. The
+/// provenance is a claim only the caller can make, so it is stamped only when
+/// one was supplied.
+fn stamp_metadata(graph: &mut NirGraph, timestep_seconds: f64, provenance: Option<Provenance<'_>>) {
     graph.metadata.insert(
         "timestep_seconds".into(),
         MetadataValue::F64(timestep_seconds),
     );
-    // Where the parameters came from: a claim only the caller can make, so it
-    // is stamped only when one was supplied.
     if let Some(Provenance {
         source,
         description,
@@ -346,9 +366,6 @@ pub fn build_lif_graph_with_provenance(
             MetadataValue::String(description.into()),
         );
     }
-
-    graph.validate_structure()?;
-    Ok(graph)
 }
 
 #[cfg(test)]
