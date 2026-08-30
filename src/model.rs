@@ -403,34 +403,56 @@ fn require_merged_v2_width(model: &SnnModel) -> Result<(), ModelError> {
 /// [`ModelError::Schema`], naming the unit and the field, if a member is
 /// missing, has the wrong JSON type, breaks one of the invariants above, or is
 /// not read by this decoder at all.
-fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<Neuron, ModelError> {
-    reject_unknown_members(
-        &format!("neuron {index}"),
-        entry,
-        &[
-            "decay_rate",
-            "last_spike",
-            "membrane_potential",
-            "threshold",
-            "weights",
-        ],
-    )?;
-    let field = |name: &str| -> Result<&Json, ModelError> {
-        entry
+/// Field accessors for one neuron's JSON object.
+///
+/// Exists so every error message names the neuron and field it came from
+/// without threading `index` through each lookup by hand.
+struct NeuronFields<'a> {
+    index: usize,
+    entry: &'a Json,
+}
+
+impl<'a> NeuronFields<'a> {
+    /// The raw value of `name`, or a schema error naming the missing field.
+    fn get(&self, name: &str) -> Result<&'a Json, ModelError> {
+        let index = self.index;
+        self.entry
             .get(name)
             .ok_or_else(|| ModelError::Schema(format!("neuron {index} is missing `{name}`")))
-    };
-    let number = |name: &str| -> Result<f64, ModelError> {
-        let value = field(name)?;
+    }
+
+    /// The value of `name` as a number, or a schema error naming its type.
+    fn number(&self, name: &str) -> Result<f64, ModelError> {
+        let index = self.index;
+        let value = self.get(name)?;
         value.as_f64().ok_or_else(|| {
             ModelError::Schema(format!(
                 "neuron {index} field `{name}` is a {}, expected a number",
                 value.type_name()
             ))
         })
-    };
+    }
 
-    let weights_value = field("weights")?;
+    /// The value of `name` as a boolean, or a schema error naming its type.
+    fn boolean(&self, name: &str) -> Result<bool, ModelError> {
+        let index = self.index;
+        let value = self.get(name)?;
+        value.as_bool().ok_or_else(|| {
+            ModelError::Schema(format!(
+                "neuron {index} field `{name}` is a {}, expected a boolean",
+                value.type_name()
+            ))
+        })
+    }
+}
+
+/// Decode one neuron's weight row, checking arity and the Q8.8 grid.
+fn parse_neuron_weights(
+    fields: &NeuronFields<'_>,
+    expected_weights: usize,
+) -> Result<Vec<f64>, ModelError> {
+    let index = fields.index;
+    let weights_value = fields.get("weights")?;
     let weights_items = weights_value.as_array().ok_or_else(|| {
         ModelError::Schema(format!(
             "neuron {index} field `weights` is a {}, expected an array",
@@ -443,7 +465,7 @@ fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<N
             weights_items.len()
         )));
     }
-    let weights = weights_items
+    weights_items
         .iter()
         .enumerate()
         .map(|(column, weight)| {
@@ -455,28 +477,40 @@ fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<N
             })?;
             q8_8_field(&format!("neuron {index} weight {column}"), value)
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect()
+}
 
-    let last_spike_value = field("last_spike")?;
-    let last_spike = last_spike_value.as_bool().ok_or_else(|| {
-        ModelError::Schema(format!(
-            "neuron {index} field `last_spike` is a {}, expected a boolean",
-            last_spike_value.type_name()
-        ))
-    })?;
+fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<Neuron, ModelError> {
+    reject_unknown_members(
+        &format!("neuron {index}"),
+        entry,
+        &[
+            "decay_rate",
+            "last_spike",
+            "membrane_potential",
+            "threshold",
+            "weights",
+        ],
+    )?;
+    let fields = NeuronFields { index, entry };
+
+    // Decoded before the struct literal to keep the original error precedence:
+    // a neuron with both a bad weight and a bad scalar reports the weight.
+    let weights = parse_neuron_weights(&fields, expected_weights)?;
+    let last_spike = fields.boolean("last_spike")?;
 
     Ok(Neuron {
         decay_rate: decay_field(
             &format!("neuron {index} field `decay_rate`"),
-            number("decay_rate")?,
+            fields.number("decay_rate")?,
         )?,
         membrane_potential: q8_8_field(
             &format!("neuron {index} field `membrane_potential`"),
-            number("membrane_potential")?,
+            fields.number("membrane_potential")?,
         )?,
         threshold: q8_8_field(
             &format!("neuron {index} field `threshold`"),
-            number("threshold")?,
+            fields.number("threshold")?,
         )?,
         last_spike,
         weights,
