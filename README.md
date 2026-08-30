@@ -102,7 +102,7 @@ No learned SNN, LLM, FPGA controller, or online-training loop may disable or rai
 | 12-13 | Verus | CPU-heavy validator tracking (AVX-512) |
 | 14-15 | Thermal | Pain receptors — power and temperature |
 
-Channels 14-15 are *intended* as the network's pain receptors. **This is design intent, not shipped behaviour.** This repository contains nine files — four `.mem` artifacts, `snn_model.json`, `config.json` and documentation — and no code: there is no reward signal, no online weight update, and no runtime. The 85 °C threshold also belongs to `thalamic-relay`, a peer process listed below, not to the SNN. Wiring a thermal penalty into training is future work.
+Channels 14-15 are *intended* as the network's pain receptors. **This is design intent, not shipped behaviour.** The repository now carries code, but none of it is a runtime: `tools/` verifies the Q8.8 export and `src/` lifts the model into a NIR graph, and neither consumes a pain signal. There is no reward signal, no online weight update, and nothing that acts on a temperature reading. The 85 °C threshold also belongs to `thalamic-relay`, a peer process listed below, not to the SNN. Wiring a thermal penalty into training is future work.
 
 ### Which map the shipped weights use is unknown
 
@@ -194,7 +194,21 @@ dataset/merged_v2/
 ├── parameters_weights.mem         # 16x16 weight matrix (Q8.8 hex)
 ├── parameters_output_weights.mem  # Output layer weights (signed Q8.8)
 └── snn_model.json                 # Full model definition (float values)
+
+tools/                             # Python, standard library only
+└── verify_q88.py                  # Re-derives every Q8.8 word from the JSON
+                                   # floats and checks it against the .mem
+                                   # files; --self-test proves it can fail
+
+src/                               # Rust, `spikenaut-snn`
+├── model.rs                       # Decodes snn_model.json, validated
+├── graph.rs                       # Builds the NIR graph
+└── json.rs                        # Strict reader, so the dependency list
+                                   # stays at what Cargo.toml declares
 ```
+
+The artifacts are the product; the code exists to check them and to hand them
+to consumers in a standard form. Nothing here runs the network.
 
 ### Loading on FPGA
 
@@ -274,11 +288,11 @@ M3 enforces a two-clock rule: a fast loop for telemetry → spikes → inference
 
 ## Ecosystem
 
-Spikenaut-SNN is currently a **weights and model repository** — there is no `Cargo.toml` yet. The table below is the intended dependency contract ([#5](https://github.com/rmems/Spikenaut-SNN/issues/5)), which deliberately distinguishes libraries this repo will depend on from peer processes it must not.
+Spikenaut-SNN is a weights and model repository that now also carries a thin Rust package. The table below is the dependency contract ([#5](https://github.com/rmems/Spikenaut-SNN/issues/5)), which deliberately distinguishes libraries this repo depends on — or will — from peer processes it must not. **Declared** marks what `Cargo.toml` actually resolves today; everything else remains intent.
 
 | Component | Role | Relationship |
 |---|---|---|
-| [`nir-rs`](https://crates.io/crates/nir-rs) 0.4.2 | NIR graph interchange | crates.io dependency — [#8](https://github.com/rmems/Spikenaut-SNN/issues/8) |
+| [`nir-rs`](https://crates.io/crates/nir-rs) 0.4.2 | NIR graph interchange | **Declared** in `Cargo.toml`, resolved from crates.io — [#8](https://github.com/rmems/Spikenaut-SNN/issues/8) |
 | [`axon-encoder`](https://crates.io/crates/axon-encoder) 0.4.0 | Telemetry → spike encoding | crates.io dependency — [#9](https://github.com/rmems/Spikenaut-SNN/issues/9) |
 | [`neuromod`](https://crates.io/crates/neuromod) 0.5.2 | LIF engine, learning rules, neuromodulators | crates.io dependency |
 | `silicon-bridge` | Q8.8 `.mem` export | Dependency once published — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
