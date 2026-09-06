@@ -2,9 +2,10 @@
 
 //! Minimal RFC 8259 JSON reader.
 //!
-//! This repository deliberately depends on exactly one crate (`nir-rs`), so the
-//! model loader parses `snn_model.json` itself rather than pulling in a serde
-//! stack for one small, fixed-shape file.
+//! This repository deliberately keeps its dependency list to the two crates it
+//! cannot do without (`nir-rs` and `axon-encoder`), so the model loader parses
+//! `snn_model.json` itself rather than pulling in a serde stack for one small,
+//! fixed-shape file.
 //!
 //! The grammar is complete (objects, arrays, strings with `\u` escapes and
 //! surrogate pairs, numbers, `true` / `false` / `null`) and strict: leading
