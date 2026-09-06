@@ -9,8 +9,15 @@
   "clock_hz": 1000,
   "training_speed_us": 35,
   "ipc_overhead_us": 0.8,
-  "memory_bytes": 1638,
+  "memory_bytes": 672,
   "fpga_power_mw": 97,
   "framework": "julia-rust-hybrid",
-  "license": ["mit", "apache-2.0"]
+  "license": ["mit", "apache-2.0"],
+  "externally_reported": [
+    "learning_rule",
+    "training_speed_us",
+    "ipc_overhead_us",
+    "fpga_power_mw",
+    "framework"
+  ]
 }
