@@ -81,12 +81,12 @@ No learned SNN, LLM, FPGA controller, or online-training loop may disable or rai
 |------|-------|
 | Neuron model | Leaky-Integrate-and-Fire (LIF) |
 | Neurons | 16 |
-| Input channels | 16 |
+| Input channels | 16 wide — see [Inputs](#inputs--current-v2-layout); which signals occupy them is not established |
 | Weight format | Q8.8 fixed-point |
-| Learning rules | E-prop, OTTT, reward-modulated STDP |
+| Learning rules | E-prop, OTTT, reward-modulated STDP — externally reported, see [Training provenance](#training-provenance) |
 | Clock | 1 kHz (1 ms resolution) |
-| Training speed | 35 µs/tick |
-| Memory footprint | 1.6 KB |
+| Training speed | 35 µs/tick — externally reported |
+| Memory footprint | 672 bytes (336 Q8.8 codes) |
 | FPGA target | Xilinx Artix-7 xc7a35tcpg236-1 (Basys3) |
 
 ## Inputs — current v2 layout
@@ -155,6 +155,23 @@ raw state → state adapter → encoder → fixed-width SNN stimuli
 
 The adapter accepts a variable number of legitimate source signals, so the raw feature count can change without the input contract breaking. Every signal must declare its unit, source of truth, timestamp and sampling semantics, valid range, normalization, missing-value and staleness behavior, and provenance. Missing signals are masked, never silently zeroed.
 
+### What every measurement in the issue threads actually used
+
+Neither map above is what the experiments cited across [#2](https://github.com/rmems/Spikenaut-SNN/issues/2), [#3](https://github.com/rmems/Spikenaut-SNN/issues/3), [#4](https://github.com/rmems/Spikenaut-SNN/issues/4) and [#13](https://github.com/rmems/Spikenaut-SNN/issues/13) were run on. Every one of them used **five live GPU sensors**, selected because they survive the train/validation/test split without being constant, all-null, or a closed form of another column:
+
+| Axon | Signal | Unit |
+|---|---|---|
+| 0 | `mem_util_pct` | percent |
+| 1 | `power_w` | watts |
+| 2 | `gpu_temp_c` | degrees Celsius |
+| 3 | `sm_clock_mhz` | MHz |
+| 4 | `mem_clock_mhz` | MHz |
+| 5-15 | *unused* | held at zero — unused width, not fake channels |
+
+This is a **third** layout, and recording it here is not an endorsement of it as the shipped weights' input contract — no training run in this repository links `merged_v2` to it either. It is stated because the numbers quoted in those threads are otherwise unreadable: a cofire or Hamming figure means nothing without knowing it was measured on five channels rather than sixteen.
+
+Two consequences worth being explicit about. `vram_temp_c` is excluded because it is exactly `gpu_temp_c + 8` on every non-dropout row, so admitting it would leak the thermal signal into itself. And `gpu_temp_c == 0` is a dropout sentinel, not a cold GPU — it must be masked, which is the same rule the adapter above states.
+
 ## Merged v2 parameters
 
 | Parameter | Source | Values |
@@ -171,7 +188,9 @@ Neuron 0:  00C0, 00C1, 00C2, 00C3, ... 00CF   (+1 each)
 Neuron 1:  00C4, 00C5, 00C6, 00C7, ... 00D3   (+1 each)
 ```
 
-A healthy trained SNN shows weights moving up *and* down across a neuron's inputs. [#2](https://github.com/rmems/Spikenaut-SNN/issues/2) attributes the ramp to degenerate training convergence — too few samples, no inhibitory connections, and identical E-prop/OTTT gradients across neurons. **Externally reported, like the rest of that diagnosis**: no training run in this repository links any of those conditions, or the eight-record dataset, to the externally imported matrix. What *is* verifiable here is the ramp itself and that it is not an export bug. The export path was independently cross-validated and confirmed correct ([#4](https://github.com/rmems/Spikenaut-SNN/issues/4)).
+A healthy trained SNN shows weights moving up *and* down across a neuron's inputs. [#2](https://github.com/rmems/Spikenaut-SNN/issues/2) attributes the ramp to degenerate training convergence — too few samples, no inhibitory connections, and identical E-prop/OTTT gradients across neurons. **Externally reported, like the rest of that diagnosis**: no training run in this repository links any of those conditions, or the eight-record dataset, to the externally imported matrix.
+
+One clause of that diagnosis is wrong on the mathematics, independently of provenance. For a **feedforward** LIF layer with fixed thresholds and no recurrence — which is exactly this architecture — e-prop and OTTT reduce to the same update: the same eligibility trace, the same surrogate factor, the same learning-signal modulation. They diverge only under recurrence, adaptive thresholds, or a different feedback-routing scheme, none of which this model has. So "identical E-prop/OTTT gradients" describes a check that **passed**, not a defect that caused anything. Whatever produced the ramp, it was not the two rules agreeing. What *is* verifiable here is the ramp itself and that it is not an export bug. The export path was independently cross-validated and confirmed correct ([#4](https://github.com/rmems/Spikenaut-SNN/issues/4)).
 
 ### Q8.8 fixed-point format
 
@@ -236,7 +255,7 @@ initial $readmemh("dataset/merged_v2/parameters_weights.mem", weight_ram);
 | Convergence | 20 epochs |
 | Training speed | 35 µs/tick |
 | IPC overhead | 0.8 µs |
-| Memory usage | 1.6 KB |
+| Memory usage | 1.6 KB — **disagrees with the shipped artifact**, which is 336 Q8.8 codes = 672 bytes |
 | Training date | 2026-03-22 |
 | Training data | `fresh_sync_data.jsonl` — **8 records**, Kaspa + Monero mainnet sessions |
 
@@ -273,6 +292,10 @@ Vivado synthesis and implementation reports for the Basys3 target. **These are t
 
 Per the program's evidence rules, any efficiency claim must rest on measured system or hardware evidence rather than spike-operation counts alone. The power figure above does not yet meet that bar.
 
+**Nor can it be checked from here.** `git ls-tree -r HEAD` returns no RTL, no constraints file, no Vivado project and no synthesis or implementation report — this repository ships the weights and the code that reads them, and nothing else. Every number in the table above is therefore not merely a tool estimate but an *unreproducible* one: a reader cannot regenerate it from this artifact, and neither can its author without the project that produced it.
+
+Two things would have to change for the power figure to mean anything. The **72 mW static** share is the XC7A35T being powered on at 5.11% LUT utilization — it is a property of the part, not of this network, and published Artix-7 work puts a *single* LIF neuron in the same 85-95 mW range. So the honest headline is the **25 mW dynamic** figure, and better still an energy-per-inference number (dynamic power x latency), which at 1 kHz over 336 parameters would be small and defensible. The second is disclosure: a Vivado power estimate made against default switching activity is a different claim from one made against a SAIF captured from simulating real telemetry, and nothing here records which was used.
+
 ## Roadmap
 
 The program advances through a milestone ladder ([#7](https://github.com/rmems/Spikenaut-SNN/issues/7)). Current stage: **M0**.
@@ -297,7 +320,7 @@ Spikenaut-SNN is a weights and model repository that now also carries a thin Rus
 |---|---|---|
 | [`nir-rs`](https://crates.io/crates/nir-rs) 0.4.2 | NIR graph interchange | **Declared** in `Cargo.toml`, resolved from crates.io — [#8](https://github.com/rmems/Spikenaut-SNN/issues/8) |
 | [`axon-encoder`](https://crates.io/crates/axon-encoder) 0.4.0 | Telemetry → spike encoding | **Declared** in `Cargo.toml`, resolved from crates.io — [#9](https://github.com/rmems/Spikenaut-SNN/issues/9) |
-| [`neuromod`](https://crates.io/crates/neuromod) 0.5.2 | LIF engine, learning rules, neuromodulators | crates.io dependency |
+| [`neuromod`](https://crates.io/crates/neuromod) 0.5.2 | LIF engine, learning rules, neuromodulators | Published, but **not** a dependency — `Cargo.toml` excludes it deliberately — [#5](https://github.com/rmems/Spikenaut-SNN/issues/5) |
 | `silicon-bridge` | Q8.8 `.mem` export | Dependency once published — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
 | `kinetic-signals` | Feature math for channels 0–13 | Dependency once published — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14) |
 | `synaptic-mesh` | Dale 80:20 polarity, 16-channel router | Dependency once published — [#16](https://github.com/rmems/Spikenaut-SNN/issues/16) |
@@ -320,9 +343,9 @@ As of the right now the weights are a mess, merged_v2 is where I am going to con
 
 ## Related
 
-- **Limen-Neural** — [github.com/Limen-Neural](https://github.com/Limen-Neural) (runtime, FPGA export, training crates)
+- **Limen-Neural** — [github.com/Limen-Neural](https://github.com/Limen-Neural) (runtime and learning-rule crates: `neuromod`, `nir-rs`, `axon-encoder`, `synaptic-mesh`, `plasticity-lab`, `brainstem-daemon`). The FPGA-export and training repos named elsewhere in this document — `silicon-bridge`, `silicon-hdl`, `kinetic-signals`, `limbic-critic`, `thalamic-relay`, `SynapticDistill.jl` — have moved to [github.com/rmems](https://github.com/rmems); the old org paths only 301-redirect.
 - **Telemetry** — [rmems/Spikenaut-SNN-Telemetry](https://huggingface.co/datasets/rmems/Spikenaut-SNN-Telemetry)
-- **Q8.8 export** — [silicon-bridge](https://github.com/Limen-Neural/silicon-bridge)
+- **Q8.8 export** — [silicon-bridge](https://github.com/rmems/silicon-bridge)
 - **Research program** — [Artificial Interoception / Neuromorphic Supervisor](https://github.com/rmems/Spikenaut-SNN/issues/7)
 
 ## License
