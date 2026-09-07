@@ -2,9 +2,14 @@
 
 //! Minimal RFC 8259 JSON reader.
 //!
-//! This repository deliberately depends on exactly one crate (`nir-rs`), so the
-//! model loader parses `snn_model.json` itself rather than pulling in a serde
-//! stack for one small, fixed-shape file.
+//! This repository deliberately keeps its dependency list minimal -- currently
+//! `nir-rs` and `axon-encoder` -- so the model loader parses `snn_model.json`
+//! itself rather than pulling in a serde stack for one small, fixed-shape file.
+//! The bound is the point, not the number: `tests/nir_graph.rs` asserts the
+//! manifest's exact *runtime* dependency set, so adopting a crate the library
+//! links against fails that test until the adoption is deliberate. Dev- and
+//! build-dependencies are outside that set by design -- they are not what a
+//! consumer of this crate builds -- so they are bounded by review, not by CI.
 //!
 //! The grammar is complete (objects, arrays, strings with `\u` escapes and
 //! surrogate pairs, numbers, `true` / `false` / `null`) and strict: leading
