@@ -1,0 +1,27 @@
+# Pinning every action to a commit SHA (see the comment in ci.yml) trades one
+# failure mode for another: the workflows can no longer change under us, but
+# nothing moves them onto a patched release either. This file is the other half
+# of that pin -- Dependabot resolves a SHA pin and rewrites both the SHA and the
+# trailing `# vX.Y.Z` comment, so the comments stay true without hand-editing.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      # Monthly, and grouped, so this is at most one pull request a month
+      # rather than one per action per patch release.
+      interval: monthly
+    groups:
+      actions:
+        patterns:
+          - '*'
+
+# Deliberately github-actions only. A `cargo` ecosystem here would open pull
+# requests against `[dependencies]`, and the suite already asserts that table
+# exactly: `nir_rs_resolves_from_crates_io` requires the runtime set to be
+# exactly axon-encoder and nir-rs, with nir-rs resolving to 0.4.x from the
+# registry. A bot bump would fail it -- which is the test working -- but the
+# fix belongs in a commit that also updates the README's Ecosystem table and
+# the reasoning behind the pin, not in an automated one. `pip` is likewise
+# omitted: the Python verifier is standard library only, so there is nothing
+# to update.
