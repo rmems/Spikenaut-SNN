@@ -3,7 +3,7 @@
 //! Smoke test for the `nir-rs` integration: the shipped `merged_v2` model must
 //! build a valid 16-LIF NIR graph, and `nir-rs` must resolve from crates.io.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use nir_rs::types::{MetadataValue, TensorData};
 use nir_rs::{NirGraph, NirNode};
@@ -764,6 +764,25 @@ fn the_files_tree_and_the_shipped_tree_agree() {
         "the Files tree named too little: {named:?}"
     );
 
+    // `Path::join` with an absolute path discards the root, so a tree naming
+    // `/etc/passwd` would be checked against the host filesystem and pass on
+    // any CI runner -- the existence invariant silently not holding for that
+    // row. `..` walks out of the checkout the same way. Neither is a
+    // repository path, so they are rejected before the join rather than
+    // resolved by it.
+    let escaping: Vec<&String> = named
+        .iter()
+        .filter(|p| {
+            let path = Path::new(p.as_str());
+            path.is_absolute() || path.components().any(|c| c == Component::ParentDir)
+        })
+        .collect();
+    assert!(
+        escaping.is_empty(),
+        "`## Files` names {escaping:?}, which leave the repository; \
+         every entry must be a path inside it",
+    );
+
     let missing: Vec<&String> = named.iter().filter(|p| !root.join(p).exists()).collect();
     assert!(
         missing.is_empty(),
@@ -866,16 +885,23 @@ enum TreeLine<'a> {
 /// Comments are cut first, which is what reduces the `#` continuation lines to
 /// nothing rather than letting their prose look like filenames.
 fn classify_tree_line(line: &str) -> Option<TreeLine<'_>> {
+    // The glyph comes off *before* the annotation. Doing it the other way
+    // round made the glyph's own mandatory trailing space the whitespace that
+    // opens an annotation, so `|-- #generated.rs` was cut down to the bare
+    // glyph and reported as the missing path `|--` -- a real filename the tree
+    // cannot express, and a failure message naming punctuation instead of the
+    // entry. Stripping the glyph first leaves `#generated.rs` as the name, and
+    // a leading `#` there is no longer preceded by anything.
+    if let Some(entry) = TREE_ENTRY_GLYPHS
+        .iter()
+        .find_map(|glyph| line.trim_start().strip_prefix(glyph))
+    {
+        let name = strip_annotation(entry).trim();
+        return (!name.is_empty()).then_some(TreeLine::Nested(name));
+    }
     let trimmed = strip_annotation(line).trim();
     if trimmed.is_empty() {
         return None;
-    }
-    if let Some(entry) = TREE_ENTRY_GLYPHS
-        .iter()
-        .find_map(|glyph| trimmed.strip_prefix(glyph))
-    {
-        let name = entry.trim();
-        return (!name.is_empty()).then_some(TreeLine::Nested(name));
     }
     if trimmed.ends_with('/') {
         return Some(TreeLine::Dir(trimmed));
