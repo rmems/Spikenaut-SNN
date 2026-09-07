@@ -291,13 +291,13 @@ M3 enforces a two-clock rule: a fast loop for telemetry → spikes → inference
 
 ## Ecosystem
 
-Spikenaut-SNN is a weights and model repository that now also carries a thin Rust package. The table below is the dependency contract ([#5](https://github.com/rmems/Spikenaut-SNN/issues/5)), which deliberately distinguishes libraries this repo depends on — or will — from peer processes it must not. **Declared** marks what `Cargo.toml` actually resolves today; everything else remains intent.
+Spikenaut-SNN is a weights and model repository that now also carries a thin Rust package. The table below is the dependency contract ([#5](https://github.com/rmems/Spikenaut-SNN/issues/5)), which deliberately distinguishes libraries this repo depends on — or will — from peer processes it must not. **Declared** marks what `Cargo.toml` actually resolves today. Everything else is either intent — a crate to adopt once it exists — or an explicit non-dependency, and the Relationship column says which.
 
 | Component | Role | Relationship |
 |---|---|---|
 | [`nir-rs`](https://crates.io/crates/nir-rs) 0.4.2 | NIR graph interchange | **Declared** in `Cargo.toml`, resolved from crates.io — [#8](https://github.com/rmems/Spikenaut-SNN/issues/8) |
 | [`axon-encoder`](https://crates.io/crates/axon-encoder) 0.4.0 | Telemetry → spike encoding | **Declared** in `Cargo.toml`, resolved from crates.io — [#9](https://github.com/rmems/Spikenaut-SNN/issues/9) |
-| [`neuromod`](https://crates.io/crates/neuromod) 0.5.2 | LIF engine, learning rules, neuromodulators | crates.io dependency |
+| [`neuromod`](https://crates.io/crates/neuromod) 0.5.2 | LIF engine, learning rules, neuromodulators | **Not in the tree**, on purpose — `axon-encoder`'s optional `neuromod` feature is left off; 0.5.2 is the peer hosts' target pin, not this repo's — [#11](https://github.com/rmems/Spikenaut-SNN/issues/11), [#12](https://github.com/rmems/Spikenaut-SNN/issues/12) |
 | `silicon-bridge` | Q8.8 `.mem` export | Dependency once published — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
 | `kinetic-signals` | Feature math for channels 0–13 | Dependency once published — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14) |
 | `synaptic-mesh` | Dale 80:20 polarity, 16-channel router | Dependency once published — [#16](https://github.com/rmems/Spikenaut-SNN/issues/16) |

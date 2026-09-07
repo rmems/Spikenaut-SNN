@@ -615,3 +615,79 @@ fn off_grid_public_parameters_are_rejected() {
     let model = spikenaut_snn::SnnModel::load_default().expect("load the shipped model");
     assert!(spikenaut_snn::build_lif_graph(&model).is_ok());
 }
+
+/// The README's Ecosystem table is the dependency contract written out in
+/// prose, and its **Declared** marker is a claim about `Cargo.toml` today.
+/// Nothing tied that claim to the manifest, so the table could name a
+/// dependency this crate does not have -- or miss one it does -- with every
+/// test still passing.
+///
+/// When #9 added `axon-encoder`, the table was updated by hand; nothing would
+/// have failed if it had not been.
+///
+/// Only the **Declared** rows are checked. The rest of the table is intent --
+/// crates to adopt once they exist -- and explicit non-dependencies, neither of
+/// which has anything in the manifest to agree with.
+///
+/// This does not police the prose, and should not be read as if it did. A row
+/// that implies a dependency without using the marker -- as `neuromod`'s flat
+/// "crates.io dependency" did, against a manifest saying it "stays out of the
+/// tree on purpose" -- reads as a non-dependency here and passes. The marker
+/// is what this test makes load-bearing; the wording around it is still
+/// review's job.
+#[test]
+fn the_readme_dependency_table_agrees_with_the_manifest() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let readme = std::fs::read_to_string(root.join("README.md")).expect("read README.md");
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("read Cargo.toml");
+
+    let section = readme
+        .split_once("\n## Ecosystem\n")
+        .expect("README.md has an Ecosystem section")
+        .1;
+    let section = section
+        .split_once("\n## ")
+        .map_or(section, |(head, _)| head);
+
+    let mut declared: Vec<String> = Vec::new();
+    let mut rows = 0usize;
+    for line in section
+        .lines()
+        .filter(|line| line.trim_start().starts_with('|'))
+    {
+        let cells: Vec<&str> = line
+            .trim()
+            .trim_matches('|')
+            .split('|')
+            .map(str::trim)
+            .collect();
+        assert_eq!(
+            cells.len(),
+            3,
+            "every Ecosystem row is Component / Role / Relationship: {line}",
+        );
+        if cells[0] == "Component" || cells[0].starts_with("---") {
+            continue;
+        }
+        rows += 1;
+        if !cells[2].contains("**Declared**") {
+            continue;
+        }
+        // Every component is named in backticks, linked or not.
+        let name = cells[0]
+            .split('`')
+            .nth(1)
+            .unwrap_or_else(|| panic!("a component name must be in backticks: {line}"));
+        declared.push(name.to_owned());
+    }
+    assert!(rows > 0, "the Ecosystem table has no component rows");
+
+    let (_, mut runtime) = dependency_tables(&manifest);
+    runtime.sort_unstable();
+    declared.sort_unstable();
+    assert_eq!(
+        declared, runtime,
+        "every crate the README marks **Declared** must be in `[dependencies]`, \
+         and every dependency must be marked there",
+    );
+}
