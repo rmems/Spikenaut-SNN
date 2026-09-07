@@ -211,8 +211,22 @@ fn memory_bytes_matches_the_shipped_artifacts() {
 }
 
 /// The declared weight format must be the one the crate actually implements.
+///
+/// The string alone does not establish that. `Q8_8_SCALE` is the grid the
+/// crate rounds and range-checks against, and the name `q8.8-fixed-point` is
+/// only true of it while it is 2^8. Moved to a Q9.7 or Q7.9 grid, the crate
+/// would implement a different format while `config.json` went on naming this
+/// one -- so the scale is asserted before the name it is supposed to justify.
 #[test]
 fn weight_format_is_the_q8_8_grid_the_crate_uses() {
+    const FRACTIONAL_BITS: u32 = 8;
+
+    assert_eq!(
+        Q8_8_SCALE,
+        f64::from(1u32 << FRACTIONAL_BITS),
+        "`q8.8-fixed-point` names {FRACTIONAL_BITS} fractional bits, so \
+         `Q8_8_SCALE` must be 2^{FRACTIONAL_BITS}",
+    );
     assert_eq!(
         string(&config(), "weight_format"),
         "q8.8-fixed-point",
