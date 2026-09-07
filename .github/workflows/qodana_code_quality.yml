@@ -7,6 +7,17 @@ on:
       - main # The 'main' branch
       - 'releases/*' # The release branches
 
+# A newer push makes an in-flight scan irrelevant; cancel it rather than pay
+# for both and race two sets of results onto the same pull request. Mirrors
+# the same block in ci.yml.
+#
+# `github.event_name` is part of the key because `workflow_dispatch` and `push`
+# resolve to the same `github.ref` on a branch: without it, pushing to main
+# would cancel a scan somebody had just asked for by hand.
+concurrency:
+  group: qodana-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   qodana:
     # One linter per configuration file, so the hybrid repository runs one leg
@@ -32,20 +43,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}  # to check out the actual pull request commit, not the merge commit
           fetch-depth: 0  # a full history is required for pull request analysis
 
-      # The crate arrives with #24; scanning for Rust before then would fail on
-      # a repository that legitimately contains none.
-      - name: Decide whether this leg has anything to scan
-        id: scan
-        run: |
-          if [ "${{ matrix.language }}" = "rust" ] && [ ! -f Cargo.toml ]; then
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No Cargo.toml at the repository root yet; skipping the Rust scan."
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: 'Qodana Scan'
-        if: steps.scan.outputs.run == 'true'
         # Pinned to a commit SHA, not to `@v2026.1`: that ref is a *branch* in
         # JetBrains/qodana-action, not a tag, so it is force-moved on every
         # patch release and a scan could change under us without a commit here
@@ -53,6 +51,11 @@ jobs:
         # also the commit tag v2026.1.3 resolves to. Bump it deliberately.
         uses: JetBrains/qodana-action@4861e015da555e86a72b862892aba6c2b93e6891 # v2026.1.3
         with:
+          # pr-mode: false analyses the whole repository, so the counts this
+          # reports are whole-repo baseline totals -- not the debt a given pull
+          # request introduced. A pull request that adds nothing can still show
+          # a large number here. Read a delta against main, never the raw
+          # count, before concluding a change made anything worse.
           pr-mode: false
           args: --config,${{ matrix.config }}
         env:
