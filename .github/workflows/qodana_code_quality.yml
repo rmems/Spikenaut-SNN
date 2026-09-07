@@ -56,6 +56,17 @@ jobs:
   # that never ran -- trading a false failure for a false pass, which is the
   # worse of the two in a repository whose checks are meant to say only what
   # they can support. A skipped job reports as skipped.
+  #
+  # One caveat for whoever adds branch protection. GitHub counts a *skipped*
+  # required status check as satisfied, so making `Qodana (python)` required
+  # would not stop a Dependabot or fork pull request from merging without it:
+  # the skip reads as a pass to the protection rule even though it still reads
+  # as a skip in the UI. That is not live today -- this repository has no
+  # branch protection and no rulesets (`branches/main/protection` returns 404,
+  # `rulesets` returns `[]`), so nothing is required and nothing is falsely
+  # satisfied. If that changes, require the `Qodana Cloud token` job instead
+  # and let it fail closed, or accept the Python leg as advisory on runs that
+  # cannot reach the cloud.
   qodana-python:
     name: Qodana (python)
     needs: token
