@@ -643,15 +643,10 @@ fn the_readme_dependency_table_agrees_with_the_manifest() {
     let readme = std::fs::read_to_string(root.join("README.md")).expect("read README.md");
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("read Cargo.toml");
 
-    let section = readme
-        .split_once("\n## Ecosystem\n")
-        .expect("README.md has an Ecosystem section")
-        .1;
-    let section = section
-        .split_once("\n## ")
-        .map_or(section, |(head, _)| head);
+    let section = ecosystem_section(&readme);
+    assert!(!section.is_empty(), "README.md has an Ecosystem section");
 
-    let mut declared = readme_declared_components(section);
+    let mut declared = readme_declared_components(&section);
     let (_, mut runtime) = dependency_tables(&manifest);
     declared.sort_unstable();
     runtime.sort_unstable();
@@ -666,11 +661,11 @@ fn the_readme_dependency_table_agrees_with_the_manifest() {
 ///
 /// Every row has to be Component / Role / Relationship, so a table that grew a
 /// column fails here rather than being silently misparsed into agreement.
-fn readme_declared_components(section: &str) -> Vec<String> {
+fn readme_declared_components(section: &[&str]) -> Vec<String> {
     let mut declared: Vec<String> = Vec::new();
     let mut rows = 0usize;
     for line in section
-        .lines()
+        .iter()
         .filter(|line| line.trim_start().starts_with('|'))
     {
         let cells: Vec<&str> = line
@@ -700,4 +695,47 @@ fn readme_declared_components(section: &str) -> Vec<String> {
     }
     assert!(rows > 0, "the Ecosystem table has no component rows");
     declared
+}
+
+/// The Ecosystem table's lines, located line by line rather than by an exact
+/// substring match on the heading.
+///
+/// `README.md` carries no `text` attribute, so a Windows checkout with
+/// `core.autocrlf=true` gets CRLF and a `"\n## Ecosystem\n"` match finds
+/// nothing -- turning the guard above into a panic that never reaches the
+/// manifest. `str::lines` strips the `\r`, and `trim_end` absorbs a trailing
+/// space on the heading, so neither silences the check.
+fn ecosystem_section(readme: &str) -> Vec<&str> {
+    readme
+        .lines()
+        .skip_while(|line| line.trim_end() != "## Ecosystem")
+        .skip(1)
+        .take_while(|line| !line.trim_start().starts_with("## "))
+        .collect()
+}
+
+/// A CRLF checkout, or a stray trailing space, must not make the dependency
+/// guard disappear into a panic.
+#[test]
+fn the_ecosystem_section_is_found_whatever_the_line_endings() {
+    let lf =
+        "intro\n\n## Ecosystem\n\n| Component | Role | Relationship |\n\n## The Story\nprose\n";
+    let crlf = lf
+        .replace('\n', "\r\n")
+        .replace("## Ecosystem", "## Ecosystem ");
+
+    let found = ecosystem_section(lf);
+    assert_eq!(
+        found,
+        ecosystem_section(&crlf),
+        "CRLF must locate the same rows"
+    );
+    assert!(
+        found.iter().any(|line| line.starts_with('|')),
+        "the section must carry the table: {found:?}",
+    );
+    assert!(
+        !found.iter().any(|line| line.contains("prose")),
+        "the section must stop at the next heading: {found:?}",
+    );
 }
