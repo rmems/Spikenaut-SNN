@@ -10,8 +10,12 @@ on:
 # A newer push makes an in-flight scan irrelevant; cancel it rather than pay
 # for both and race two sets of results onto the same pull request. Mirrors
 # the same block in ci.yml.
+#
+# `github.event_name` is part of the key because `workflow_dispatch` and `push`
+# resolve to the same `github.ref` on a branch: without it, pushing to main
+# would cancel a scan somebody had just asked for by hand.
 concurrency:
-  group: qodana-${{ github.ref }}
+  group: qodana-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

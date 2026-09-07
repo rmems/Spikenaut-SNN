@@ -9,9 +9,12 @@ on:
       - 'releases/*'
 
 # A newer push makes an in-flight run irrelevant; cancel it rather than pay
-# for both and race two sets of results onto the same PR.
+# for both and race two sets of results onto the same PR. `github.event_name`
+# is part of the key because `workflow_dispatch` and `push` resolve to the same
+# `github.ref` on a branch: without it, pushing to main would cancel a run
+# somebody had just asked for by hand.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
