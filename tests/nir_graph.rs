@@ -773,7 +773,7 @@ fn the_files_tree_and_the_shipped_tree_agree() {
 
     let mut listed: Vec<String> = named
         .iter()
-        .filter(|path| path.starts_with(ARTIFACTS) && *path != ARTIFACTS)
+        .filter(|path| path.starts_with(ARTIFACTS) && !path.ends_with('/'))
         .cloned()
         .collect();
     let mut shipped = shipped_artifacts(root);
@@ -869,11 +869,17 @@ fn classify_tree_line(line: &str) -> Option<TreeLine<'_>> {
 /// second table -- or a fenced example using pipes -- to the row parser, so an
 /// unrelated documentation edit could trip the three-cell assertion or
 /// contribute stray component names.
+///
+/// The header is found by its *cells*, not by the literal `| Component `
+/// spelling: a Markdown formatter may drop the optional padding or the leading
+/// delimiter, and `|Component|Role|Relationship|` is the same table. Matching
+/// the raw text would turn a reformat into "the Ecosystem table has no
+/// component rows".
 fn component_table<'a>(section: &[&'a str]) -> Vec<&'a str> {
     section
         .iter()
-        .skip_while(|line| !line.trim_start().starts_with("| Component "))
-        .take_while(|line| line.trim_start().starts_with('|'))
+        .skip_while(|line| table_cells(line).first().map(String::as_str) != Some("Component"))
+        .take_while(|line| line.contains('|'))
         .copied()
         .collect()
 }
