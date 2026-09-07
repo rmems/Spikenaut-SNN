@@ -740,18 +740,29 @@ fn the_ecosystem_section_is_found_whatever_the_line_endings() {
     );
 }
 
-/// Every path the `## Files` tree names must resolve in the working tree.
+/// The `## Files` tree and the shipped tree must agree.
 ///
 /// That tree is the repository's own account of what it ships, and it had
 /// drifted three ways at once: a shipped `config.json` missing, the crate root
-/// missing, and an eight-module `tools/` package shown as a single script. A
-/// rename would have been just as invisible.
+/// `src/lib.rs` missing, and an eight-module `tools/` package shown as a single
+/// script. A rename would have been just as invisible.
 ///
-/// Only the fenced block under `## Files` is read, so prose elsewhere naming a
-/// deleted script or an external repository is not dragged in and does not
-/// have to exist.
+/// Two directions, and they are not enforced equally, because the tree does not
+/// claim the same thing everywhere:
+///
+/// - **Every path named must exist.** This holds for the whole tree.
+/// - **Every shipped file must be named.** This holds only for
+///   `dataset/merged_v2/`, which the tree enumerates in full. `src/` and
+///   `tools/` are summaries by design -- the inline test modules and the seven
+///   `q88_*.py` modules are deliberately not listed -- so requiring set
+///   equality there would be requiring a manifest the tree never promised.
+///
+/// Only the fenced tree block is read. The section also carries prose and a
+/// `### Loading on FPGA` Verilog example, and parsing those would let an
+/// ordinary documentation edit -- a line beginning `$readmemh("...")` -- fail
+/// this test with a "path" that was never a path.
 #[test]
-fn every_path_the_files_tree_names_exists() {
+fn the_files_tree_and_the_shipped_tree_agree() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let readme = std::fs::read_to_string(root.join("README.md")).expect("read README.md");
 
@@ -767,17 +778,35 @@ fn every_path_the_files_tree_names_exists() {
         "`## Files` names {missing:?}, which do not exist; {} paths checked",
         named.len(),
     );
+
+    let mut listed: Vec<&String> = named.iter().filter(|p| p.starts_with(ARTIFACTS)).collect();
+    let shipped_dir = std::fs::read_dir(root.join(ARTIFACTS)).expect("read the artifact directory");
+    let mut shipped: Vec<String> = shipped_dir
+        .map(|entry| entry.expect("read an artifact directory entry").file_name())
+        .map(|name| format!("{ARTIFACTS}{}", name.to_string_lossy()))
+        .collect();
+    listed.sort();
+    shipped.sort();
+    let listed: Vec<String> = listed.into_iter().cloned().collect();
+    assert_eq!(
+        listed, shipped,
+        "`## Files` enumerates {ARTIFACTS} in full, so every shipped artifact must be named there",
+    );
 }
+
+/// The one directory the `## Files` tree enumerates exhaustively.
+const ARTIFACTS: &str = "dataset/merged_v2/";
 
 /// The repository paths named inside the `## Files` fenced tree.
 ///
 /// A line ending in `/` sets the directory the entries below it hang from, a
-/// box-drawing entry is a file in that directory, and an unindented bare
-/// filename is at the repository root.
+/// box-drawing entry is a file in that directory, and any other line is a file
+/// at the repository root -- named with or without an extension, since
+/// `LICENSE` and `Makefile` are as much files as `config.json` is.
 fn files_tree_paths(section: &[&str]) -> Vec<String> {
     let mut dir = String::new();
     let mut paths = Vec::new();
-    for line in section {
+    for line in fenced_block(section) {
         match classify_tree_line(line) {
             Some(TreeLine::Dir(entry)) => dir = entry.to_owned(),
             Some(TreeLine::Nested(name)) => paths.push(format!("{dir}{name}")),
@@ -786,6 +815,21 @@ fn files_tree_paths(section: &[&str]) -> Vec<String> {
         }
     }
     paths
+}
+
+/// The lines inside a section's first fenced block, fences excluded.
+///
+/// A section can hold several fenced blocks -- `## Files` holds the tree and a
+/// Verilog example -- so this takes the first and stops at its closing fence
+/// rather than skipping fence markers wherever they appear.
+fn fenced_block<'a>(section: &[&'a str]) -> Vec<&'a str> {
+    section
+        .iter()
+        .skip_while(|line| !line.trim_start().starts_with("```"))
+        .skip(1)
+        .take_while(|line| !line.trim_start().starts_with("```"))
+        .copied()
+        .collect()
 }
 
 /// The box-drawing prefixes a `## Files` entry can carry: tee, then elbow for
@@ -802,14 +846,14 @@ enum TreeLine<'a> {
     Root(&'a str),
 }
 
-/// Classify one tree line, or `None` for a blank, a fence, or a wrapped
-/// comment continuation.
+/// Classify one tree line, or `None` for a blank or a wrapped comment
+/// continuation.
 ///
 /// Comments are cut first, which is what reduces the `#` continuation lines to
 /// nothing rather than letting their prose look like filenames.
 fn classify_tree_line(line: &str) -> Option<TreeLine<'_>> {
     let trimmed = line.split('#').next().unwrap_or("").trim();
-    if trimmed.is_empty() || trimmed.starts_with("```") {
+    if trimmed.is_empty() {
         return None;
     }
     if let Some(entry) = TREE_ENTRY_GLYPHS
@@ -821,9 +865,5 @@ fn classify_tree_line(line: &str) -> Option<TreeLine<'_>> {
     if trimmed.ends_with('/') {
         return Some(TreeLine::Dir(trimmed));
     }
-    trimmed
-        .split_whitespace()
-        .next()
-        .filter(|name| name.contains('.'))
-        .map(TreeLine::Root)
+    trimmed.split_whitespace().next().map(TreeLine::Root)
 }
