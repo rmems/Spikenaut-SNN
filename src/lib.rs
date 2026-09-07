@@ -22,8 +22,10 @@
 //!
 //! Its dependency list is deliberately minimal -- currently [`nir_rs`] and
 //! [`axon_encoder`], both from crates.io. The bound is the claim, not the
-//! number: `tests/nir_graph.rs` asserts the manifest's exact set, so adopting
-//! a crate fails that test until the adoption is deliberate.
+//! number: `tests/nir_graph.rs` asserts the manifest's exact *runtime*
+//! dependency set, so adopting a crate this library links against fails that
+//! test until the adoption is deliberate. Dev- and build-dependencies are
+//! outside that set by design, and bounded by review rather than by CI.
 //!
 //! The graph [`load_default_lif_graph`] returns is the shipped `merged_v2`
 //! artifact ([`model::MERGED_V2_PROVENANCE`]): 16-neuron LIF with known
