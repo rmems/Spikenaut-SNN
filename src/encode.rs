@@ -21,9 +21,10 @@
 //! The two do not agree, and neither is established as the shipped weights'
 //! input contract -- those weights were imported from an external path, with
 //! no training run in this repository linking them to either encoder. So this
-//! module is a forward-looking contract, and encoding telemetry with it does
-//! not make a frame that `merged_v2` was trained to read. Do not present the
-//! two as matching components: pair them only once a training run exists that
+//! module is a forward-looking contract: encoding telemetry with it
+//! establishes nothing about whether `merged_v2` can read the result -- which
+//! is not the same as establishing that it cannot. Do not present the two as
+//! matching components: pair them only once a training run exists that
 //! actually used this map.
 //!
 //! # Channel map
