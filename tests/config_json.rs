@@ -86,12 +86,33 @@ fn string<'a>(config: &'a Json, key: &str) -> &'a str {
     })
 }
 
-/// Count the Q8.8 codes in one `.mem` artifact.
+/// Count the Q8.8 codes in one `.mem` artifact, rejecting tokens that are not
+/// codes.
+///
+/// `memory_bytes` is `codes * BYTES_PER_Q8_8_CODE`, and that arithmetic is only
+/// sound if every token really is one 16-bit word. Counting raw whitespace-
+/// separated tokens would accept `0x0120`, `GGGG` or a stray header word and
+/// still produce a plausible byte figure, so a corrupted artifact that kept its
+/// token count would pass here while `memory_bytes` described garbage -- and the
+/// format violation would surface only in the separate Python verifier.
+///
+/// The contract checked is the one `tools/q88_core.py::parse_mem` enforces: a
+/// 4-digit hex word per value, negatives in two's complement.
 fn mem_code_count(name: &str) -> usize {
     let path = repo_root().join("dataset/merged_v2").join(name);
     let text =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    text.split_whitespace().count()
+
+    let mut codes = 0;
+    for (index, token) in text.split_whitespace().enumerate() {
+        assert!(
+            token.len() == 4 && token.bytes().all(|b| b.is_ascii_hexdigit()),
+            "{}: token {index} is {token:?}, expected a 4-digit hex word",
+            path.display(),
+        );
+        codes += 1;
+    }
+    codes
 }
 
 /// The population width is stated in three places; they must agree.
