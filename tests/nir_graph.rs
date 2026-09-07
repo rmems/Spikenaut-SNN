@@ -665,12 +665,7 @@ fn readme_declared_components(section: &[&str]) -> Vec<String> {
     let mut declared: Vec<String> = Vec::new();
     let mut rows = 0usize;
     for line in component_table(section) {
-        let cells: Vec<&str> = line
-            .trim()
-            .trim_matches('|')
-            .split('|')
-            .map(str::trim)
-            .collect();
+        let cells = table_cells(line);
         assert_eq!(
             cells.len(),
             3,
@@ -859,12 +854,13 @@ fn classify_tree_line(line: &str) -> Option<TreeLine<'_>> {
         .iter()
         .find_map(|glyph| trimmed.strip_prefix(glyph))
     {
-        return entry.split_whitespace().next().map(TreeLine::Nested);
+        let name = entry.trim();
+        return (!name.is_empty()).then_some(TreeLine::Nested(name));
     }
     if trimmed.ends_with('/') {
         return Some(TreeLine::Dir(trimmed));
     }
-    trimmed.split_whitespace().next().map(TreeLine::Root)
+    Some(TreeLine::Root(trimmed))
 }
 
 /// The rows of the Ecosystem table, from its `Component` header to its end.
@@ -900,15 +896,61 @@ const ARTIFACT_EXTENSIONS: [&str; 2] = [".mem", ".json"];
 /// shipped under a brand-new extension is not caught by this direction until
 /// someone adds it here, and the existence check does not cover it either.
 fn shipped_artifacts(root: &Path) -> Vec<String> {
-    std::fs::read_dir(root.join(ARTIFACTS))
-        .expect("read the artifact directory")
-        .map(|entry| entry.expect("read an artifact directory entry").file_name())
-        .map(|name| name.to_string_lossy().into_owned())
-        .filter(|name| {
-            ARTIFACT_EXTENSIONS
-                .iter()
-                .any(|extension| name.ends_with(extension))
-        })
-        .map(|name| format!("{ARTIFACTS}{name}"))
-        .collect()
+    let mut found = Vec::new();
+    collect_files(root, &root.join(ARTIFACTS), &mut found);
+    found.retain(|path| {
+        ARTIFACT_EXTENSIONS
+            .iter()
+            .any(|extension| path.ends_with(extension))
+    });
+    found
+}
+
+/// Every file under `dir`, recursively, as paths relative to `root`.
+///
+/// Recursive because the tree claims [`ARTIFACTS`] is enumerated *in full*: a
+/// non-recursive listing would see only the subdirectory entry, the extension
+/// filter would drop it, and an artifact tucked under
+/// `dataset/merged_v2/checkpoints/` would go undocumented with the check still
+/// passing.
+fn collect_files(root: &Path, dir: &Path, found: &mut Vec<String>) {
+    let entries = std::fs::read_dir(dir).expect("read an artifact directory");
+    for entry in entries {
+        let path = entry.expect("read an artifact directory entry").path();
+        if path.is_dir() {
+            collect_files(root, &path, found);
+        } else if let Ok(relative) = path.strip_prefix(root) {
+            found.push(relative.to_string_lossy().replace('\\', "/"));
+        }
+    }
+}
+
+/// Split one Markdown table row into cells on *unescaped* pipes.
+///
+/// A `\\|` inside a cell is table prose, not a column boundary. Splitting on
+/// every `|` turned a valid three-column row into four cells and failed the
+/// shape assertion, so ordinary wording in the Role column could break the
+/// dependency guard.
+fn table_cells(row: &str) -> Vec<String> {
+    let body = row.trim().trim_start_matches('|').trim_end_matches('|');
+    let mut cells = vec![String::new()];
+    let mut escaped = false;
+    for character in body.chars() {
+        match (escaped, character) {
+            (true, _) => {
+                cells
+                    .last_mut()
+                    .expect("a cell in progress")
+                    .push(character);
+                escaped = false;
+            }
+            (false, '\\') => escaped = true,
+            (false, '|') => cells.push(String::new()),
+            (false, _) => cells
+                .last_mut()
+                .expect("a cell in progress")
+                .push(character),
+        }
+    }
+    cells.iter().map(|cell| cell.trim().to_owned()).collect()
 }
