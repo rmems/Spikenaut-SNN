@@ -830,6 +830,26 @@ fn fenced_block<'a>(section: &[&'a str]) -> Vec<&'a str> {
 /// the last child of a directory.
 const TREE_ENTRY_GLYPHS: [&str; 2] = ["\u{251c}\u{2500}\u{2500} ", "\u{2514}\u{2500}\u{2500} "];
 
+/// `line` up to the annotation comment that follows it, if any.
+///
+/// Only a `#` with whitespace in front of it opens an annotation. Cutting at
+/// *every* `#` truncates a path that legitimately contains one -- `model#1.json`
+/// becomes `model` -- and the existence check then passes against whatever the
+/// truncation happens to name. `src/model#2.rs` would reduce to `src/model`,
+/// which exists as a directory, so a documented file that is not there at all
+/// would be silently validated. The loud direction is a wrong set comparison;
+/// this one is the direction that says nothing, which is why it is worth the
+/// narrower rule.
+///
+/// A `#` in the first column is therefore a filename, not a comment. Both
+/// READMEs write every annotation and every wrapped continuation with leading
+/// whitespace, so nothing that is a comment today stops being one.
+fn strip_annotation(line: &str) -> &str {
+    line.char_indices()
+        .find(|&(at, character)| character == '#' && line[..at].ends_with(char::is_whitespace))
+        .map_or(line, |(at, _)| &line[..at])
+}
+
 /// What one line of the `## Files` tree names.
 enum TreeLine<'a> {
     /// A directory heading, keeping its trailing `/`.
@@ -846,7 +866,7 @@ enum TreeLine<'a> {
 /// Comments are cut first, which is what reduces the `#` continuation lines to
 /// nothing rather than letting their prose look like filenames.
 fn classify_tree_line(line: &str) -> Option<TreeLine<'_>> {
-    let trimmed = line.split('#').next().unwrap_or("").trim();
+    let trimmed = strip_annotation(line).trim();
     if trimmed.is_empty() {
         return None;
     }
@@ -922,8 +942,21 @@ fn shipped_artifacts(root: &Path) -> Vec<String> {
 fn collect_files(root: &Path, dir: &Path, found: &mut Vec<String>) {
     let entries = std::fs::read_dir(dir).expect("read an artifact directory");
     for entry in entries {
-        let path = entry.expect("read an artifact directory entry").path();
-        if path.is_dir() {
+        let entry = entry.expect("read an artifact directory entry");
+        let path = entry.path();
+        // `file_type()` does not follow symlinks; `Path::is_dir` does. A
+        // directory symlink under ARTIFACTS -- one pointing at an ancestor
+        // most of all -- would otherwise be descended until the kernel stops
+        // resolving it, and because `is_dir` reports an unreadable path as
+        // "not a directory" rather than erroring, that terminates in ~40
+        // levels of duplicated paths instead of a fault. The test still
+        // failed, but with an unreadable diff rather than the drift it names.
+        //
+        // A symlink is not itself descended, but it is still an entry, so a
+        // link named `extra.json` is reported as an undocumented artifact
+        // exactly as a regular file would be.
+        let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+        if is_dir {
             collect_files(root, &path, found);
         } else if let Ok(relative) = path.strip_prefix(root) {
             found.push(relative.to_string_lossy().replace('\\', "/"));
