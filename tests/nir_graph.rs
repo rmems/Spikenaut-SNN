@@ -1234,26 +1234,47 @@ fn collect_files(root: &Path, dir: &Path, found: &mut Vec<String>) {
 /// every `|` turned a valid three-column row into four cells and failed the
 /// shape assertion, so ordinary wording in the Role column could break the
 /// dependency guard.
+///
+/// Two things this is careful about, both of which were silent holes:
+///
+/// - **Only the pipe escape is consumed.** Dropping the backslash from every
+///   `\\x` reconstructed `**Declared**` out of `\\*\\*Declared\\*\\*`, which
+///   Markdown renders as literal asterisks. The rendered table had lost the
+///   marker while the guard still counted the row. Escapes of anything else
+///   are kept verbatim, so a cell that reads literally stays literal here too.
+/// - **At most one outer pipe on each side.** `trim_start_matches('|')` ate
+///   every leading pipe, so a row beginning `||` -- which Markdown reads as an
+///   empty first cell, changing the column count -- normalised to exactly
+///   `Component`, `Role`, `Relationship` and satisfied the header and
+///   delimiter checks. Removing a single optional delimiter leaves the empty
+///   column visible, and the shape assertion then reports it.
 fn table_cells(row: &str) -> Vec<String> {
-    let body = row.trim().trim_start_matches('|').trim_end_matches('|');
+    let trimmed = row.trim();
+    let after_leading = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let body = after_leading.strip_suffix('|').unwrap_or(after_leading);
     let mut cells = vec![String::new()];
     let mut escaped = false;
     for character in body.chars() {
+        let cell = cells.last_mut().expect("a cell in progress");
         match (escaped, character) {
+            // Only `\|` is a quoted delimiter. Every other escape keeps its
+            // backslash so the cell still reads the way it renders.
+            (true, '|') => {
+                cell.push('|');
+                escaped = false;
+            }
             (true, _) => {
-                cells
-                    .last_mut()
-                    .expect("a cell in progress")
-                    .push(character);
+                cell.push('\\');
+                cell.push(character);
                 escaped = false;
             }
             (false, '\\') => escaped = true,
             (false, '|') => cells.push(String::new()),
-            (false, _) => cells
-                .last_mut()
-                .expect("a cell in progress")
-                .push(character),
+            (false, _) => cell.push(character),
         }
+    }
+    if escaped {
+        cells.last_mut().expect("a cell in progress").push('\\');
     }
     cells.iter().map(|cell| cell.trim().to_owned()).collect()
 }
