@@ -207,6 +207,9 @@ Negative values use two's complement: `FFF9` = -0.027.
 ## Files
 
 ```text
+config.json                        # Machine-readable header: neuron and
+                                   # channel counts, weight format, clock
+
 dataset/merged_v2/
 ├── parameters.mem                 # 16 neuron thresholds (Q8.8 hex)
 ├── parameters_decay.mem           # 16 decay rates (Q8.8 hex)
@@ -214,12 +217,15 @@ dataset/merged_v2/
 ├── parameters_output_weights.mem  # Output layer weights (signed Q8.8)
 └── snn_model.json                 # Full model definition (float values)
 
-tools/                             # Python, standard library only
-└── verify_q88.py                  # Re-derives every Q8.8 word from the JSON
-                                   # floats and checks it against the .mem
-                                   # files; --self-test proves it can fail
+tools/                             # Python package, standard library only
+└── verify_q88.py                  # Entry point: re-derives every Q8.8 word
+                                   # from the JSON floats and checks it
+                                   # against the .mem files; --self-test
+                                   # proves it can fail. The checker itself
+                                   # is the sibling q88_*.py modules.
 
 src/                               # Rust, `spikenaut-snn`
+├── lib.rs                         # Crate root: what the library exposes
 ├── model.rs                       # Decodes snn_model.json, validated
 ├── graph.rs                       # Builds the NIR graph
 ├── encode.rs                      # Telemetry -> spikes, on the proposed
