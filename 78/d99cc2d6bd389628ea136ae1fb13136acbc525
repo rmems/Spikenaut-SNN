@@ -1,0 +1,23 @@
+tools/check_model_card.py
+  s_85bbc515c0c607::t_9e3f8f139b0b86 47
+  s_85bbc515c0c607::t_37b6c78ef15176 226-235
+  s_85bbc515c0c607::t_6e9e3963b4e2d6 1-46,48-225,236-271
+.github/workflows/ci.yml
+  s_85bbc515c0c607::t_356c90e4c7fc58 107-116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "78d99cc2d6bd389628ea136ae1fb13136acbc525",
+  "prompts": {},
+  "sessions": {
+    "s_85bbc515c0c607": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6cd31967-878c-4212-829f-f4e89a5e658e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
