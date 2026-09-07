@@ -1,0 +1,25 @@
+tests/nir_graph.rs
+  s_db107ff42bc1db::t_a2725926e98fd1 933-934,936-937
+  s_db107ff42bc1db::t_cf0ea4259328da 686
+  s_db107ff42bc1db::t_b60485e559ce0b 704-740
+  s_db107ff42bc1db::t_541e1844321836 925-932,938-940
+  s_db107ff42bc1db::t_ecc86e98c0482e 681-685,687
+  s_db107ff42bc1db::t_eae449a69c1e5f 1148-1216
+  s_db107ff42bc1db::t_2c7e88f241728d 907
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "098cea6384e6896eb9d6084cdc0bd13100214923",
+  "prompts": {},
+  "sessions": {
+    "s_db107ff42bc1db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2468c4bc-1090-4c69-be3e-d4bbd5061619",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
