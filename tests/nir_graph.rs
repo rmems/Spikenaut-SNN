@@ -664,10 +664,7 @@ fn the_readme_dependency_table_agrees_with_the_manifest() {
 fn readme_declared_components(section: &[&str]) -> Vec<String> {
     let mut declared: Vec<String> = Vec::new();
     let mut rows = 0usize;
-    for line in section
-        .iter()
-        .filter(|line| line.trim_start().starts_with('|'))
-    {
+    for line in component_table(section) {
         let cells: Vec<&str> = line
             .trim()
             .trim_matches('|')
@@ -779,15 +776,14 @@ fn the_files_tree_and_the_shipped_tree_agree() {
         named.len(),
     );
 
-    let mut listed: Vec<&String> = named.iter().filter(|p| p.starts_with(ARTIFACTS)).collect();
-    let shipped_dir = std::fs::read_dir(root.join(ARTIFACTS)).expect("read the artifact directory");
-    let mut shipped: Vec<String> = shipped_dir
-        .map(|entry| entry.expect("read an artifact directory entry").file_name())
-        .map(|name| format!("{ARTIFACTS}{}", name.to_string_lossy()))
+    let mut listed: Vec<String> = named
+        .iter()
+        .filter(|path| path.starts_with(ARTIFACTS) && *path != ARTIFACTS)
+        .cloned()
         .collect();
+    let mut shipped = shipped_artifacts(root, &listed);
     listed.sort();
     shipped.sort();
-    let listed: Vec<String> = listed.into_iter().cloned().collect();
     assert_eq!(
         listed, shipped,
         "`## Files` enumerates {ARTIFACTS} in full, so every shipped artifact must be named there",
@@ -808,7 +804,10 @@ fn files_tree_paths(section: &[&str]) -> Vec<String> {
     let mut paths = Vec::new();
     for line in fenced_block(section) {
         match classify_tree_line(line) {
-            Some(TreeLine::Dir(entry)) => dir = entry.to_owned(),
+            Some(TreeLine::Dir(entry)) => {
+                dir = entry.to_owned();
+                paths.push(dir.clone());
+            }
             Some(TreeLine::Nested(name)) => paths.push(format!("{dir}{name}")),
             Some(TreeLine::Root(name)) => paths.push(name.to_owned()),
             None => {}
@@ -866,4 +865,45 @@ fn classify_tree_line(line: &str) -> Option<TreeLine<'_>> {
         return Some(TreeLine::Dir(trimmed));
     }
     trimmed.split_whitespace().next().map(TreeLine::Root)
+}
+
+/// The rows of the Ecosystem table, from its `Component` header to its end.
+///
+/// The section is not the table. Filtering every `|` line in it would feed a
+/// second table -- or a fenced example using pipes -- to the row parser, so an
+/// unrelated documentation edit could trip the three-cell assertion or
+/// contribute stray component names.
+fn component_table<'a>(section: &[&'a str]) -> Vec<&'a str> {
+    section
+        .iter()
+        .skip_while(|line| !line.trim_start().starts_with("| Component "))
+        .take_while(|line| line.trim_start().starts_with('|'))
+        .copied()
+        .collect()
+}
+
+/// The artifact files on disk under [`ARTIFACTS`], as tree-relative paths.
+///
+/// Restricted to the extensions the tree itself names there, so a working copy
+/// carrying `.DS_Store`, an editor backup or a log does not fail a test about
+/// documentation drift. The trade is stated rather than hidden: an artifact
+/// shipped under a brand-new extension is not caught by this direction, only
+/// by the existence check once someone documents it.
+fn shipped_artifacts(root: &Path, listed: &[String]) -> Vec<String> {
+    let extensions: Vec<&str> = listed
+        .iter()
+        .filter_map(|path| path.rsplit_once('.'))
+        .map(|(_, extension)| extension)
+        .collect();
+    std::fs::read_dir(root.join(ARTIFACTS))
+        .expect("read the artifact directory")
+        .map(|entry| entry.expect("read an artifact directory entry").file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| {
+            extensions
+                .iter()
+                .any(|extension| name.ends_with(&format!(".{extension}")))
+        })
+        .map(|name| format!("{ARTIFACTS}{name}"))
+        .collect()
 }
