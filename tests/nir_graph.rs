@@ -773,30 +773,57 @@ fn every_path_the_files_tree_names_exists() {
 ///
 /// A line ending in `/` sets the directory the entries below it hang from, a
 /// box-drawing entry is a file in that directory, and an unindented bare
-/// filename is at the repository root. Comments are cut first, so the wrapped
-/// `#` continuation lines contribute nothing.
+/// filename is at the repository root.
 fn files_tree_paths(section: &[&str]) -> Vec<String> {
     let mut dir = String::new();
     let mut paths = Vec::new();
     for line in section {
-        let trimmed = line.split('#').next().unwrap_or("").trim();
-        if trimmed.is_empty() || trimmed.starts_with("```") {
-            continue;
-        }
-        if let Some(entry) = trimmed
-            .strip_prefix("\u{251c}\u{2500}\u{2500} ")
-            .or_else(|| trimmed.strip_prefix("\u{2514}\u{2500}\u{2500} "))
-        {
-            if let Some(name) = entry.split_whitespace().next() {
-                paths.push(format!("{dir}{name}"));
-            }
-        } else if trimmed.ends_with('/') {
-            dir = trimmed.to_owned();
-        } else if let Some(name) = trimmed.split_whitespace().next()
-            && name.contains('.')
-        {
-            paths.push(name.to_owned());
+        match classify_tree_line(line) {
+            Some(TreeLine::Dir(entry)) => dir = entry.to_owned(),
+            Some(TreeLine::Nested(name)) => paths.push(format!("{dir}{name}")),
+            Some(TreeLine::Root(name)) => paths.push(name.to_owned()),
+            None => {}
         }
     }
     paths
+}
+
+/// The box-drawing prefixes a `## Files` entry can carry: tee, then elbow for
+/// the last child of a directory.
+const TREE_ENTRY_GLYPHS: [&str; 2] = ["\u{251c}\u{2500}\u{2500} ", "\u{2514}\u{2500}\u{2500} "];
+
+/// What one line of the `## Files` tree names.
+enum TreeLine<'a> {
+    /// A directory heading, keeping its trailing `/`.
+    Dir(&'a str),
+    /// A file under the directory heading above it.
+    Nested(&'a str),
+    /// A file at the repository root, written without a tree glyph.
+    Root(&'a str),
+}
+
+/// Classify one tree line, or `None` for a blank, a fence, or a wrapped
+/// comment continuation.
+///
+/// Comments are cut first, which is what reduces the `#` continuation lines to
+/// nothing rather than letting their prose look like filenames.
+fn classify_tree_line(line: &str) -> Option<TreeLine<'_>> {
+    let trimmed = line.split('#').next().unwrap_or("").trim();
+    if trimmed.is_empty() || trimmed.starts_with("```") {
+        return None;
+    }
+    if let Some(entry) = TREE_ENTRY_GLYPHS
+        .iter()
+        .find_map(|glyph| trimmed.strip_prefix(glyph))
+    {
+        return entry.split_whitespace().next().map(TreeLine::Nested);
+    }
+    if trimmed.ends_with('/') {
+        return Some(TreeLine::Dir(trimmed));
+    }
+    trimmed
+        .split_whitespace()
+        .next()
+        .filter(|name| name.contains('.'))
+        .map(TreeLine::Root)
 }
