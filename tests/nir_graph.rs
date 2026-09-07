@@ -675,7 +675,7 @@ fn readme_declared_components(section: &[&str]) -> Vec<String> {
             continue;
         }
         rows += 1;
-        if !cells[2].contains("**Declared**") {
+        if !without_html_comments(&cells[2]).contains("**Declared**") {
             continue;
         }
         // Every component is named in backticks, linked or not.
@@ -687,6 +687,26 @@ fn readme_declared_components(section: &[&str]) -> Vec<String> {
     }
     assert!(rows > 0, "the Ecosystem table has no component rows");
     declared
+}
+
+/// `cell` with any HTML comment spans removed.
+///
+/// A marker surviving only inside `<!-- **Declared** -->` renders as nothing,
+/// so the contract a reader sees has lost it while a substring check still
+/// finds it -- the two sets stay equal and the guard says nothing. An
+/// unterminated `<!--` hides everything after it, and is treated that way.
+fn without_html_comments(cell: &str) -> String {
+    let mut visible = String::with_capacity(cell.len());
+    let mut rest = cell;
+    while let Some(start) = rest.find("<!--") {
+        visible.push_str(&rest[..start]);
+        rest = match rest[start..].find("-->") {
+            Some(end) => &rest[start + end + "-->".len()..],
+            None => "",
+        };
+    }
+    visible.push_str(rest);
+    visible
 }
 
 /// The Ecosystem table's lines, located line by line rather than by an exact
@@ -764,19 +784,7 @@ fn the_files_tree_and_the_shipped_tree_agree() {
         "the Files tree named too little: {named:?}"
     );
 
-    // `Path::join` with an absolute path discards the root, so a tree naming
-    // `/etc/passwd` would be checked against the host filesystem and pass on
-    // any CI runner -- the existence invariant silently not holding for that
-    // row. `..` walks out of the checkout the same way. Neither is a
-    // repository path, so they are rejected before the join rather than
-    // resolved by it.
-    let escaping: Vec<&String> = named
-        .iter()
-        .filter(|p| {
-            let path = Path::new(p.as_str());
-            path.is_absolute() || path.components().any(|c| c == Component::ParentDir)
-        })
-        .collect();
+    let escaping = escaping_paths(&named);
     assert!(
         escaping.is_empty(),
         "`## Files` names {escaping:?}, which leave the repository; \
@@ -790,24 +798,7 @@ fn the_files_tree_and_the_shipped_tree_agree() {
         named.len(),
     );
 
-    // `exists()` does not distinguish a file from a directory, so a documented
-    // file that has become a directory of the same name satisfied it. Nothing
-    // else in the suite opens the summarised `src/` and `tools/` entries, so
-    // for those it was the only check there was -- replacing
-    // `tools/verify_q88.py` with a directory passed. The tree already spells
-    // the distinction with a trailing `/`, which is what makes this cheap: no
-    // extra state, just holding each entry to the kind it was written as.
-    let mistyped: Vec<&String> = named
-        .iter()
-        .filter(|p| {
-            let path = root.join(p);
-            if p.ends_with('/') {
-                !path.is_dir()
-            } else {
-                !path.is_file()
-            }
-        })
-        .collect();
+    let mistyped = mistyped_paths(root, &named);
     assert!(
         mistyped.is_empty(),
         "`## Files` names {mistyped:?} as the wrong kind; a trailing `/` means \
@@ -826,6 +817,45 @@ fn the_files_tree_and_the_shipped_tree_agree() {
         listed, shipped,
         "`## Files` enumerates {ARTIFACTS} in full, so every shipped artifact must be named there",
     );
+}
+
+/// Entries that name something outside the repository.
+///
+/// `Path::join` with an absolute path discards the root, so a tree naming
+/// `/etc/passwd` is checked against the host filesystem and passes on any CI
+/// runner -- the existence invariant silently not holding for that row. `..`
+/// walks out of the checkout the same way. Neither is a repository path, so
+/// both are rejected before the join rather than resolved by it.
+fn escaping_paths(named: &[String]) -> Vec<&String> {
+    named
+        .iter()
+        .filter(|p| {
+            let path = Path::new(p.as_str());
+            path.is_absolute() || path.components().any(|c| c == Component::ParentDir)
+        })
+        .collect()
+}
+
+/// Entries whose kind on disk disagrees with how the tree wrote them.
+///
+/// `exists()` does not distinguish a file from a directory, so a documented
+/// file that has become a directory of the same name satisfied it. Nothing
+/// else in the suite opens the summarised `src/` and `tools/` entries, so for
+/// those it was the only check there was -- replacing `tools/verify_q88.py`
+/// with a directory passed. The tree already spells the distinction with a
+/// trailing `/`, so holding each entry to it needs no extra state.
+fn mistyped_paths<'a>(root: &Path, named: &'a [String]) -> Vec<&'a String> {
+    named
+        .iter()
+        .filter(|p| {
+            let path = root.join(p);
+            if p.ends_with('/') {
+                !path.is_dir()
+            } else {
+                !path.is_file()
+            }
+        })
+        .collect()
 }
 
 /// The one directory the `## Files` tree enumerates exhaustively.
@@ -969,24 +999,18 @@ fn component_table<'a>(section: &[&'a str]) -> Vec<&'a str> {
 /// from the filter, the file dropped out of both sides, and the check was
 /// disabled by exactly the drift it exists to catch.
 ///
-/// The entries are the classes `.gitignore` already says may appear anywhere
-/// in a working copy, so a contributor's editor or OS scratch does not fail a
-/// test about documentation. Anything else under [`ARTIFACTS`] is treated as
-/// shipped, including a file under an extension nobody has thought of yet.
-const NON_ARTIFACT_NAMES: [&str; 3] = [".DS_Store", "Thumbs.db", "lcov.info"];
-const NON_ARTIFACT_SUFFIXES: [&str; 11] = [
-    "~",
-    ".swp",
-    ".swo",
-    ".log",
-    ".pyc",
-    ".pyo",
-    ".pyd",
-    ".rs.bk",
-    ".profraw",
-    ".profdata",
-    ".db",
-];
+/// The entries are deliberately only editor and OS scratch. The first version
+/// of this list also carried the rest of what `.gitignore` names (`*.log`,
+/// `*.db`, bytecode, coverage output), which reintroduced the very hole the
+/// inversion was meant to close: a *tracked* `training.log` or `metrics.db`
+/// shipped under [`ARTIFACTS`] would be filtered back out, so leaving it
+/// undocumented passed again. Every entry here is a hole, so the list stays as
+/// short as the false-failure risk allows.
+///
+/// Anything else under [`ARTIFACTS`] is treated as shipped, including a file
+/// under an extension nobody has thought of yet.
+const NON_ARTIFACT_NAMES: [&str; 2] = [".DS_Store", "Thumbs.db"];
+const NON_ARTIFACT_SUFFIXES: [&str; 3] = ["~", ".swp", ".swo"];
 
 /// Whether a tree-relative path is editor or OS scratch rather than an artifact.
 fn is_scratch(path: &str) -> bool {
