@@ -790,6 +790,30 @@ fn the_files_tree_and_the_shipped_tree_agree() {
         named.len(),
     );
 
+    // `exists()` does not distinguish a file from a directory, so a documented
+    // file that has become a directory of the same name satisfied it. Nothing
+    // else in the suite opens the summarised `src/` and `tools/` entries, so
+    // for those it was the only check there was -- replacing
+    // `tools/verify_q88.py` with a directory passed. The tree already spells
+    // the distinction with a trailing `/`, which is what makes this cheap: no
+    // extra state, just holding each entry to the kind it was written as.
+    let mistyped: Vec<&String> = named
+        .iter()
+        .filter(|p| {
+            let path = root.join(p);
+            if p.ends_with('/') {
+                !path.is_dir()
+            } else {
+                !path.is_file()
+            }
+        })
+        .collect();
+    assert!(
+        mistyped.is_empty(),
+        "`## Files` names {mistyped:?} as the wrong kind; a trailing `/` means \
+         a directory and anything else means a file",
+    );
+
     let mut listed: Vec<String> = named
         .iter()
         .filter(|path| path.starts_with(ARTIFACTS) && !path.ends_with('/'))
