@@ -1,0 +1,19 @@
+.github/workflows/qodana_code_quality.yml
+  s_db107ff42bc1db::t_6ac7c444a4bd80 59-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d23a2d6a9a2a0c8f649d7569b22dfd83850209d4",
+  "prompts": {},
+  "sessions": {
+    "s_db107ff42bc1db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2468c4bc-1090-4c69-be3e-d4bbd5061619",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Raul Montoya Cardenas <montoyaraul34@gmail.com>"
+    }
+  }
+}
