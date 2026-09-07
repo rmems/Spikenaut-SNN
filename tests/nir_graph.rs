@@ -781,7 +781,7 @@ fn the_files_tree_and_the_shipped_tree_agree() {
         .filter(|path| path.starts_with(ARTIFACTS) && *path != ARTIFACTS)
         .cloned()
         .collect();
-    let mut shipped = shipped_artifacts(root, &listed);
+    let mut shipped = shipped_artifacts(root);
     listed.sort();
     shipped.sort();
     assert_eq!(
@@ -882,27 +882,32 @@ fn component_table<'a>(section: &[&'a str]) -> Vec<&'a str> {
         .collect()
 }
 
+/// What counts as a shipped artifact, defined here rather than read out of the
+/// README.
+///
+/// Deriving this from the tree's own entries was circular: undocumenting the
+/// last artifact of an extension removed that extension from the filter, so
+/// the file disappeared from both sides and the set-equality passed --
+/// disabled by exactly the drift it exists to catch. A fixed list can only
+/// ever under-cover, which fails safe.
+const ARTIFACT_EXTENSIONS: [&str; 2] = [".mem", ".json"];
+
 /// The artifact files on disk under [`ARTIFACTS`], as tree-relative paths.
 ///
-/// Restricted to the extensions the tree itself names there, so a working copy
-/// carrying `.DS_Store`, an editor backup or a log does not fail a test about
+/// Restricted to [`ARTIFACT_EXTENSIONS`], so a working copy carrying
+/// `.DS_Store`, an editor backup or a log does not fail a test about
 /// documentation drift. The trade is stated rather than hidden: an artifact
-/// shipped under a brand-new extension is not caught by this direction, only
-/// by the existence check once someone documents it.
-fn shipped_artifacts(root: &Path, listed: &[String]) -> Vec<String> {
-    let extensions: Vec<&str> = listed
-        .iter()
-        .filter_map(|path| path.rsplit_once('.'))
-        .map(|(_, extension)| extension)
-        .collect();
+/// shipped under a brand-new extension is not caught by this direction until
+/// someone adds it here, and the existence check does not cover it either.
+fn shipped_artifacts(root: &Path) -> Vec<String> {
     std::fs::read_dir(root.join(ARTIFACTS))
         .expect("read the artifact directory")
         .map(|entry| entry.expect("read an artifact directory entry").file_name())
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| {
-            extensions
+            ARTIFACT_EXTENSIONS
                 .iter()
-                .any(|extension| name.ends_with(&format!(".{extension}")))
+                .any(|extension| name.ends_with(extension))
         })
         .map(|name| format!("{ARTIFACTS}{name}"))
         .collect()
