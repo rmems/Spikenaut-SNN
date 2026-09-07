@@ -316,7 +316,7 @@ M3 enforces a two-clock rule: a fast loop for telemetry → spikes → inference
 
 ## Ecosystem
 
-Spikenaut-SNN is a weights and model repository that now also carries a thin Rust package. The table below is the dependency contract ([#5](https://github.com/rmems/Spikenaut-SNN/issues/5)), which deliberately distinguishes libraries this repo depends on — or will — from peer processes it must not. **Declared** marks what `Cargo.toml` actually resolves today; everything else remains intent.
+Spikenaut-SNN is a weights and model repository that now also carries a thin Rust package. The table below is the dependency contract ([#5](https://github.com/rmems/Spikenaut-SNN/issues/5)), which deliberately distinguishes libraries this repo depends on — or will — from peer processes it must not. **Declared** marks what `Cargo.toml` actually resolves today. Everything else is either intent — a crate to adopt once it exists — or an explicit non-dependency, and the Relationship column says which.
 
 | Component | Role | Relationship |
 |---|---|---|
