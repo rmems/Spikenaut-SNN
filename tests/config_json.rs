@@ -28,8 +28,12 @@ use spikenaut_snn::model::{CLOCK_HZ, NEURON_COUNT, Q8_8_SCALE};
 
 /// Every `.mem` artifact in `dataset/merged_v2`, by name.
 ///
-/// Listed rather than globbed: a glob would silently shrink if an artifact
-/// were removed, and this test would then pass by measuring less.
+/// Named rather than globbed alone: a glob would silently shrink if an
+/// artifact were removed, and this test would then pass by measuring less.
+/// But a name list alone fails the other way -- a *new* artifact would go
+/// uncounted, leaving `memory_bytes` free to stay stale. So the directory is
+/// also read and the two are required to match exactly; see
+/// [`mem_artifacts_on_disk_match_the_named_set`].
 const MEM_ARTIFACTS: [&str; 4] = [
     "parameters.mem",
     "parameters_decay.mem",
@@ -122,6 +126,36 @@ fn clock_hz_matches_the_crate() {
     assert_eq!(
         stated, CLOCK_HZ,
         "config.json `clock_hz` ({stated}) disagrees with CLOCK_HZ ({CLOCK_HZ})",
+    );
+}
+
+/// The named artifact set must be exactly what is on disk.
+///
+/// [`MEM_ARTIFACTS`] is what `memory_bytes` is measured against, so the list
+/// going stale in either direction defeats the measurement: a removed file
+/// would make the sum fail loudly, but an *added* one would simply not be
+/// counted, and `memory_bytes` could stay wrong while every assertion below
+/// still passed. Comparing against the directory closes that side.
+#[test]
+fn mem_artifacts_on_disk_match_the_named_set() {
+    let dir = repo_root().join("dataset/merged_v2");
+    let mut found: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .map(|entry| entry.expect("read a directory entry").file_name())
+        .filter_map(|name| name.to_str().map(str::to_owned))
+        .filter(|name| name.ends_with(".mem"))
+        .collect();
+    found.sort();
+
+    let mut named: Vec<String> = MEM_ARTIFACTS.iter().map(|s| (*s).to_owned()).collect();
+    named.sort();
+
+    assert_eq!(
+        found,
+        named,
+        "the `.mem` files in {} do not match MEM_ARTIFACTS; add or remove the \
+         name so `memory_bytes` is measured against everything that ships",
+        dir.display(),
     );
 }
 
