@@ -690,7 +690,11 @@ fn readme_declared_components(section: &[&str]) -> Vec<String> {
             .unwrap_or_else(|| panic!("a component name must be in backticks: {line}"));
         declared.push(name.to_owned());
     }
-    assert!(rows > 0, "the Ecosystem table has no component rows");
+    assert!(
+        rows > 0,
+        "no Ecosystem table found: it must carry the header {COMPONENT_HEADER:?} in that \
+         order, with a three-cell delimiter row directly beneath it",
+    );
     declared
 }
 
@@ -771,11 +775,26 @@ fn heading_line(lines: &[&str], heading: &str) -> Option<usize> {
     for (at, line) in lines.iter().enumerate() {
         if line.trim_start().starts_with("```") {
             fenced = !fenced;
-        } else if !fenced && line.trim_end() == heading {
+        } else if !fenced && dedent(line).trim_end() == heading {
             return Some(at);
         }
     }
     None
+}
+
+/// `line` with the indentation Markdown permits before an ATX heading removed.
+///
+/// Up to three spaces still opens a heading; a fourth makes it an indented code
+/// block instead. Comparing the raw line meant a heading a human had nudged
+/// right rendered identically but was not found at all, and the guard panicked
+/// on a document whose meaning had not changed.
+fn dedent(line: &str) -> &str {
+    let body = line.trim_start_matches(' ');
+    if line.len() - body.len() <= 3 {
+        body
+    } else {
+        line
+    }
 }
 
 /// The lines after `at`, up to the next `## ` that is not inside a fence.
@@ -789,7 +808,7 @@ fn section_body<'a>(lines: &[&'a str], at: usize) -> Vec<&'a str> {
     for line in &lines[at + 1..] {
         if line.trim_start().starts_with("```") {
             fenced = !fenced;
-        } else if !fenced && line.trim_start().starts_with("## ") {
+        } else if !fenced && dedent(line).starts_with("## ") {
             break;
         }
         body.push(*line);
@@ -1046,22 +1065,62 @@ fn classify_tree_line(line: &str) -> Option<TreeLine<'_>> {
     Some(TreeLine::Root(trimmed))
 }
 
-/// The rows of the Ecosystem table, from its `Component` header to its end.
+/// The exact header the Ecosystem table must carry, in order.
+const COMPONENT_HEADER: [&str; 3] = ["Component", "Role", "Relationship"];
+
+/// Whether `line` is a Markdown delimiter row of exactly three cells.
+///
+/// Alignment colons are allowed, since `|:---|---:|:---:|` renders the same
+/// table.
+fn is_delimiter_row(line: &str) -> bool {
+    let cells = table_cells(line);
+    cells.len() == COMPONENT_HEADER.len()
+        && cells.iter().all(|cell| {
+            let dashes = cell.trim().trim_start_matches(':').trim_end_matches(':');
+            !dashes.is_empty() && dashes.chars().all(|c| c == '-')
+        })
+}
+
+/// The rows of the Ecosystem table, from its header to its end, or nothing if
+/// the section holds no such table.
 ///
 /// The section is not the table. Filtering every `|` line in it would feed a
 /// second table -- or a fenced example using pipes -- to the row parser, so an
 /// unrelated documentation edit could trip the three-cell assertion or
 /// contribute stray component names.
 ///
-/// The header is found by its *cells*, not by the literal `| Component `
+/// The header is matched by its *cells*, not by the literal `| Component `
 /// spelling: a Markdown formatter may drop the optional padding or the leading
-/// delimiter, and `|Component|Role|Relationship|` is the same table. Matching
-/// the raw text would turn a reformat into "the Ecosystem table has no
-/// component rows".
+/// delimiter, and `|Component|Role|Relationship|` is the same table.
+///
+/// Two things this deliberately insists on, because recognising the table by
+/// its first cell alone let the *rendered* contract change with the guard
+/// still agreeing with itself:
+///
+/// - **The whole header, in order.** Reordering it to
+///   `Component | Relationship | Role` leaves every row untouched, so the parse
+///   was identical -- while a reader now sees each **Declared** marker under
+///   Role. This repository already has a second `| Component | Spec |` table,
+///   so a first-cell match was thin to begin with.
+/// - **A delimiter row directly under it.** Delete `|---|---|---|` and Markdown
+///   stops rendering a table at all, but the header and its pipe-delimited
+///   lines are still there to parse, so the same dependency set came back out
+///   of a document that no longer contains the table.
 fn component_table<'a>(section: &[&'a str]) -> Vec<&'a str> {
-    section
+    let Some(header) = section
         .iter()
-        .skip_while(|line| table_cells(line).first().map(String::as_str) != Some("Component"))
+        .position(|line| table_cells(line) == COMPONENT_HEADER)
+    else {
+        return Vec::new();
+    };
+    if !section
+        .get(header + 1)
+        .is_some_and(|line| is_delimiter_row(line))
+    {
+        return Vec::new();
+    }
+    section[header..]
+        .iter()
         .take_while(|line| line.contains('|'))
         .copied()
         .collect()
