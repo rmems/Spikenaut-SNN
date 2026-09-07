@@ -736,19 +736,90 @@ mod tests {
         assert!(err.to_string().contains("3 weights"), "got {err}");
     }
 
-    /// Every unit's resistance is per-neuron, not a shared constant: the
-    /// shipped decay rates are graduated, so no two are the same.
+    /// Every unit's resistance is per-neuron, not a shared constant: each one
+    /// is [`resistance_from_decay`] of *that* unit's decay rate.
+    ///
+    /// This deliberately does not assert that the resistances ascend. They do
+    /// today, because the shipped decay rates are the placeholder
+    /// `torch.linspace(0.8, 0.95, 16)` the README documents -- but that is a
+    /// property of a defect, not of this function. A retrain that fits decay
+    /// rates per neuron would almost certainly produce a non-monotonic vector,
+    /// and an ordering assertion would fail on it and report "graduated decays
+    /// give strictly increasing resistances" -- describing the *intended*
+    /// outcome as a regression. Pinning each value to its own input is both
+    /// stricter than the ordering check and survives the retrain.
     #[test]
     fn resistance_is_per_unit() {
+        let model = SnnModel::load_default().unwrap();
         let graph = load_default_lif_graph().unwrap();
         let rs = lif_values(&graph, |lif| &lif.r);
         assert_eq!(rs.len(), NEURON_COUNT);
-        for window in rs.windows(2) {
-            assert!(
-                window[1] > window[0],
-                "graduated decays give strictly increasing resistances, got {rs:?}",
+
+        for (unit, r) in rs.iter().enumerate() {
+            let expected = resistance_from_decay(model.neurons[unit].decay_rate).unwrap();
+            assert_eq!(
+                *r, expected,
+                "unit {unit} resistance {r} is not resistance_from_decay({}) = {expected}",
+                model.neurons[unit].decay_rate,
             );
         }
+
+        // Non-vacuity: a shared constant would satisfy the loop above only if
+        // every decay rate were also identical, so require the population to
+        // actually distinguish its units.
+        let distinct = rs.iter().filter(|r| **r != rs[0]).count();
+        assert!(
+            distinct > 0,
+            "every unit got the same resistance {}, so `r` is not per-neuron",
+            rs[0],
+        );
+    }
+
+    /// A non-monotonic decay vector still maps per unit -- and would have
+    /// failed the ordering assertion this test replaced.
+    ///
+    /// This is the evidence for that replacement rather than an argument for
+    /// it. `resistance_from_decay` is `1 / (1 - decay)`, which is increasing
+    /// in `decay`, so a decay vector that rises and falls produces
+    /// resistances that rise and fall with it. The shipped placeholder decays
+    /// ascend and hide this; a fitted set almost certainly would not.
+    #[test]
+    fn a_non_monotonic_decay_vector_still_maps_per_unit() {
+        // On the Q8.8 grid, because the builder rejects a decay rate that is
+        // not exactly representable. Ordered down, up, down.
+        let decays: [f64; 4] = [
+            230.0 / 256.0, // 0.898437500
+            205.0 / 256.0, // 0.800781250
+            243.0 / 256.0, // 0.949218750
+            218.0 / 256.0, // 0.851562500
+        ];
+        let model = SnnModel {
+            neurons: decays
+                .iter()
+                .map(|&decay_rate| Neuron {
+                    decay_rate,
+                    membrane_potential: 0.0,
+                    threshold: 1.0,
+                    last_spike: false,
+                    weights: vec![0.5; decays.len()],
+                })
+                .collect(),
+        };
+
+        let graph = build_lif_graph(&model).unwrap();
+        let rs = lif_values(&graph, |lif| &lif.r);
+
+        for (unit, r) in rs.iter().enumerate() {
+            assert_eq!(*r, resistance_from_decay(decays[unit]).unwrap());
+        }
+
+        // The ordering assertion that used to stand here would fail on this
+        // model: r[1] < r[0] because 0.80 < 0.90. Pinned so nobody restores
+        // it without seeing what it costs.
+        assert!(
+            rs[1] < rs[0],
+            "expected a descending step, got {rs:?} -- this fixture must stay non-monotonic",
+        );
     }
 
     #[test]
