@@ -33,17 +33,55 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `requires_token` records which linter refuses to start without
+          # Qodana Cloud. Release linters do -- qodana-python prints "Starting
+          # from version 2023.2 release versions of Qodana Linters require
+          # connection to Qodana Cloud" and exits 1. The Rust linter is Early
+          # Access and runs without one, which is why it passes on pull
+          # requests where the Python leg cannot.
           - language: python
             config: qodana.yaml
+            requires_token: true
           - language: rust
             config: qodana-rust.yaml
+            requires_token: false
+    # Job-level, so a step can test whether the token actually arrived. The
+    # `secrets` context is not available in an `if:` expression, so presence
+    # has to be established at run time rather than declared.
+    env:
+      QODANA_TOKEN: ${{ secrets.QODANA_TOKEN_983296264 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}  # to check out the actual pull request commit, not the merge commit
           fetch-depth: 0  # a full history is required for pull request analysis
 
+      # GitHub withholds repository secrets from Dependabot pull requests and
+      # from pull requests opened off a fork, so `QODANA_TOKEN` arrives empty
+      # there however it is configured on this repository. A release linter
+      # then exits 1 on a scan that never started, which reads as "this branch
+      # failed review" when nothing about the branch was ever examined.
+      #
+      # Unlike the pre-#24 crate guard this workflow used to carry, this
+      # condition is genuinely variable: it is true on a normal pull request
+      # (#34 scanned clean) and false on a Dependabot one (#36, same commit
+      # range, same workflow) -- so it reports honestly rather than always
+      # taking one branch.
+      - name: Check for a Qodana Cloud token
+        id: token
+        run: |
+          if [ -n "${QODANA_TOKEN}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No QODANA_TOKEN reached this run (Dependabot and fork pull requests do not receive repository secrets)."
+          fi
+
       - name: 'Qodana Scan'
+        # Skipped only where the linter cannot start at all. The Rust leg has
+        # no such requirement and still runs, so a Dependabot pull request
+        # keeps the coverage it can actually get instead of losing both legs.
+        if: matrix.requires_token != true || steps.token.outputs.present == 'true'
         # Pinned to a commit SHA, not to `@v2026.1`: that ref is a *branch* in
         # JetBrains/qodana-action, not a tag, so it is force-moved on every
         # patch release and a scan could change under us without a commit here
@@ -57,7 +95,11 @@ jobs:
           # a large number here. Read a delta against main, never the raw
           # count, before concluding a change made anything worse.
           pr-mode: false
-          args: --config,${{ matrix.config }}
+          # Space-separated, not comma-separated: the action warns that
+          # "Comma-separated args format is deprecated and will be removed in
+          # a future version."
+          args: --config ${{ matrix.config }}
         env:
-          QODANA_TOKEN: ${{ secrets.QODANA_TOKEN_983296264 }}
+          # QODANA_TOKEN is inherited from the job-level `env` above, where the
+          # guard step can see it. Repeating it here would fork the definition.
           QODANA_ENDPOINT: 'https://qodana.cloud'
