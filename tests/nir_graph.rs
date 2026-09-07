@@ -651,6 +651,22 @@ fn the_readme_dependency_table_agrees_with_the_manifest() {
         .split_once("\n## ")
         .map_or(section, |(head, _)| head);
 
+    let mut declared = readme_declared_components(section);
+    let (_, mut runtime) = dependency_tables(&manifest);
+    declared.sort_unstable();
+    runtime.sort_unstable();
+    assert_eq!(
+        declared, runtime,
+        "every crate the README marks **Declared** must be in `[dependencies]`, \
+         and every dependency must be marked there",
+    );
+}
+
+/// The crates the Ecosystem table marks **Declared**, given the section body.
+///
+/// Every row has to be Component / Role / Relationship, so a table that grew a
+/// column fails here rather than being silently misparsed into agreement.
+fn readme_declared_components(section: &str) -> Vec<String> {
     let mut declared: Vec<String> = Vec::new();
     let mut rows = 0usize;
     for line in section
@@ -683,13 +699,5 @@ fn the_readme_dependency_table_agrees_with_the_manifest() {
         declared.push(name.to_owned());
     }
     assert!(rows > 0, "the Ecosystem table has no component rows");
-
-    let (_, mut runtime) = dependency_tables(&manifest);
-    runtime.sort_unstable();
-    declared.sort_unstable();
-    assert_eq!(
-        declared, runtime,
-        "every crate the README marks **Declared** must be in `[dependencies]`, \
-         and every dependency must be marked there",
-    );
+    declared
 }
