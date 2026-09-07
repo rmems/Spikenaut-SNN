@@ -665,7 +665,7 @@ fn readme_declared_components(section: &[&str]) -> Vec<String> {
     let mut declared: Vec<String> = Vec::new();
     let mut rows = 0usize;
     for line in component_table(section) {
-        let cells = table_cells(line);
+        let cells = table_cells(&line);
         assert_eq!(
             cells.len(),
             3,
@@ -1106,23 +1106,38 @@ fn is_delimiter_row(line: &str) -> bool {
 ///   stops rendering a table at all, but the header and its pipe-delimited
 ///   lines are still there to parse, so the same dependency set came back out
 ///   of a document that no longer contains the table.
-fn component_table<'a>(section: &[&'a str]) -> Vec<&'a str> {
-    let Some(header) = section
+///
+/// Comment state is carried across the section *before* the header is located,
+/// not per cell afterwards. A whole table inside `<!-- ... -->` placed above
+/// the real one was otherwise selected first, and a per-cell strip cannot see
+/// that -- it restarts on every cell, so rows wholly inside a comment look
+/// visible. Verified with a hidden table matching the manifest while the
+/// rendered one had drifted: the guard passed, reading a table nobody can see.
+/// That is the failure `fenced_block` already guards against for the file
+/// tree, fixed the same way.
+fn component_table(section: &[&str]) -> Vec<String> {
+    let mut open = false;
+    let visible: Vec<String> = section
+        .iter()
+        .map(|line| visible_outside_comments(line, &mut open))
+        .collect();
+
+    let Some(header) = visible
         .iter()
         .position(|line| table_cells(line) == COMPONENT_HEADER)
     else {
         return Vec::new();
     };
-    if !section
+    if !visible
         .get(header + 1)
         .is_some_and(|line| is_delimiter_row(line))
     {
         return Vec::new();
     }
-    section[header..]
+    visible[header..]
         .iter()
         .take_while(|line| line.contains('|'))
-        .copied()
+        .cloned()
         .collect()
 }
 
