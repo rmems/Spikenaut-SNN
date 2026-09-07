@@ -678,8 +678,13 @@ fn readme_declared_components(section: &[&str]) -> Vec<String> {
         if !without_html_comments(&cells[2]).contains("**Declared**") {
             continue;
         }
-        // Every component is named in backticks, linked or not.
-        let name = cells[0]
+        // Every component is named in backticks, linked or not. Read from the
+        // *visible* cell for the same reason the marker above is: a commented
+        // -out `<!-- `nir-rs` -->` ahead of the real name would otherwise win
+        // the `nth(1)` and the guard would compare the manifest against a name
+        // the rendered table does not contain.
+        let component = without_html_comments(&cells[0]);
+        let name = component
             .split('`')
             .nth(1)
             .unwrap_or_else(|| panic!("a component name must be in backticks: {line}"));
@@ -696,16 +701,44 @@ fn readme_declared_components(section: &[&str]) -> Vec<String> {
 /// finds it -- the two sets stay equal and the guard says nothing. An
 /// unterminated `<!--` hides everything after it, and is treated that way.
 fn without_html_comments(cell: &str) -> String {
-    let mut visible = String::with_capacity(cell.len());
-    let mut rest = cell;
-    while let Some(start) = rest.find("<!--") {
-        visible.push_str(&rest[..start]);
-        rest = match rest[start..].find("-->") {
-            Some(end) => &rest[start + end + "-->".len()..],
-            None => "",
-        };
+    let mut open = false;
+    visible_outside_comments(cell, &mut open)
+}
+
+/// The part of `line` a reader sees, given whether a comment is already open.
+///
+/// `open` is carried across calls so a `<!--` on one line hides everything up
+/// to a `-->` on a later one. A comment that is never closed hides the rest of
+/// the input, which is what Markdown does with it.
+///
+/// Single-line callers pass a fresh `false` and get the old behaviour; the
+/// state is what lets a *block* of lines be read the way it renders.
+fn visible_outside_comments(line: &str, open: &mut bool) -> String {
+    let mut visible = String::with_capacity(line.len());
+    let mut rest = line;
+    loop {
+        if *open {
+            match rest.find("-->") {
+                Some(end) => {
+                    rest = &rest[end + "-->".len()..];
+                    *open = false;
+                }
+                None => break,
+            }
+        } else {
+            match rest.find("<!--") {
+                Some(start) => {
+                    visible.push_str(&rest[..start]);
+                    rest = &rest[start + "<!--".len()..];
+                    *open = true;
+                }
+                None => {
+                    visible.push_str(rest);
+                    break;
+                }
+            }
+        }
     }
-    visible.push_str(rest);
     visible
 }
 
@@ -871,7 +904,7 @@ fn files_tree_paths(section: &[&str]) -> Vec<String> {
     let mut dir = String::new();
     let mut paths = Vec::new();
     for line in fenced_block(section) {
-        match classify_tree_line(line) {
+        match classify_tree_line(&line) {
             Some(TreeLine::Dir(entry)) => {
                 dir = entry.to_owned();
                 paths.push(dir.clone());
@@ -889,13 +922,25 @@ fn files_tree_paths(section: &[&str]) -> Vec<String> {
 /// A section can hold several fenced blocks -- `## Files` holds the tree and a
 /// Verilog example -- so this takes the first and stops at its closing fence
 /// rather than skipping fence markers wherever they appear.
-fn fenced_block<'a>(section: &[&'a str]) -> Vec<&'a str> {
-    section
+///
+/// Comment state is carried across the section, so a fence wrapped in a
+/// multiline `<!-- ... -->` is not the first *visible* one. Reading a
+/// commented-out fence is the quiet failure: the tree would vanish from the
+/// rendered README while every path and artifact check still passed against
+/// the hidden copy, so the guard would go silent at exactly the moment the
+/// documentation it guards disappeared.
+fn fenced_block(section: &[&str]) -> Vec<String> {
+    let mut open = false;
+    let visible: Vec<String> = section
         .iter()
+        .map(|line| visible_outside_comments(line, &mut open))
+        .collect();
+
+    visible
+        .into_iter()
         .skip_while(|line| !line.trim_start().starts_with("```"))
         .skip(1)
         .take_while(|line| !line.trim_start().starts_with("```"))
-        .copied()
         .collect()
 }
 
@@ -1099,4 +1144,73 @@ fn table_cells(row: &str) -> Vec<String> {
         }
     }
     cells.iter().map(|cell| cell.trim().to_owned()).collect()
+}
+
+/// A component name hidden in an HTML comment does not become the declared
+/// crate.
+///
+/// The marker check already read the visible Relationship cell, but the name
+/// was taken from the raw Component cell, so a commented-out crate ahead of
+/// the real one won `nth(1)`. The manifest comparison then held against a name
+/// the rendered table does not contain -- and because the hidden name is the
+/// one that *is* in `[dependencies]`, the guard would agree with itself while
+/// the README advertised something else.
+#[test]
+fn a_commented_out_component_name_is_not_the_declared_one() {
+    let section = [
+        "| Component | Role | Relationship |",
+        "|---|---|---|",
+        "| <!-- `nir-rs` --> `replacement` | graph interchange | **Declared** |",
+    ];
+
+    assert_eq!(
+        readme_declared_components(&section),
+        vec!["replacement".to_owned()],
+        "the declared crate must be the one a reader sees, not one inside a comment",
+    );
+}
+
+/// A fenced block inside an HTML comment is not the section's first block.
+///
+/// Markdown renders nothing for it, so reading it would let the whole file
+/// tree be commented out while every path and artifact assertion still passed
+/// against the hidden copy. That is the silent direction: the guard keeps
+/// saying the documentation is accurate after the documentation is gone.
+#[test]
+fn a_fence_inside_an_html_comment_is_not_the_first_block() {
+    let section = [
+        "<!--",
+        "```text",
+        "hidden/tree.rs",
+        "```",
+        "-->",
+        "```text",
+        "visible/tree.rs",
+        "```",
+    ];
+
+    assert_eq!(
+        fenced_block(&section),
+        vec!["visible/tree.rs".to_owned()],
+        "a commented-out fence must not be read as the section's tree",
+    );
+}
+
+/// An HTML comment opened on one line and closed on a later one hides every
+/// line between them.
+///
+/// This is the state-carrying half of the two fixes above: without it a
+/// multiline comment only hides its opening line, which is exactly the case a
+/// single-line strip gets wrong.
+#[test]
+fn an_html_comment_spans_lines() {
+    let mut open = false;
+    let lines = ["before <!-- start", "swallowed", "end --> after"];
+    let visible: Vec<String> = lines
+        .iter()
+        .map(|line| visible_outside_comments(line, &mut open))
+        .collect();
+
+    assert_eq!(visible, vec!["before ", "", " after"]);
+    assert!(!open, "the comment closed, so nothing should still be open");
 }
