@@ -36,7 +36,7 @@ jobs:
       # The trade is silent drift for silent staleness, so `.github/dependabot.yml`
       # keeps them moving -- Dependabot rewrites both the SHA and the version
       # comment, which is why the comment is exact rather than a range.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # rust-toolchain.toml pins 1.97.1 with rustfmt and clippy -- the MSRV
       # that nir-rs 0.4.2 and axon-encoder 0.4.0 both declare. `rustup show`
@@ -46,7 +46,7 @@ jobs:
         run: rustup show && rustc --version && cargo --version
 
       - name: Cache cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -76,7 +76,7 @@ jobs:
     name: Python
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Pinned rather than floating, so a new interpreter release cannot
       # change a verdict about the shipped artifacts without a commit saying
@@ -87,7 +87,7 @@ jobs:
       # exists from 3.11. On an older interpreter that scenario still passes,
       # but by way of a different ParseError, so it would stop exercising the
       # mechanism it is named for.
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.11'
 
