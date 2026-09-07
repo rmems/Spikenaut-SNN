@@ -643,7 +643,7 @@ fn the_readme_dependency_table_agrees_with_the_manifest() {
     let readme = std::fs::read_to_string(root.join("README.md")).expect("read README.md");
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("read Cargo.toml");
 
-    let section = ecosystem_section(&readme);
+    let section = readme_section(&readme, "## Ecosystem");
     assert!(!section.is_empty(), "README.md has an Ecosystem section");
 
     let mut declared = readme_declared_components(&section);
@@ -705,10 +705,10 @@ fn readme_declared_components(section: &[&str]) -> Vec<String> {
 /// nothing -- turning the guard above into a panic that never reaches the
 /// manifest. `str::lines` strips the `\r`, and `trim_end` absorbs a trailing
 /// space on the heading, so neither silences the check.
-fn ecosystem_section(readme: &str) -> Vec<&str> {
+fn readme_section<'a>(readme: &'a str, heading: &str) -> Vec<&'a str> {
     readme
         .lines()
-        .skip_while(|line| line.trim_end() != "## Ecosystem")
+        .skip_while(|line| line.trim_end() != heading)
         .skip(1)
         .take_while(|line| !line.trim_start().starts_with("## "))
         .collect()
@@ -724,10 +724,10 @@ fn the_ecosystem_section_is_found_whatever_the_line_endings() {
         .replace('\n', "\r\n")
         .replace("## Ecosystem", "## Ecosystem ");
 
-    let found = ecosystem_section(lf);
+    let found = readme_section(lf, "## Ecosystem");
     assert_eq!(
         found,
-        ecosystem_section(&crlf),
+        readme_section(&crlf, "## Ecosystem"),
         "CRLF must locate the same rows"
     );
     assert!(
@@ -738,4 +738,65 @@ fn the_ecosystem_section_is_found_whatever_the_line_endings() {
         !found.iter().any(|line| line.contains("prose")),
         "the section must stop at the next heading: {found:?}",
     );
+}
+
+/// Every path the `## Files` tree names must resolve in the working tree.
+///
+/// That tree is the repository's own account of what it ships, and it had
+/// drifted three ways at once: a shipped `config.json` missing, the crate root
+/// missing, and an eight-module `tools/` package shown as a single script. A
+/// rename would have been just as invisible.
+///
+/// Only the fenced block under `## Files` is read, so prose elsewhere naming a
+/// deleted script or an external repository is not dragged in and does not
+/// have to exist.
+#[test]
+fn every_path_the_files_tree_names_exists() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let readme = std::fs::read_to_string(root.join("README.md")).expect("read README.md");
+
+    let named = files_tree_paths(&readme_section(&readme, "## Files"));
+    assert!(
+        named.len() >= 5,
+        "the Files tree named too little: {named:?}"
+    );
+
+    let missing: Vec<&String> = named.iter().filter(|p| !root.join(p).exists()).collect();
+    assert!(
+        missing.is_empty(),
+        "`## Files` names {missing:?}, which do not exist; {} paths checked",
+        named.len(),
+    );
+}
+
+/// The repository paths named inside the `## Files` fenced tree.
+///
+/// A line ending in `/` sets the directory the entries below it hang from, a
+/// box-drawing entry is a file in that directory, and an unindented bare
+/// filename is at the repository root. Comments are cut first, so the wrapped
+/// `#` continuation lines contribute nothing.
+fn files_tree_paths(section: &[&str]) -> Vec<String> {
+    let mut dir = String::new();
+    let mut paths = Vec::new();
+    for line in section {
+        let trimmed = line.split('#').next().unwrap_or("").trim();
+        if trimmed.is_empty() || trimmed.starts_with("```") {
+            continue;
+        }
+        if let Some(entry) = trimmed
+            .strip_prefix("\u{251c}\u{2500}\u{2500} ")
+            .or_else(|| trimmed.strip_prefix("\u{2514}\u{2500}\u{2500} "))
+        {
+            if let Some(name) = entry.split_whitespace().next() {
+                paths.push(format!("{dir}{name}"));
+            }
+        } else if trimmed.ends_with('/') {
+            dir = trimmed.to_owned();
+        } else if let Some(name) = trimmed.split_whitespace().next()
+            && name.contains('.')
+        {
+            paths.push(name.to_owned());
+        }
+    }
+    paths
 }
