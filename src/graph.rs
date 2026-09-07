@@ -748,6 +748,16 @@ mod tests {
     /// give strictly increasing resistances" -- describing the *intended*
     /// outcome as a regression. Pinning each value to its own input is both
     /// stricter than the ordering check and survives the retrain.
+    ///
+    /// This asserts the *wiring*, not the formula: it calls the same
+    /// [`resistance_from_decay`] the builder does, so a wrong formula would
+    /// satisfy both sides. That is deliberate division of labour --
+    /// `resistance_inverts_the_discrete_input_attenuation` pins the formula
+    /// against literals (`0.5` to `2.0`, `0.75` to `4.0`) and its rejection
+    /// cases, and `lif_parameters_come_from_the_model` checks one NIR step
+    /// against the model's own step. What is left, and what this covers, is
+    /// that unit *i* is given unit *i*'s decay rather than a neighbour's or a
+    /// shared constant.
     #[test]
     fn resistance_is_per_unit() {
         let model = SnnModel::load_default().unwrap();
