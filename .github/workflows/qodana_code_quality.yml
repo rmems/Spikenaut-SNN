@@ -19,24 +19,63 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  qodana:
-    # One linter per configuration file, so the hybrid repository runs one leg
-    # per language rather than one scan that silently covers only Python.
-    name: Qodana (${{ matrix.language }})
+  # GitHub withholds repository secrets from Dependabot pull requests and from
+  # pull requests opened off a fork, so `QODANA_TOKEN` arrives empty there
+  # however it is configured on this repository. A release linter then refuses
+  # to start -- qodana-python prints "Starting from version 2023.2 release
+  # versions of Qodana Linters require connection to Qodana Cloud" and exits 1,
+  # which reads as "this branch failed review" about a scan that never examined
+  # the branch.
+  #
+  # This job exists because the `secrets` context is not available in an `if:`
+  # expression. Presence has to be established at run time and handed to the
+  # scan as a job output, which *is* available there.
+  token:
+    name: Qodana Cloud token
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.check.outputs.present }}
+    steps:
+      - name: Check for a Qodana Cloud token
+        id: check
+        env:
+          QODANA_TOKEN: ${{ secrets.QODANA_TOKEN_983296264 }}
+        run: |
+          if [ -n "${QODANA_TOKEN}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No QODANA_TOKEN reached this run (Dependabot and fork pull requests do not receive repository secrets); the Python scan reports as skipped."
+          fi
+
+  # Split from the Rust leg rather than sharing a matrix, because the gate has
+  # to sit on `jobs.<id>.if` and the `matrix` context is not available there.
+  #
+  # The gate is at job level and not on the scan step on purpose. Skipping the
+  # step would leave the job green, and a green `Qodana (python)` claims a scan
+  # that never ran -- trading a false failure for a false pass, which is the
+  # worse of the two in a repository whose checks are meant to say only what
+  # they can support. A skipped job reports as skipped.
+  #
+  # One caveat for whoever adds branch protection. GitHub counts a *skipped*
+  # required status check as satisfied, so making `Qodana (python)` required
+  # would not stop a Dependabot or fork pull request from merging without it:
+  # the skip reads as a pass to the protection rule even though it still reads
+  # as a skip in the UI. That is not live today -- this repository has no
+  # branch protection and no rulesets (`branches/main/protection` returns 404,
+  # `rulesets` returns `[]`), so nothing is required and nothing is falsely
+  # satisfied. If that changes, require the `Qodana Cloud token` job instead
+  # and let it fail closed, or accept the Python leg as advisory on runs that
+  # cannot reach the cloud.
+  qodana-python:
+    name: Qodana (python)
+    needs: token
+    if: needs.token.outputs.present == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
       checks: write
-    strategy:
-      # A failure in one language should not hide the other language's report.
-      fail-fast: false
-      matrix:
-        include:
-          - language: python
-            config: qodana.yaml
-          - language: rust
-            config: qodana-rust.yaml
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -57,7 +96,37 @@ jobs:
           # a large number here. Read a delta against main, never the raw
           # count, before concluding a change made anything worse.
           pr-mode: false
-          args: --config,${{ matrix.config }}
+          # Space-separated, not comma-separated: the action warns that
+          # "Comma-separated args format is deprecated and will be removed in a
+          # future version."
+          args: --config qodana.yaml
+        env:
+          QODANA_TOKEN: ${{ secrets.QODANA_TOKEN_983296264 }}
+          QODANA_ENDPOINT: 'https://qodana.cloud'
+
+  # Ungated on purpose. The Rust linter is Early Access and needs no cloud
+  # connection, so it passes on pull requests where the Python leg cannot run
+  # at all -- verified on #36, where `Qodana (rust)` succeeded and
+  # `Qodana (python)` did not. Gating both would cost a Dependabot pull request
+  # the coverage it can actually get.
+  qodana-rust:
+    name: Qodana (rust)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: 'Qodana Scan'
+        uses: JetBrains/qodana-action@4861e015da555e86a72b862892aba6c2b93e6891 # v2026.1.3
+        with:
+          pr-mode: false
+          args: --config qodana-rust.yaml
         env:
           QODANA_TOKEN: ${{ secrets.QODANA_TOKEN_983296264 }}
           QODANA_ENDPOINT: 'https://qodana.cloud'
