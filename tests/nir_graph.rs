@@ -904,41 +904,63 @@ fn component_table<'a>(section: &[&'a str]) -> Vec<&'a str> {
         .collect()
 }
 
-/// What counts as a shipped artifact, defined here rather than read out of the
+/// What is *not* a shipped artifact, defined here rather than read out of the
 /// README.
 ///
-/// Deriving this from the tree's own entries was circular: undocumenting the
-/// last artifact of an extension removed that extension from the filter, so
-/// the file disappeared from both sides and the set-equality passed --
-/// disabled by exactly the drift it exists to catch. A fixed list can only
-/// ever under-cover, which fails safe.
-const ARTIFACT_EXTENSIONS: [&str; 2] = [".mem", ".json"];
+/// This started as an allowlist of artifact extensions, which was wrong in the
+/// one direction that matters. An allowlist under-covers: a shipped
+/// `model.bin` matched no extension, so it vanished from the inventory and
+/// undocumenting it *passed*. A documentation guard must not have a direction
+/// that says nothing -- an exclusion list can only ever over-report, and that
+/// is loud.
+///
+/// It must not be derived from the README either. Reading the extensions out
+/// of the tree was circular: undocumenting the last `.json` removed `.json`
+/// from the filter, the file dropped out of both sides, and the check was
+/// disabled by exactly the drift it exists to catch.
+///
+/// The entries are the classes `.gitignore` already says may appear anywhere
+/// in a working copy, so a contributor's editor or OS scratch does not fail a
+/// test about documentation. Anything else under [`ARTIFACTS`] is treated as
+/// shipped, including a file under an extension nobody has thought of yet.
+const NON_ARTIFACT_NAMES: [&str; 3] = [".DS_Store", "Thumbs.db", "lcov.info"];
+const NON_ARTIFACT_SUFFIXES: [&str; 11] = [
+    "~",
+    ".swp",
+    ".swo",
+    ".log",
+    ".pyc",
+    ".pyo",
+    ".pyd",
+    ".rs.bk",
+    ".profraw",
+    ".profdata",
+    ".db",
+];
+
+/// Whether a tree-relative path is editor or OS scratch rather than an artifact.
+fn is_scratch(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    NON_ARTIFACT_NAMES.contains(&name)
+        || NON_ARTIFACT_SUFFIXES
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+}
 
 /// The artifact files on disk under [`ARTIFACTS`], as tree-relative paths.
-///
-/// Restricted to [`ARTIFACT_EXTENSIONS`], so a working copy carrying
-/// `.DS_Store`, an editor backup or a log does not fail a test about
-/// documentation drift. The trade is stated rather than hidden: an artifact
-/// shipped under a brand-new extension is not caught by this direction until
-/// someone adds it here, and the existence check does not cover it either.
 fn shipped_artifacts(root: &Path) -> Vec<String> {
     let mut found = Vec::new();
     collect_files(root, &root.join(ARTIFACTS), &mut found);
-    found.retain(|path| {
-        ARTIFACT_EXTENSIONS
-            .iter()
-            .any(|extension| path.ends_with(extension))
-    });
+    found.retain(|path| !is_scratch(path));
     found
 }
 
 /// Every file under `dir`, recursively, as paths relative to `root`.
 ///
 /// Recursive because the tree claims [`ARTIFACTS`] is enumerated *in full*: a
-/// non-recursive listing would see only the subdirectory entry, the extension
-/// filter would drop it, and an artifact tucked under
-/// `dataset/merged_v2/checkpoints/` would go undocumented with the check still
-/// passing.
+/// non-recursive listing would see only the subdirectory entry itself, and an
+/// artifact tucked under `dataset/merged_v2/checkpoints/` would go
+/// undocumented with the check still passing.
 fn collect_files(root: &Path, dir: &Path, found: &mut Vec<String>) {
     let entries = std::fs::read_dir(dir).expect("read an artifact directory");
     for entry in entries {
@@ -955,9 +977,20 @@ fn collect_files(root: &Path, dir: &Path, found: &mut Vec<String>) {
         // A symlink is not itself descended, but it is still an entry, so a
         // link named `extra.json` is reported as an undocumented artifact
         // exactly as a regular file would be.
-        let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
-        if is_dir {
+        let kind = entry
+            .file_type()
+            .expect("read an artifact directory entry type");
+        if kind.is_dir() {
             collect_files(root, &path, found);
+        } else if kind.is_symlink() && path.is_dir() {
+            // A link *to* a directory. Not descended -- following it is what
+            // let an ancestor-pointing link be walked ~40 times over. Not
+            // recorded either: the tree lists directories separately and the
+            // set comparison filters trailing-slash entries out of `listed`,
+            // so counting this side's directories as files would fail on a
+            // correctly documented tree. A link to a *file* is still recorded
+            // below, so one named `extra.json` cannot slip past the inventory.
+            continue;
         } else if let Ok(relative) = path.strip_prefix(root) {
             found.push(relative.to_string_lossy().replace('\\', "/"));
         }
