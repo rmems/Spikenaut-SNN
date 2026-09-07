@@ -750,13 +750,51 @@ fn visible_outside_comments(line: &str, open: &mut bool) -> String {
 /// nothing -- turning the guard above into a panic that never reaches the
 /// manifest. `str::lines` strips the `\r`, and `trim_end` absorbs a trailing
 /// space on the heading, so neither silences the check.
+///
+/// Fenced blocks are skipped while looking for the heading and while looking
+/// for the section's end. A code sample containing a line that reads exactly
+/// `## Ecosystem` is a *sample*, not a heading, and matching it made the guard
+/// parse from the wrong place and fail on a README whose real section was
+/// untouched. The same state keeps a `## ` inside the section's own fenced
+/// block from ending it early.
 fn readme_section<'a>(readme: &'a str, heading: &str) -> Vec<&'a str> {
-    readme
-        .lines()
-        .skip_while(|line| line.trim_end() != heading)
-        .skip(1)
-        .take_while(|line| !line.trim_start().starts_with("## "))
-        .collect()
+    let lines: Vec<&str> = readme.lines().collect();
+    match heading_line(&lines, heading) {
+        Some(at) => section_body(&lines, at),
+        None => Vec::new(),
+    }
+}
+
+/// The index of `heading`, ignoring any that appear inside a fenced block.
+fn heading_line(lines: &[&str], heading: &str) -> Option<usize> {
+    let mut fenced = false;
+    for (at, line) in lines.iter().enumerate() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+        } else if !fenced && line.trim_end() == heading {
+            return Some(at);
+        }
+    }
+    None
+}
+
+/// The lines after `at`, up to the next `## ` that is not inside a fence.
+///
+/// Fence state is tracked here too, so a `## ` inside the section's own fenced
+/// block -- a Markdown sample, a shell comment -- does not end the section
+/// early.
+fn section_body<'a>(lines: &[&'a str], at: usize) -> Vec<&'a str> {
+    let mut fenced = false;
+    let mut body = Vec::new();
+    for line in &lines[at + 1..] {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+        } else if !fenced && line.trim_start().starts_with("## ") {
+            break;
+        }
+        body.push(*line);
+    }
+    body
 }
 
 /// A CRLF checkout, or a stray trailing space, must not make the dependency
