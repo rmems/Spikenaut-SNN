@@ -675,9 +675,7 @@ fn readme_declared_components(section: &[String]) -> Vec<String> {
             continue;
         }
         rows += 1;
-        let relationship = outside_html_tags(&outside_link_destinations(&outside_code_spans(
-            &without_html_comments(&cells[2]),
-        )));
+        let relationship = outside_code_spans(&rendered_cell(&cells[2]));
         if !relationship.contains("**Declared**") {
             continue;
         }
@@ -686,7 +684,13 @@ fn readme_declared_components(section: &[String]) -> Vec<String> {
         // -out `<!-- `nir-rs` -->` ahead of the real name would otherwise win
         // the `nth(1)` and the guard would compare the manifest against a name
         // the rendered table does not contain.
-        let component = without_html_comments(&cells[0]);
+        // Everything the Relationship cell hides a marker behind, the
+        // Component cell can hide a *name* behind: `<span title="`nir-rs`">`
+        // renders as its element text while the guard read the attribute. The
+        // two cells ask the same question, so they now share the answer --
+        // except for code spans, which are stripped only from Relationship:
+        // the crate name lives in one here.
+        let component = rendered_cell(&cells[0]);
         let name = component
             .split('`')
             .nth(1)
@@ -699,6 +703,54 @@ fn readme_declared_components(section: &[String]) -> Vec<String> {
          order, with a three-cell delimiter row directly beneath it",
     );
     declared
+}
+
+/// `cell` reduced to the text a reader actually sees.
+///
+/// Markdown hides text in more places than any one strip pass covers, and each
+/// was found the same way: as a cell that renders one thing while the guard
+/// read another. HTML comments, image descriptions, link destinations and raw
+/// HTML tags, in that order -- images before links, or the link pass eats an
+/// image's destination and leaves its description behind as if it were text.
+///
+/// Code spans are deliberately *not* removed here. They hide a marker in the
+/// Relationship cell but carry the crate name in the Component cell, so that
+/// one strip belongs to the caller that wants it.
+fn rendered_cell(cell: &str) -> String {
+    outside_html_tags(&outside_link_destinations(&outside_images(
+        &without_html_comments(cell),
+    )))
+}
+
+/// `text` with image spans removed, description and all.
+///
+/// `![**Declared**](transparent.png)` renders as an image: the description
+/// becomes an `alt` attribute, never bold page text. Stripping only the
+/// destination -- which is what the link pass does, since `](` looks the same
+/// in both -- left `[**Declared**]` on the visible side and the guard counted
+/// a marker the rendered table does not show.
+fn outside_images(text: &str) -> String {
+    let mut visible = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("![") {
+        visible.push_str(&rest[..at]);
+        let Some(after) = rest[at + 2..]
+            .find("](")
+            .map(|end| &rest[at + 2 + end + 2..])
+        else {
+            visible.push_str(&rest[at..]);
+            return visible;
+        };
+        match closing_paren(after) {
+            Some(end) => rest = &after[end + 1..],
+            None => {
+                visible.push_str(&rest[at..]);
+                return visible;
+            }
+        }
+    }
+    visible.push_str(rest);
+    visible
 }
 
 /// `cell` with any HTML comment spans removed.
@@ -893,7 +945,29 @@ fn atx_heading(line: &str) -> Option<String> {
         return None;
     }
     let body = text.get(hashes..)?.strip_prefix([' ', '\t'])?;
-    Some(format!("{} {}", "#".repeat(hashes), body.trim_start()))
+    Some(format!(
+        "{} {}",
+        "#".repeat(hashes),
+        without_closing_hashes(body).trim_start()
+    ))
+}
+
+/// `body` without Markdown's optional closing `#` sequence.
+///
+/// `## Ecosystem ##` is the same heading as `## Ecosystem`. Keeping the
+/// trailing hashes meant a duplicate written that way did not match the
+/// guarded heading, so the once-only check never saw it -- while
+/// `section_body` still stopped there, leaving the second contract read by
+/// nothing. The closing run has to be preceded by whitespace, so `Ecosystem##`
+/// is a name, not a heading with a closing sequence.
+fn without_closing_hashes(body: &str) -> &str {
+    let body = body.trim_end();
+    let closed = body.trim_end_matches('#');
+    if closed.len() < body.len() && (closed.is_empty() || closed.ends_with([' ', '\t'])) {
+        closed.trim_end()
+    } else {
+        body
+    }
 }
 
 /// `line` with the indentation Markdown permits before an ATX heading removed.
@@ -1068,14 +1142,30 @@ fn escaping_paths(named: &[String]) -> Vec<&String> {
 /// `LICENSE` and `Makefile` are as much files as `config.json` is.
 fn files_tree_paths(section: &[String]) -> Vec<String> {
     let mut dir = String::new();
+    let mut nested: Vec<(usize, String)> = Vec::new();
     let mut paths = Vec::new();
     for line in fenced_block(section) {
         match classify_tree_line(&line) {
             Some(TreeLine::Dir(entry)) => {
                 dir = entry.to_owned();
+                nested.clear();
                 paths.push(dir.clone());
             }
-            Some(TreeLine::Nested(name)) => paths.push(format!("{dir}{name}")),
+            Some(TreeLine::Nested { indent, name }) => {
+                // Anything at this column or deeper is a sibling or a closed
+                // branch, not an ancestor.
+                while nested.last().is_some_and(|&(at, _)| at >= indent) {
+                    nested.pop();
+                }
+                let prefix = nested
+                    .last()
+                    .map_or(dir.as_str(), |(_, path)| path.as_str());
+                let path = format!("{prefix}{name}");
+                if name.ends_with('/') {
+                    nested.push((indent, path.clone()));
+                }
+                paths.push(path);
+            }
             Some(TreeLine::Root(name)) => paths.push(name.to_owned()),
             None => {}
         }
@@ -1133,8 +1223,10 @@ fn strip_annotation(line: &str) -> &str {
 enum TreeLine<'a> {
     /// A directory heading, keeping its trailing `/`.
     Dir(&'a str),
-    /// A file under the directory heading above it.
-    Nested(&'a str),
+    /// An entry under the heading above it, with the column its glyph sits
+    /// in. The indentation is what says whether it hangs from the heading or
+    /// from a nested directory listed between them.
+    Nested { indent: usize, name: &'a str },
     /// A file at the repository root, written without a tree glyph.
     Root(&'a str),
 }
@@ -1157,7 +1249,8 @@ fn classify_tree_line(line: &str) -> Option<TreeLine<'_>> {
         .find_map(|glyph| line.trim_start().strip_prefix(glyph))
     {
         let name = strip_annotation(entry).trim();
-        return (!name.is_empty()).then_some(TreeLine::Nested(name));
+        let indent = line.len() - line.trim_start().len();
+        return (!name.is_empty()).then_some(TreeLine::Nested { indent, name });
     }
     let trimmed = strip_annotation(line).trim();
     if trimmed.is_empty() {
@@ -1378,7 +1471,7 @@ fn outside_html_tags(text: &str) -> String {
     let mut rest = text;
     while let Some(at) = rest.find('<') {
         visible.push_str(&rest[..at]);
-        match rest[at..].find('>') {
+        match tag_end(&rest[at..]) {
             Some(end) => rest = &rest[at + end + 1..],
             None => {
                 visible.push_str(&rest[at..]);
@@ -1388,6 +1481,27 @@ fn outside_html_tags(text: &str) -> String {
     }
     visible.push_str(rest);
     visible
+}
+
+/// Where the tag opened at the start of `tag` ends.
+///
+/// A `>` inside a quoted attribute value does not close it:
+/// `<span title="> **Declared**">not declared</span>` ends at the *second*
+/// `>`, and taking the first left the marker and the rest of the tag on the
+/// visible side. The same shape as every other finding on this guard -- a
+/// delimiter that is only a delimiter outside quoting.
+fn tag_end(tag: &str) -> Option<usize> {
+    let mut quote: Option<char> = None;
+    tag.char_indices().find_map(|(at, ch)| {
+        match quote {
+            Some(open) if ch == open => quote = None,
+            Some(_) => {}
+            None if ch == '"' || ch == '\'' => quote = Some(ch),
+            None if ch == '>' => return Some(at),
+            None => {}
+        }
+        None
+    })
 }
 
 /// The `)` that closes an inline link, given everything after its `](`.
@@ -1826,6 +1940,101 @@ fn a_delimiter_cell_needs_three_dashes() {
         "one dash is not a delimiter row"
     );
     assert!(!is_delimiter_row("|--|--|--|"), "two dashes are not either");
+}
+
+/// A component name hidden in an HTML attribute is not the component.
+///
+/// `<span title="`nir-rs`">replacement</span>` renders as "replacement". The
+/// Component cell can hide a name exactly where the Relationship cell hides a
+/// marker, so both now read the same rendered text.
+#[test]
+fn a_name_in_an_html_attribute_is_not_the_component() {
+    assert_eq!(
+        rendered_cell("<span title=\"`nir-rs`\">replacement</span>"),
+        "replacement",
+    );
+    assert_eq!(
+        rendered_cell("[`nir-rs`](https://crates.io/crates/nir-rs) 0.4.2"),
+        "[`nir-rs`] 0.4.2",
+        "a linked name still renders, so its code span must survive",
+    );
+}
+
+/// A `>` inside a quoted attribute does not end the tag.
+#[test]
+fn a_bracket_inside_a_quoted_attribute_is_not_the_tag_end() {
+    assert_eq!(
+        outside_html_tags("<span title=\"> **Declared**\">not declared</span>"),
+        "not declared",
+    );
+    assert_eq!(
+        outside_html_tags("a < b"),
+        "a < b",
+        "an unterminated `<` stays"
+    );
+}
+
+/// An image description is not page text, so a marker in one is not a marker.
+#[test]
+fn an_image_description_is_not_a_declaration() {
+    assert_eq!(outside_images("![**Declared**](transparent.png)"), "");
+    assert_eq!(
+        outside_images("before ![alt](a(b)c.png) after"),
+        "before  after",
+        "an image destination may contain balanced parentheses",
+    );
+    assert_eq!(
+        outside_images("[**Declared**](x) is a link, not an image"),
+        "[**Declared**](x) is a link, not an image",
+    );
+}
+
+/// Markdown's optional closing hashes do not change which heading a line is.
+#[test]
+fn closing_hashes_do_not_change_a_heading() {
+    assert_eq!(
+        atx_heading("## Ecosystem ##").as_deref(),
+        Some("## Ecosystem")
+    );
+    assert_eq!(
+        atx_heading("## Ecosystem  ####  ").as_deref(),
+        Some("## Ecosystem")
+    );
+    assert_eq!(
+        atx_heading("## Ecosystem##").as_deref(),
+        Some("## Ecosystem##"),
+        "a closing run must be preceded by whitespace, or it is part of the name",
+    );
+}
+
+/// A nested directory prefixes the entries listed under it.
+///
+/// The tree named `src/model/graph.rs`; dropping the nesting checked
+/// `src/model/` and `src/graph.rs`, which both exist, so a file the tree
+/// claims and the repository lacks went unnoticed.
+#[test]
+fn a_nested_directory_prefixes_the_entries_below_it() {
+    let readme = concat!(
+        "## Files\n",
+        "\n",
+        "```text\n",
+        "src/\n",
+        "├── model/\n",
+        "    └── graph.rs\n",
+        "└── json.rs\n",
+        "```\n",
+    );
+
+    assert_eq!(
+        files_tree_paths(&readme_section(readme, "## Files")),
+        vec![
+            "src/".to_owned(),
+            "src/model/".to_owned(),
+            "src/model/graph.rs".to_owned(),
+            "src/json.rs".to_owned(),
+        ],
+        "depth decides the prefix, and returning to it clears the nesting",
+    );
 }
 
 /// An HTML comment opened on one line and closed on a later one hides every
