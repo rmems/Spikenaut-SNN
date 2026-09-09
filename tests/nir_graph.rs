@@ -765,7 +765,7 @@ fn visible_outside_comments(line: &str, open: &mut bool) -> String {
 fn readme_section(readme: &str, heading: &str) -> Vec<String> {
     let lines: Vec<&str> = readme.lines().collect();
     let visible = visible_lines(&lines);
-    let located = blank_fenced(&visible);
+    let located = blank_code(&visible);
     match heading_line(&located, heading) {
         Some(at) => section_body(&visible, &located, at),
         None => Vec::new(),
@@ -780,27 +780,59 @@ fn readme_section(readme: &str, heading: &str) -> Vec<String> {
 /// `open = false` pass over the section it was handed, which meant a `<!--`
 /// opened on or above the section heading was invisible to them. A hidden
 /// table matching `Cargo.toml`, or a hidden fence naming files that exist,
-/// was then read as the real one while the rendered section drifted -- the
-/// defect fixed in `237ad44`, still reachable through the one line the slice
-/// did not include.
+/// was then read as the real one while the rendered section drifted.
 ///
-/// Fences are deliberately left intact: `fenced_block` needs their contents.
-/// Only *locating* has to ignore them, which is [`blank_fenced`].
+/// Fenced content is passed through *raw*, and comment state does not advance
+/// across it. Inside a fence `<!--` is literal text that Markdown displays, so
+/// removing it rewrote what the README says: a tree entry reading
+/// `js<!--draft-->on.rs` collapsed to the `json.rs` that exists, and the
+/// existence check passed for a path no reader can see. Fences are also left
+/// intact for `fenced_block`, which needs their contents; only *locating* has
+/// to ignore them, which is [`blank_code`].
+///
+/// The two states have to be resolved together and in this order. A fence
+/// inside a comment is not a fence -- Markdown renders nothing for it -- so
+/// comment removal decides what counts as a fence, and being inside a fence
+/// then decides that comment syntax is just text.
 fn visible_lines(lines: &[&str]) -> Vec<String> {
     let mut open = false;
+    let mut fenced = false;
     lines
         .iter()
-        .map(|line| visible_outside_comments(line, &mut open))
+        .map(|line| {
+            if fenced {
+                if line.trim_start().starts_with("```") {
+                    fenced = false;
+                }
+                return (*line).to_owned();
+            }
+            let visible = visible_outside_comments(line, &mut open);
+            if visible.trim_start().starts_with("```") {
+                fenced = true;
+            }
+            visible
+        })
         .collect()
 }
 
-/// The same lines with every fenced line, and both fence markers, blanked.
+/// The same lines with every line Markdown renders as *code* blanked.
+///
+/// That is fenced content and both fence markers, and any line indented by
+/// four spaces or more -- an indented code block. Only fences were blanked
+/// before, so a four-space-indented example of the dependency table was still
+/// a candidate for the real one: if the example agreed with `Cargo.toml` the
+/// guard passed while the rendered table below it had drifted. The same
+/// four-space line that [`dedent`] already refuses to read as a heading.
 ///
 /// Blanking rather than dropping keeps the indices aligned with the input, so
 /// a position found here indexes the un-blanked lines too. That is what lets a
 /// heading be located, and a section be ended, without a Markdown sample of a
 /// heading or a table being mistaken for the real thing.
-fn blank_fenced(visible: &[String]) -> Vec<String> {
+///
+/// Over-blanking is the safe direction: a table this hides is a table not
+/// found, which is the loud `no Ecosystem table found` panic rather than a
+/// quiet agreement with the wrong rows.
+fn blank_code(visible: &[String]) -> Vec<String> {
     let mut fenced = false;
     visible
         .iter()
@@ -809,9 +841,18 @@ fn blank_fenced(visible: &[String]) -> Vec<String> {
                 fenced = !fenced;
                 return String::new();
             }
-            if fenced { String::new() } else { line.clone() }
+            if fenced || is_indented_code(line) {
+                String::new()
+            } else {
+                line.clone()
+            }
         })
         .collect()
+}
+
+/// Whether Markdown reads `line` as an indented code block.
+fn is_indented_code(line: &str) -> bool {
+    line.starts_with("    ") || line.starts_with('\t')
 }
 
 /// The index of `heading`, ignoring any that appear inside a fenced block.
@@ -1113,7 +1154,7 @@ fn is_delimiter_row(line: &str) -> bool {
 /// That is the failure `fenced_block` already guards against for the file
 /// tree, fixed the same way.
 fn component_table(section: &[String]) -> Vec<String> {
-    let visible = blank_fenced(section);
+    let visible = blank_code(section);
 
     let Some(header) = visible
         .iter()
@@ -1351,6 +1392,58 @@ fn a_longer_backtick_run_does_not_close_a_shorter_code_span() {
         outside_code_spans("**Declared** in `Cargo.toml`"),
         "**Declared** in ",
         "a marker outside code stays visible",
+    );
+}
+
+/// An HTML comment written inside a fence is part of the text, not a comment.
+///
+/// Markdown displays it verbatim there. Stripping it rewrote the tree: an
+/// entry reading `js<!--draft-->on.rs` collapsed to `json.rs`, which exists,
+/// so the existence check passed for a path no reader can see. Silent, and in
+/// the direction that matters -- the document drifted and the guard agreed.
+#[test]
+fn an_html_comment_inside_a_fence_is_part_of_the_path() {
+    let readme = concat!(
+        "## Files\n",
+        "\n",
+        "```text\n",
+        "src/\n",
+        "└── js<!--draft-->on.rs\n",
+        "```\n",
+    );
+
+    assert!(
+        fenced_block(&readme_section(readme, "## Files"))
+            .iter()
+            .any(|line| line.contains("<!--draft-->")),
+        "a comment inside a fence is literal text and must survive",
+    );
+}
+
+/// A four-space-indented table is a code sample, not the dependency table.
+///
+/// `dedent` already refuses to read a four-space-indented `## ` as a heading,
+/// for the same reason: at that indentation Markdown is rendering code. An
+/// indented example agreeing with `Cargo.toml` could otherwise be selected
+/// ahead of the real table.
+#[test]
+fn an_indented_table_example_is_code_not_the_table() {
+    let readme = concat!(
+        "## Ecosystem\n",
+        "\n",
+        "    | Component | Role | Relationship |\n",
+        "    |---|---|---|\n",
+        "    | `example` | sample | **Declared** in `Cargo.toml` |\n",
+        "\n",
+        "| Component | Role | Relationship |\n",
+        "|---|---|---|\n",
+        "| `real` | the table | **Declared** in `Cargo.toml` |\n",
+    );
+
+    assert_eq!(
+        readme_declared_components(&readme_section(readme, "## Ecosystem")),
+        vec!["real".to_owned()],
+        "the indented sample must not be read as the dependency table",
     );
 }
 
