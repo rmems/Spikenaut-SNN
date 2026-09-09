@@ -675,7 +675,8 @@ fn readme_declared_components(section: &[String]) -> Vec<String> {
             continue;
         }
         rows += 1;
-        let relationship = outside_code_spans(&without_html_comments(&cells[2]));
+        let relationship =
+            outside_link_destinations(&outside_code_spans(&without_html_comments(&cells[2])));
         if !relationship.contains("**Declared**") {
             continue;
         }
@@ -1258,6 +1259,49 @@ fn outside_code_spans(cell: &str) -> String {
     visible
 }
 
+/// `text` with the destination of every inline link removed.
+///
+/// `[not declared](https://example.invalid/**Declared**)` renders as the words
+/// "not declared" -- the URL is not shown at all -- but a substring check
+/// found the marker in it and counted the row. The dependency contract a
+/// reader sees could lose its marker with the two sets still equal.
+///
+/// Only a `](` that closes a link is consumed, and nesting is tracked so a URL
+/// containing parentheses does not end the destination early. Link *text* is
+/// deliberately kept: it is what renders, so a marker written there is a real
+/// marker.
+fn outside_link_destinations(text: &str) -> String {
+    let mut visible = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("](") {
+        visible.push_str(&rest[..at + 1]);
+        let after = &rest[at + 2..];
+        match closing_paren(after) {
+            Some(end) => rest = &after[end + 1..],
+            None => {
+                visible.push_str(&rest[at + 1..]);
+                return visible;
+            }
+        }
+    }
+    visible.push_str(rest);
+    visible
+}
+
+/// The `)` that closes a link destination, allowing for nested parentheses.
+fn closing_paren(after: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (at, ch) in after.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(at),
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The length of the run of backticks beginning at `at`.
 fn backtick_run(bytes: &[u8], at: usize) -> usize {
     bytes[at..].iter().take_while(|&&b| b == b'`').count()
@@ -1444,6 +1488,28 @@ fn an_indented_table_example_is_code_not_the_table() {
         readme_declared_components(&readme_section(readme, "## Ecosystem")),
         vec!["real".to_owned()],
         "the indented sample must not be read as the dependency table",
+    );
+}
+
+/// A marker inside a link destination is not a declaration.
+///
+/// `[not declared](https://example.invalid/**Declared**)` renders as the words
+/// "not declared". The URL is never shown, so a marker hidden in it is not a
+/// marker a reader can see.
+#[test]
+fn a_marker_in_a_link_destination_is_not_a_declaration() {
+    assert_eq!(
+        outside_link_destinations("[not declared](https://example.invalid/**Declared**)"),
+        "[not declared]",
+    );
+    assert_eq!(
+        outside_link_destinations("**Declared** — [#8](https://example.invalid/a(b)c) done"),
+        "**Declared** — [#8] done",
+        "a URL may contain balanced parentheses",
+    );
+    assert_eq!(
+        outside_link_destinations("plain **Declared** text"),
+        "plain **Declared** text",
     );
 }
 
