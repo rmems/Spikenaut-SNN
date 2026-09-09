@@ -360,6 +360,44 @@ fn matches_a_hand_built_nir_graph() {
     assert_eq!(ours, reference);
 }
 
+/// Records what `line` contributes to the runtime dependency set.
+///
+/// Split out of [`dependency_tables`] to keep that loop under the complexity
+/// ceiling once renames had to be handled in both of Cargo's spellings.
+fn record_runtime(kind: &str, line: &str, runtime: &mut Vec<String>) {
+    let renamed = renamed_package(line);
+    if kind.starts_with("dependencies.") {
+        // `[dependencies.axon-encoder]` already pushed the key when its header
+        // was read, so a `package =` line beneath it renames that entry.
+        if let (Some(package), Some(last)) = (renamed, runtime.last_mut()) {
+            *last = package;
+        }
+        return;
+    }
+    if kind != "dependencies" {
+        return;
+    }
+    // `axon-encoder = { package = "replacement" }` names its package inline.
+    runtime.push(renamed.unwrap_or_else(|| line.split('=').next().unwrap_or("").trim().to_owned()));
+}
+
+/// The package a dependency actually resolves to, when it is renamed.
+///
+/// `axon-encoder = { package = "replacement", version = "1" }` is a real Cargo
+/// dependency on `replacement`; the key is only the name the code imports it
+/// under. Reading the key meant the guard compared the README against a name
+/// Cargo does not resolve, so the Ecosystem table could claim a component the
+/// build never fetches and the two sets still agreed.
+fn renamed_package(line: &str) -> Option<String> {
+    let at = line.find("package")?;
+    let rest = line[at + "package".len()..]
+        .trim_start()
+        .strip_prefix('=')?;
+    let quoted = rest.trim_start().strip_prefix('"')?;
+    let end = quoted.find('"')?;
+    Some(quoted[..end].to_owned())
+}
+
 /// The dependency-table kind, with any `[target.<cfg or triple>.…]` prefix
 /// removed.
 ///
@@ -418,9 +456,7 @@ fn dependency_tables(manifest: &str) -> (Vec<&str>, Vec<String>) {
             continue;
         }
         pinned.push(line);
-        if dependency_table_kind(&section) == "dependencies" {
-            runtime.push(line.split('=').next().unwrap_or("").trim().to_string());
-        }
+        record_runtime(dependency_table_kind(&section), line, &mut runtime);
     }
     (pinned, runtime)
 }
@@ -650,6 +686,12 @@ fn the_readme_dependency_table_agrees_with_the_manifest() {
     let (_, mut runtime) = dependency_tables(&manifest);
     declared.sort_unstable();
     runtime.sort_unstable();
+    // Cargo may legitimately declare one crate in several mutually exclusive
+    // target tables -- `cfg(unix)` and `cfg(windows)` -- and it is still one
+    // dependency and one README row. Comparing a multiset against a set
+    // rejected that valid manifest. `declared` is deliberately *not*
+    // deduplicated: two rows for one component is drift, not a layout.
+    runtime.dedup();
     assert_eq!(
         declared, runtime,
         "every crate the README marks **Declared** must be in `[dependencies]`, \
@@ -734,15 +776,11 @@ fn outside_images(text: &str) -> String {
     let mut rest = text;
     while let Some(at) = rest.find("![") {
         visible.push_str(&rest[..at]);
-        let Some(after) = rest[at + 2..]
-            .find("](")
-            .map(|end| &rest[at + 2 + end + 2..])
-        else {
-            visible.push_str(&rest[at..]);
-            return visible;
-        };
-        match closing_paren(after) {
-            Some(end) => rest = &after[end + 1..],
+        // A reference image -- `![**Declared**][badge]`, defined elsewhere --
+        // renders as alt text exactly as an inline one does, so both forms go
+        // whole.
+        match link_target(&rest[at + 1..]) {
+            Some(span) => rest = &rest[at + 1 + span.target_ends..],
             None => {
                 visible.push_str(&rest[at..]);
                 return visible;
@@ -991,18 +1029,42 @@ fn dedent(line: &str) -> &str {
 /// block -- a Markdown sample, a shell comment -- does not end the section
 /// early.
 fn section_body(visible: &[String], located: &[String], at: usize) -> Vec<String> {
-    let ends = located[at + 1..]
-        .iter()
-        .position(|line| {
-            // A level-one heading closes a level-two section too. Stopping
-            // only at `## ` left the rest of the document in the body, so a
-            // component table under a later `# ` could be selected after the
-            // real one had drifted.
-            atx_heading(line)
-                .is_some_and(|heading| heading.starts_with("# ") || heading.starts_with("## "))
-        })
+    let rest = &located[at + 1..];
+    let ends = (0..rest.len())
+        .find(|&offset| opens_section(rest, offset))
         .map_or(visible.len(), |offset| at + 1 + offset);
     visible[at + 1..ends].to_vec()
+}
+
+/// Whether the line at `offset` starts a section that closes the current one.
+///
+/// A level-one heading closes a level-two section too. Stopping only at `## `
+/// left the rest of the document in the body, so a component table under a
+/// later `# ` could be selected after the real one had drifted.
+fn opens_section(body: &[String], offset: usize) -> bool {
+    if atx_heading(&body[offset])
+        .is_some_and(|heading| heading.starts_with("# ") || heading.starts_with("## "))
+    {
+        return true;
+    }
+    // Setext: `Appendix` underlined with `====` or `----` on the next line is
+    // a heading of level one or two, and Markdown ends the section there just
+    // as an ATX heading does. Delegating only to `atx_heading` meant a whole
+    // valid heading syntax did not close a section at all.
+    !body[offset].trim().is_empty()
+        && body
+            .get(offset + 1)
+            .is_some_and(|next| is_setext_underline(next))
+}
+
+/// Whether `line` is a setext underline -- all `=` or all `-`.
+///
+/// The delimiter row of a table is not one: it carries pipes. A `-` run after
+/// a blank line is a thematic break rather than an underline, which is why the
+/// caller requires the line above to have content.
+fn is_setext_underline(line: &str) -> bool {
+    let text = dedent(line).trim_end();
+    !text.is_empty() && (text.chars().all(|c| c == '=') || text.chars().all(|c| c == '-'))
 }
 
 /// A CRLF checkout, or a stray trailing space, must not make the dependency
@@ -1449,19 +1511,49 @@ fn outside_code_spans(cell: &str) -> String {
 fn outside_link_destinations(text: &str) -> String {
     let mut visible = String::with_capacity(text.len());
     let mut rest = text;
-    while let Some(at) = rest.find("](") {
-        visible.push_str(&rest[..at + 1]);
-        let after = &rest[at + 2..];
-        match closing_paren(after) {
-            Some(end) => rest = &after[end + 1..],
-            None => {
-                visible.push_str(&rest[at + 1..]);
-                return visible;
-            }
-        }
+    while let Some(span) = link_target(rest) {
+        visible.push_str(&rest[..span.text_ends]);
+        rest = &rest[span.target_ends..];
     }
     visible.push_str(rest);
     visible
+}
+
+/// Where a link's text stops and where its target stops, as byte offsets.
+struct LinkSpan {
+    text_ends: usize,
+    target_ends: usize,
+}
+
+/// The first link target in `text`: an inline `](...)` or a reference `][...]`.
+///
+/// A reference link is `[not declared][**Declared**]`, and only the *text*
+/// renders -- the label is a lookup key the reader never sees. Handling the
+/// inline form alone left the label on the visible side and the marker was
+/// counted: the same hole as the destination one, one syntax over.
+///
+/// A shortcut reference -- `[**Declared**]` with no second bracket -- is
+/// deliberately left alone. There the bracketed text *is* the link text, so it
+/// renders and a marker in it is a real marker.
+fn link_target(text: &str) -> Option<LinkSpan> {
+    let inline = text.find("](").map(|at| (at, true));
+    let reference = text.find("][").map(|at| (at, false));
+    let (at, is_inline) = match (inline, reference) {
+        (Some(a), Some(b)) if b.0 < a.0 => b,
+        (Some(a), _) => a,
+        (None, Some(b)) => b,
+        (None, None) => return None,
+    };
+    let after = &text[at + 2..];
+    let end = if is_inline {
+        closing_paren(after)?
+    } else {
+        after.find(']')?
+    };
+    Some(LinkSpan {
+        text_ends: at + 1,
+        target_ends: at + 2 + end + 1,
+    })
 }
 
 /// `text` with raw HTML tags, and so their attributes, removed.
@@ -2075,6 +2167,101 @@ fn a_continuation_glyph_is_indentation_not_a_name() {
             "src/json.rs".to_owned(),
         ],
         "the continuation prefix is depth, and never part of the name",
+    );
+}
+
+/// A reference label is a lookup key, not text a reader sees.
+#[test]
+fn a_reference_label_is_not_visible_text() {
+    assert_eq!(
+        outside_link_destinations("[not declared][**Declared**]"),
+        "[not declared]",
+    );
+    assert_eq!(
+        outside_link_destinations("[**Declared**]"),
+        "[**Declared**]",
+        "a shortcut reference renders its own text, so the marker is real",
+    );
+    assert_eq!(outside_images("![**Declared**][badge]"), "");
+}
+
+/// A setext heading ends a section exactly as an ATX one does.
+#[test]
+fn a_setext_heading_ends_a_section() {
+    assert!(is_setext_underline("========"));
+    assert!(is_setext_underline("---"));
+    assert!(
+        !is_setext_underline("|---|---|---|"),
+        "a table delimiter row is not an underline",
+    );
+    assert!(!is_setext_underline("=== not all equals"));
+
+    let readme = concat!(
+        "## Ecosystem\n",
+        "\n",
+        "| Component | Role | Relationship |\n",
+        "|---|---|---|\n",
+        "| `real` | the table | **Declared** in `Cargo.toml` |\n",
+        "\n",
+        "Appendix\n",
+        "========\n",
+        "\n",
+        "| Component | Role | Relationship |\n",
+        "|---|---|---|\n",
+        "| `other` | past the boundary | **Declared** in `Cargo.toml` |\n",
+    );
+
+    assert_eq!(
+        readme_declared_components(&readme_section(readme, "## Ecosystem")),
+        vec!["real".to_owned()],
+        "the section ends at the setext heading",
+    );
+}
+
+/// One crate declared in several target tables is still one dependency.
+///
+/// `cfg(unix)` and `cfg(windows)` tables are mutually exclusive and entirely
+/// valid; comparing that multiset against the README's one-row-per-component
+/// set rejected a correct manifest.
+#[test]
+fn a_crate_in_two_target_tables_is_one_dependency() {
+    let manifest = concat!(
+        "[dependencies]\n",
+        "nir-rs = \"0.4.2\"\n",
+        "\n",
+        "[target.'cfg(unix)'.dependencies]\n",
+        "nir-rs = \"0.4.2\"\n",
+    );
+
+    let mut runtime = dependency_tables(manifest).1;
+    runtime.sort_unstable();
+    runtime.dedup();
+
+    assert_eq!(runtime, vec!["nir-rs".to_owned()]);
+}
+
+/// A renamed dependency resolves to its package, not to its key.
+#[test]
+fn a_renamed_dependency_resolves_to_its_package() {
+    let inline = "[dependencies]\naxon-encoder = { package = \"replacement\", version = \"1\" }\n";
+    assert_eq!(
+        dependency_tables(inline).1,
+        vec!["replacement".to_owned()],
+        "the key is only the name the code imports it under",
+    );
+
+    let header = "[dependencies.axon-encoder]\npackage = \"replacement\"\nversion = \"1\"\n";
+    assert_eq!(
+        dependency_tables(header).1,
+        vec!["replacement".to_owned()],
+        "the table form renames the entry its header pushed",
+    );
+
+    let plain = "[dependencies]\nnir-rs = \"0.4.2\"\n";
+    assert_eq!(
+        dependency_tables(plain).1,
+        vec!["nir-rs".to_owned()],
+        "an ordinary dependency still reads as its key",
     );
 }
 
