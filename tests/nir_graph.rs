@@ -1320,18 +1320,83 @@ fn outside_link_destinations(text: &str) -> String {
     visible
 }
 
-/// The `)` that closes a link destination, allowing for nested parentheses.
+/// The `)` that closes an inline link, given everything after its `](`.
+///
+/// CommonMark puts three things between `](` and the closing `)`, and taking
+/// any of them literally leaks the marker back into the visible text:
+///
+/// - **Nested parentheses** in the destination, which must balance.
+/// - **Backslash escapes**: `\(` and `\)` are literal characters, not
+///   structure. Counting them meant `](host/x\)**Declared**)` ended at the
+///   escaped paren and put the rest of the destination back on the visible
+///   side, and `](host/x\(y**Declared**)` never found a close at all -- so the
+///   marker was read as visible in both.
+/// - **A title** after the destination, in quotes. It renders as a tooltip and
+///   never as page text, so a marker inside one is not a marker; a `)` inside
+///   one is not a close. `](url "a)b **Declared**")` ended at that `)`.
+///
+/// A title has to be preceded by whitespace, which is what `in_destination`
+/// tracks: a quote character inside the destination itself is an ordinary
+/// character and must not open one.
 fn closing_paren(after: &str) -> Option<usize> {
-    let mut depth = 0usize;
-    for (at, ch) in after.char_indices() {
+    let mut scan = LinkScan::default();
+    after.char_indices().find_map(|(at, ch)| scan.step(at, ch))
+}
+
+/// The state [`closing_paren`] carries from one character to the next.
+#[derive(Default)]
+struct LinkScan {
+    depth: usize,
+    escaped: bool,
+    quote: Option<char>,
+    past_destination: bool,
+}
+
+impl LinkScan {
+    /// Consumes one character, yielding the offset when it closes the link.
+    fn step(&mut self, at: usize, ch: char) -> Option<usize> {
+        if std::mem::take(&mut self.escaped) {
+            return None;
+        }
+        if ch == '\\' {
+            self.escaped = true;
+            return None;
+        }
+        if self.titling(ch) {
+            return None;
+        }
         match ch {
-            '(' => depth += 1,
-            ')' if depth == 0 => return Some(at),
-            ')' => depth -= 1,
+            '(' => self.depth += 1,
+            ')' if self.depth == 0 => return Some(at),
+            ')' => self.depth -= 1,
             _ => {}
         }
+        None
     }
-    None
+
+    /// Whether `ch` belongs to the title rather than the destination.
+    ///
+    /// That covers the quote characters that open and close one, everything
+    /// between them, and the whitespace that ends the destination and makes a
+    /// title possible in the first place.
+    fn titling(&mut self, ch: char) -> bool {
+        if self.quote == Some(ch) {
+            self.quote = None;
+            return true;
+        }
+        if self.quote.is_some() {
+            return true;
+        }
+        if ch.is_whitespace() {
+            self.past_destination = true;
+            return true;
+        }
+        if self.past_destination && (ch == '"' || ch == '\'') {
+            self.quote = Some(ch);
+            return true;
+        }
+        false
+    }
 }
 
 /// The length of the run of backticks beginning at `at`.
@@ -1542,6 +1607,39 @@ fn a_marker_in_a_link_destination_is_not_a_declaration() {
     assert_eq!(
         outside_link_destinations("plain **Declared** text"),
         "plain **Declared** text",
+    );
+}
+
+/// Escapes and titles inside a link do not end its destination early.
+///
+/// Each of these left a marker on the visible side, and each is silent: the
+/// rendered cell has no **Declared** and the guard counted one anyway.
+#[test]
+fn a_link_destination_ends_where_commonmark_ends_it() {
+    assert_eq!(
+        outside_link_destinations(r#"[#8](https://example.invalid/x "a)b **Declared**")"#),
+        "[#8]",
+        "a `)` inside a quoted title does not close the link",
+    );
+    assert_eq!(
+        outside_link_destinations(r"[not declared](https://host/x\)**Declared**)"),
+        "[not declared]",
+        "an escaped `)` is a character, not the close",
+    );
+    assert_eq!(
+        outside_link_destinations(r"[not declared](https://host/x\(y**Declared**)"),
+        "[not declared]",
+        "an escaped `(` does not open a nesting level",
+    );
+    // Written with an escaped quote rather than a raw string on purpose:
+    // Lizard -- which Codacy runs -- mis-parses a raw string holding an odd
+    // number of `"`, taking the inner one as the terminator and folding the
+    // next two tests into this one. That reports this function at 77 NLOC and
+    // fails the build on a limit it is nowhere near.
+    assert_eq!(
+        outside_link_destinations("[a](https://host/a\"b) **Declared**"),
+        "[a] **Declared**",
+        "a quote inside the destination is an ordinary character, not a title",
     );
 }
 
