@@ -675,7 +675,8 @@ fn readme_declared_components(section: &[&str]) -> Vec<String> {
             continue;
         }
         rows += 1;
-        if !without_html_comments(&cells[2]).contains("**Declared**") {
+        let relationship = outside_code_spans(&without_html_comments(&cells[2]));
+        if !relationship.contains("**Declared**") {
             continue;
         }
         // Every component is named in backticks, linked or not. Read from the
@@ -1296,6 +1297,36 @@ fn table_cells(row: &str) -> Vec<String> {
         cells.last_mut().expect("a cell in progress").push('\\');
     }
     cells.iter().map(|cell| cell.trim().to_owned()).collect()
+}
+
+/// `cell` with its inline code spans removed.
+///
+/// `` `**Declared**` `` renders as literal asterisks inside code, not the bold
+/// marker, but a substring check still found it -- the same shape as the
+/// escaped-asterisk hole, one syntax over. Backtick runs are matched by
+/// length, per CommonMark: a span opened with N backticks closes on the next
+/// run of exactly N. An unterminated run is literal text, so it stays visible.
+///
+/// Deliberately *not* applied to the Component cell: the crate name lives in a
+/// code span there, so stripping them would erase the thing being read.
+fn outside_code_spans(cell: &str) -> String {
+    let mut visible = String::with_capacity(cell.len());
+    let mut rest = cell;
+    while let Some(start) = rest.find('`') {
+        visible.push_str(&rest[..start]);
+        let opener = &rest[start..];
+        let ticks = opener.chars().take_while(|&c| c == '`').count();
+        let body = &opener[ticks..];
+        match body.find(&"`".repeat(ticks)) {
+            Some(end) => rest = &body[end + ticks..],
+            None => {
+                visible.push_str(opener);
+                rest = "";
+            }
+        }
+    }
+    visible.push_str(rest);
+    visible
 }
 
 /// A component name hidden in an HTML comment does not become the declared
