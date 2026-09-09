@@ -976,6 +976,38 @@ fn the_files_tree_names_only_paths_that_exist() {
         "`## Files` names {missing:?}, which do not exist; {} paths checked",
         named.len(),
     );
+
+    let unrooted = unrooted_paths(root, &named);
+    assert!(
+        unrooted.is_empty(),
+        "`## Files` names {unrooted:?}, which resolve outside the repository \
+         through a symlink; existence must mean the repository ships it",
+    );
+}
+
+/// Entries that resolve outside the repository once symlinks are followed.
+///
+/// [`escaping_paths`] reads the path as written, which a symlink defeats: with
+/// a tracked `outside -> /etc`, the entry `outside/passwd` is neither absolute
+/// nor a `..` walk, so it was accepted -- and `exists()` follows the link, so
+/// the guard passed on a host file the repository does not ship. Lexical
+/// rejection and resolved rejection are different questions and both have to
+/// be asked.
+///
+/// A path that does not resolve at all is not reported here; that is the
+/// existence check's finding, and naming it twice would only obscure it.
+fn unrooted_paths<'a>(root: &Path, named: &'a [String]) -> Vec<&'a String> {
+    let Ok(real_root) = root.canonicalize() else {
+        return Vec::new();
+    };
+    named
+        .iter()
+        .filter(|p| {
+            root.join(p)
+                .canonicalize()
+                .is_ok_and(|real| !real.starts_with(&real_root))
+        })
+        .collect()
 }
 
 /// Entries that name something outside the repository.
@@ -1510,6 +1542,35 @@ fn a_marker_in_a_link_destination_is_not_a_declaration() {
     assert_eq!(
         outside_link_destinations("plain **Declared** text"),
         "plain **Declared** text",
+    );
+}
+
+/// A path that leaves the repository through a symlink is not in it.
+///
+/// `escaping_paths` reads the path as written, which a symlink defeats, and
+/// `exists()` follows the link -- so the guard passed on a host file the
+/// repository does not ship.
+#[cfg(unix)]
+#[test]
+fn a_path_through_a_symlink_out_of_the_repository_is_rejected() {
+    let base = std::env::temp_dir().join(format!("spikenaut-unrooted-{}", std::process::id()));
+    let repo = base.join("repo");
+    let elsewhere = base.join("elsewhere");
+    std::fs::create_dir_all(&repo).expect("create the fake repository root");
+    std::fs::create_dir_all(&elsewhere).expect("create the directory outside it");
+    std::fs::write(repo.join("inside.txt"), "").expect("write a file inside");
+    std::fs::write(elsewhere.join("outside.txt"), "").expect("write a file outside");
+    std::os::unix::fs::symlink("../elsewhere", repo.join("link")).expect("link out of the repo");
+
+    let named = ["inside.txt".to_owned(), "link/outside.txt".to_owned()];
+    let unrooted = unrooted_paths(&repo, &named);
+
+    std::fs::remove_dir_all(&base).expect("clean up");
+
+    assert_eq!(
+        unrooted,
+        vec![&"link/outside.txt".to_owned()],
+        "only the path that resolves outside the repository is rejected",
     );
 }
 
