@@ -675,8 +675,9 @@ fn readme_declared_components(section: &[String]) -> Vec<String> {
             continue;
         }
         rows += 1;
-        let relationship =
-            outside_link_destinations(&outside_code_spans(&without_html_comments(&cells[2])));
+        let relationship = outside_html_tags(&outside_link_destinations(&outside_code_spans(
+            &without_html_comments(&cells[2]),
+        )));
         if !relationship.contains("**Declared**") {
             continue;
         }
@@ -767,8 +768,19 @@ fn readme_section(readme: &str, heading: &str) -> Vec<String> {
     let lines: Vec<&str> = readme.lines().collect();
     let visible = visible_lines(&lines);
     let located = blank_code(&visible);
-    match heading_line(&located, heading) {
-        Some(at) => section_body(&visible, &located, at),
+    let found = heading_lines(&located, heading);
+    // A second visible `## Ecosystem` or `## Files` left the later section
+    // entirely unchecked: first-match location validated the good copy and
+    // `section_body` stopped before the duplicate, so a copy-paste or a merge
+    // could add a conflicting contract that nothing read. There is no useful
+    // way to choose between two, so having two is the failure.
+    assert!(
+        found.len() <= 1,
+        "`{heading}` appears {} times; a guarded section must be written once",
+        found.len(),
+    );
+    match found.first() {
+        Some(&at) => section_body(&visible, &located, at),
         None => Vec::new(),
     }
 }
@@ -857,10 +869,31 @@ fn is_indented_code(line: &str) -> bool {
 }
 
 /// The index of `heading`, ignoring any that appear inside a fenced block.
-fn heading_line(rendered: &[String], heading: &str) -> Option<usize> {
-    rendered
+fn heading_lines(located: &[String], heading: &str) -> Vec<usize> {
+    located
         .iter()
-        .position(|line| dedent(line).trim_end() == heading)
+        .enumerate()
+        .filter(|(_, line)| atx_heading(line).as_deref() == Some(heading))
+        .map(|(at, _)| at)
+        .collect()
+}
+
+/// `line` as an ATX heading, with the separator after its `#`s normalised.
+///
+/// Markdown accepts a tab there as readily as a space, and accepts more than
+/// one space. Matching the literal `"## Ecosystem"` meant `##\tEcosystem`
+/// was not found at all -- a loud failure on a README that renders the same --
+/// while `#\tAppendix` did not *end* a section, which is the silent half: the
+/// rest of the document stayed in the body and a table under that heading
+/// could be selected once the real one had drifted.
+fn atx_heading(line: &str) -> Option<String> {
+    let text = dedent(line).trim_end();
+    let hashes = text.len() - text.trim_start_matches('#').len();
+    if !(1..=6).contains(&hashes) {
+        return None;
+    }
+    let body = text.get(hashes..)?.strip_prefix([' ', '\t'])?;
+    Some(format!("{} {}", "#".repeat(hashes), body.trim_start()))
 }
 
 /// `line` with the indentation Markdown permits before an ATX heading removed.
@@ -887,12 +920,12 @@ fn section_body(visible: &[String], located: &[String], at: usize) -> Vec<String
     let ends = located[at + 1..]
         .iter()
         .position(|line| {
-            let heading = dedent(line);
             // A level-one heading closes a level-two section too. Stopping
             // only at `## ` left the rest of the document in the body, so a
             // component table under a later `# ` could be selected after the
             // real one had drifted.
-            heading.starts_with("# ") || heading.starts_with("## ")
+            atx_heading(line)
+                .is_some_and(|heading| heading.starts_with("# ") || heading.starts_with("## "))
         })
         .map_or(visible.len(), |offset| at + 1 + offset);
     visible[at + 1..ends].to_vec()
@@ -1148,7 +1181,15 @@ fn is_delimiter_row(line: &str) -> bool {
     cells.len() == COMPONENT_HEADER.len()
         && cells.iter().all(|cell| {
             let dashes = cell.trim().trim_start_matches(':').trim_end_matches(':');
-            !dashes.is_empty() && dashes.chars().all(|c| c == '-')
+            // Three, not one. GitHub's own documentation says three, every
+            // example in the GFM spec uses three, and the spec's normative
+            // text says "hyphens" without giving a minimum -- so this cannot
+            // be settled from the spec alone. Accepting one was the silent
+            // reading: if GitHub does require three, `|-|-|-|` renders as
+            // paragraph text and the guard went on parsing rows from a table
+            // that is no longer there. Requiring three is the loud reading,
+            // and its failure is a contributor typing two more dashes.
+            dashes.len() >= 3 && dashes.chars().all(|c| c == '-')
         })
 }
 
@@ -1312,6 +1353,35 @@ fn outside_link_destinations(text: &str) -> String {
             Some(end) => rest = &after[end + 1..],
             None => {
                 visible.push_str(&rest[at + 1..]);
+                return visible;
+            }
+        }
+    }
+    visible.push_str(rest);
+    visible
+}
+
+/// `text` with raw HTML tags, and so their attributes, removed.
+///
+/// `<span title="**Declared**">not declared</span>` renders as the words "not
+/// declared": an attribute value is never page text. The substring check found
+/// the marker in the invisible `title` and counted the row, so the rendered
+/// contract could say the opposite of what the guard recorded.
+///
+/// Markdown allows raw HTML in a table cell, so this is reachable without any
+/// unusual syntax. Only the tags go -- the text between them is what renders,
+/// and a marker written there is a real one.
+///
+/// An unterminated `<` is literal text (Markdown shows it), so it stays.
+fn outside_html_tags(text: &str) -> String {
+    let mut visible = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('<') {
+        visible.push_str(&rest[..at]);
+        match rest[at..].find('>') {
+            Some(end) => rest = &rest[at + end + 1..],
+            None => {
+                visible.push_str(&rest[at..]);
                 return visible;
             }
         }
@@ -1677,6 +1747,85 @@ fn a_path_through_a_symlink_out_of_the_repository_is_rejected() {
         vec![&"link/outside.txt".to_owned()],
         "only the path that resolves outside the repository is rejected",
     );
+}
+
+/// A marker inside a raw HTML attribute is not a declaration.
+///
+/// `<span title="**Declared**">not declared</span>` renders as "not declared".
+/// An attribute value is never page text, so a marker in one is not a marker.
+#[test]
+fn a_marker_in_an_html_attribute_is_not_a_declaration() {
+    assert_eq!(
+        outside_html_tags("<span title=\"**Declared**\">not declared</span>"),
+        "not declared",
+    );
+    assert_eq!(
+        outside_html_tags("**Declared** in `Cargo.toml`"),
+        "**Declared** in `Cargo.toml`",
+        "text outside any tag is untouched",
+    );
+    assert_eq!(
+        outside_html_tags("a < b and **Declared**"),
+        "a < b and **Declared**",
+        "an unterminated `<` is literal text",
+    );
+}
+
+/// A tab after the hashes still opens a heading.
+///
+/// Both directions matter: `##\tEcosystem` must be *found* as the section --
+/// missing it is a loud failure on a README that renders identically -- and
+/// `#\tAppendix` must *end* one, which is the silent half.
+#[test]
+fn a_tab_after_the_hashes_is_still_a_heading() {
+    assert_eq!(
+        atx_heading("##\tEcosystem").as_deref(),
+        Some("## Ecosystem")
+    );
+    assert_eq!(
+        atx_heading("##   Ecosystem").as_deref(),
+        Some("## Ecosystem")
+    );
+    assert_eq!(atx_heading("#\tAppendix").as_deref(), Some("# Appendix"));
+    assert_eq!(atx_heading("##Ecosystem"), None, "a separator is required");
+    assert_eq!(atx_heading("not a heading"), None);
+}
+
+/// A guarded section written twice is an error, not a first-match.
+///
+/// The later copy was read by nothing: location took the first, and the
+/// section ended before the duplicate. A copy-paste or a merge could add a
+/// second contract that no assertion ever saw.
+#[test]
+#[should_panic(expected = "a guarded section must be written once")]
+fn a_guarded_section_written_twice_is_rejected() {
+    let readme = concat!(
+        "## Ecosystem\n",
+        "\n",
+        "| Component | Role | Relationship |\n",
+        "|---|---|---|\n",
+        "| `real` | the table | **Declared** in `Cargo.toml` |\n",
+        "\n",
+        "## Ecosystem\n",
+        "\n",
+        "| Component | Role | Relationship |\n",
+        "|---|---|---|\n",
+        "| `other` | a second contract | **Declared** in `Cargo.toml` |\n",
+    );
+
+    readme_section(readme, "## Ecosystem");
+}
+
+/// A delimiter cell needs three dashes, not one.
+#[test]
+fn a_delimiter_cell_needs_three_dashes() {
+    assert!(is_delimiter_row("|---|---|---|"));
+    assert!(is_delimiter_row("| :--- | ---: | :---: |"));
+    assert!(
+        !is_delimiter_row("|-|-|-|"),
+        "one dash is not a delimiter row"
+    );
+    assert!(!is_delimiter_row("|--|--|--|"), "two dashes are not either");
 }
 
 /// An HTML comment opened on one line and closed on a later one hides every
