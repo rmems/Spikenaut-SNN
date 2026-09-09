@@ -1189,30 +1189,63 @@ fn table_cells(row: &str) -> Vec<String> {
 ///
 /// `` `**Declared**` `` renders as literal asterisks inside code, not the bold
 /// marker, but a substring check still found it -- the same shape as the
-/// escaped-asterisk hole, one syntax over. Backtick runs are matched by
-/// length, per CommonMark: a span opened with N backticks closes on the next
-/// run of exactly N. An unterminated run is literal text, so it stays visible.
+/// escaped-asterisk hole, one syntax over. An unterminated run is literal
+/// text, so it stays visible.
 ///
 /// Deliberately *not* applied to the Component cell: the crate name lives in a
 /// code span there, so stripping them would erase the thing being read.
 fn outside_code_spans(cell: &str) -> String {
+    let bytes = cell.as_bytes();
     let mut visible = String::with_capacity(cell.len());
-    let mut rest = cell;
-    while let Some(start) = rest.find('`') {
-        visible.push_str(&rest[..start]);
-        let opener = &rest[start..];
-        let ticks = opener.chars().take_while(|&c| c == '`').count();
-        let body = &opener[ticks..];
-        match body.find(&"`".repeat(ticks)) {
-            Some(end) => rest = &body[end + ticks..],
+    let mut at = 0;
+    while at < bytes.len() {
+        let Some(offset) = bytes[at..].iter().position(|&b| b == b'`') else {
+            break;
+        };
+        let open = at + offset;
+        visible.push_str(&cell[at..open]);
+        let ticks = backtick_run(bytes, open);
+        match closing_run(bytes, open + ticks, ticks) {
+            Some(close) => at = close + ticks,
             None => {
-                visible.push_str(opener);
-                rest = "";
+                visible.push_str(&cell[open..]);
+                return visible;
             }
         }
     }
-    visible.push_str(rest);
+    visible.push_str(&cell[at..]);
     visible
+}
+
+/// The length of the run of backticks beginning at `at`.
+fn backtick_run(bytes: &[u8], at: usize) -> usize {
+    bytes[at..].iter().take_while(|&&b| b == b'`').count()
+}
+
+/// Where the next run of *exactly* `ticks` backticks starts, at or after `from`.
+///
+/// Per CommonMark a span opened with N backticks closes only on a run of N --
+/// not on the first backtick of a longer one. Searching for the substring
+/// instead let a three-backtick run close a one-backtick span, which ended the
+/// span early and put the rest of the cell back on the visible side. A marker
+/// the reader sees rendered as code was then read as the **Declared** marker,
+/// so the README could lose its dependency contract with the sets still equal.
+/// A longer run is skipped whole rather than re-entered, so its interior
+/// backticks cannot be mistaken for a closer either.
+fn closing_run(bytes: &[u8], from: usize, ticks: usize) -> Option<usize> {
+    let mut at = from;
+    while at < bytes.len() {
+        if bytes[at] != b'`' {
+            at += 1;
+            continue;
+        }
+        let run = backtick_run(bytes, at);
+        if run == ticks {
+            return Some(at);
+        }
+        at += run;
+    }
+    None
 }
 
 /// A component name hidden in an HTML comment does not become the declared
@@ -1297,6 +1330,27 @@ fn a_comment_opened_on_the_heading_line_hides_the_section_below_it() {
         fenced_block(&readme_section(readme, "## Files")),
         vec!["visible/tree.rs".to_owned()],
         "a comment opened on the heading line must hide the fence below it",
+    );
+}
+
+/// A longer backtick run does not close a shorter inline code span.
+///
+/// Per CommonMark a span opened with N backticks closes on a run of exactly N.
+/// Accepting the first backtick of a longer run ended the span early and put
+/// the rest of the cell back on the visible side, so a marker the reader sees
+/// rendered as code was read as the **Declared** marker.
+#[test]
+fn a_longer_backtick_run_does_not_close_a_shorter_code_span() {
+    assert_eq!(
+        outside_code_spans("`x```**Declared**`"),
+        "",
+        "the three-backtick run cannot close a one-backtick span",
+    );
+    assert_eq!(outside_code_spans("a `b` c ``d`` e"), "a  c  e");
+    assert_eq!(
+        outside_code_spans("**Declared** in `Cargo.toml`"),
+        "**Declared** in ",
+        "a marker outside code stays visible",
     );
 }
 
