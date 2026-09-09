@@ -1405,7 +1405,7 @@ fn outside_html_tags(text: &str) -> String {
 ///   never as page text, so a marker inside one is not a marker; a `)` inside
 ///   one is not a close. `](url "a)b **Declared**")` ended at that `)`.
 ///
-/// A title has to be preceded by whitespace, which is what `in_destination`
+/// A title has to be preceded by whitespace, which is what `past_destination`
 /// tracks: a quote character inside the destination itself is an ordinary
 /// character and must not open one.
 fn closing_paren(after: &str) -> Option<usize> {
