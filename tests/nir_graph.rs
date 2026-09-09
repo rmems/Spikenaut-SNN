@@ -1244,12 +1244,22 @@ fn classify_tree_line(line: &str) -> Option<TreeLine<'_>> {
     // cannot express, and a failure message naming punctuation instead of the
     // entry. Stripping the glyph first leaves `#generated.rs` as the name, and
     // a leading `#` there is no longer preceded by anything.
+    // A conventional tree carries the depth of a child row in `\u{2502}`
+    // continuation prefixes rather than in spaces: `\u{2502}   \u{2514}\u{2500}\u{2500} name`.
+    // `trim_start` stops at the first one, so the entry glyph never matched
+    // and the whole row -- prefix included -- was reported as a missing path.
+    // Loud, but on a tree that renders correctly, which is the failure that
+    // gets a guard deleted rather than fixed. It became reachable the moment
+    // nested directories did, since that is how people write them.
+    let body = line.trim_start_matches([' ', '\t', '\u{2502}']);
     if let Some(entry) = TREE_ENTRY_GLYPHS
         .iter()
-        .find_map(|glyph| line.trim_start().strip_prefix(glyph))
+        .find_map(|glyph| body.strip_prefix(glyph))
     {
         let name = strip_annotation(entry).trim();
-        let indent = line.len() - line.trim_start().len();
+        // Bytes, not characters: `\u{2502}` is three of them. Only the ordering
+        // matters, and a deeper row always carries a longer prefix.
+        let indent = line.len() - body.len();
         return (!name.is_empty()).then_some(TreeLine::Nested { indent, name });
     }
     let trimmed = strip_annotation(line).trim();
@@ -2034,6 +2044,37 @@ fn a_nested_directory_prefixes_the_entries_below_it() {
             "src/json.rs".to_owned(),
         ],
         "depth decides the prefix, and returning to it clears the nesting",
+    );
+}
+
+/// A conventional tree carries depth in continuation glyphs, not spaces.
+///
+/// `\u{2502}   \u{2514}\u{2500}\u{2500} name` is how a nested tree is normally written. `trim_start`
+/// stopped at the first `\u{2502}`, so the entry glyph never matched and the whole
+/// row was reported as a missing path -- a loud failure on a tree that renders
+/// correctly, which is the kind that gets a guard deleted.
+#[test]
+fn a_continuation_glyph_is_indentation_not_a_name() {
+    let readme = concat!(
+        "## Files\n",
+        "\n",
+        "```text\n",
+        "src/\n",
+        "├── model/\n",
+        "│   └── tests.rs\n",
+        "└── json.rs\n",
+        "```\n",
+    );
+
+    assert_eq!(
+        files_tree_paths(&readme_section(readme, "## Files")),
+        vec![
+            "src/".to_owned(),
+            "src/model/".to_owned(),
+            "src/model/tests.rs".to_owned(),
+            "src/json.rs".to_owned(),
+        ],
+        "the continuation prefix is depth, and never part of the name",
     );
 }
 
