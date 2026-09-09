@@ -661,7 +661,7 @@ fn the_readme_dependency_table_agrees_with_the_manifest() {
 ///
 /// Every row has to be Component / Role / Relationship, so a table that grew a
 /// column fails here rather than being silently misparsed into agreement.
-fn readme_declared_components(section: &[&str]) -> Vec<String> {
+fn readme_declared_components(section: &[String]) -> Vec<String> {
     let mut declared: Vec<String> = Vec::new();
     let mut rows = 0usize;
     for line in component_table(section) {
@@ -762,38 +762,54 @@ fn visible_outside_comments(line: &str, open: &mut bool) -> String {
 /// parse from the wrong place and fail on a README whose real section was
 /// untouched. The same state keeps a `## ` inside the section's own fenced
 /// block from ending it early.
-fn readme_section<'a>(readme: &'a str, heading: &str) -> Vec<&'a str> {
+fn readme_section(readme: &str, heading: &str) -> Vec<String> {
     let lines: Vec<&str> = readme.lines().collect();
-    let rendered = rendered_lines(&lines);
-    match heading_line(&rendered, heading) {
-        Some(at) => section_body(&lines, &rendered, at),
+    let visible = visible_lines(&lines);
+    let located = blank_fenced(&visible);
+    match heading_line(&located, heading) {
+        Some(at) => section_body(&visible, &located, at),
         None => Vec::new(),
     }
 }
 
-/// Each line as a *scanner* should see it: HTML comments removed with state
-/// carried across lines, and every fenced line blanked.
+/// Every line with its HTML comments removed, state carried across lines.
 ///
-/// Three separate scans each grew their own partial version of this and each
-/// was found wrong in a different way -- a heading hidden in a comment was
-/// still located, a table inside a fenced example was still selected, and a
-/// section did not end where Markdown ends it. They are one question, so this
-/// answers it once. Blanking rather than dropping keeps indices aligned with
-/// the original slice, which is what lets the raw lines still be returned:
-/// `fenced_block` needs the fence contents, it is only *locating* that must
-/// ignore them.
-fn rendered_lines(lines: &[&str]) -> Vec<String> {
+/// This is what the whole guard reads. Comment state is a property of the
+/// *document*, not of any slice of it, so it is resolved once here and the
+/// scanners downstream never restart it. They used to: each ran its own
+/// `open = false` pass over the section it was handed, which meant a `<!--`
+/// opened on or above the section heading was invisible to them. A hidden
+/// table matching `Cargo.toml`, or a hidden fence naming files that exist,
+/// was then read as the real one while the rendered section drifted -- the
+/// defect fixed in `237ad44`, still reachable through the one line the slice
+/// did not include.
+///
+/// Fences are deliberately left intact: `fenced_block` needs their contents.
+/// Only *locating* has to ignore them, which is [`blank_fenced`].
+fn visible_lines(lines: &[&str]) -> Vec<String> {
     let mut open = false;
-    let mut fenced = false;
     lines
         .iter()
+        .map(|line| visible_outside_comments(line, &mut open))
+        .collect()
+}
+
+/// The same lines with every fenced line, and both fence markers, blanked.
+///
+/// Blanking rather than dropping keeps the indices aligned with the input, so
+/// a position found here indexes the un-blanked lines too. That is what lets a
+/// heading be located, and a section be ended, without a Markdown sample of a
+/// heading or a table being mistaken for the real thing.
+fn blank_fenced(visible: &[String]) -> Vec<String> {
+    let mut fenced = false;
+    visible
+        .iter()
         .map(|line| {
-            let visible = visible_outside_comments(line, &mut open);
-            if visible.trim_start().starts_with("```") {
+            if line.trim_start().starts_with("```") {
                 fenced = !fenced;
                 return String::new();
             }
-            if fenced { String::new() } else { visible }
+            if fenced { String::new() } else { line.clone() }
         })
         .collect()
 }
@@ -825,8 +841,8 @@ fn dedent(line: &str) -> &str {
 /// Fence state is tracked here too, so a `## ` inside the section's own fenced
 /// block -- a Markdown sample, a shell comment -- does not end the section
 /// early.
-fn section_body<'a>(lines: &[&'a str], rendered: &[String], at: usize) -> Vec<&'a str> {
-    let ends = rendered[at + 1..]
+fn section_body(visible: &[String], located: &[String], at: usize) -> Vec<String> {
+    let ends = located[at + 1..]
         .iter()
         .position(|line| {
             let heading = dedent(line);
@@ -836,8 +852,8 @@ fn section_body<'a>(lines: &[&'a str], rendered: &[String], at: usize) -> Vec<&'
             // real one had drifted.
             heading.starts_with("# ") || heading.starts_with("## ")
         })
-        .map_or(lines.len(), |offset| at + 1 + offset);
-    lines[at + 1..ends].to_vec()
+        .map_or(visible.len(), |offset| at + 1 + offset);
+    visible[at + 1..ends].to_vec()
 }
 
 /// A CRLF checkout, or a stray trailing space, must not make the dependency
@@ -943,7 +959,7 @@ fn escaping_paths(named: &[String]) -> Vec<&String> {
 /// box-drawing entry is a file in that directory, and any other line is a file
 /// at the repository root -- named with or without an extension, since
 /// `LICENSE` and `Makefile` are as much files as `config.json` is.
-fn files_tree_paths(section: &[&str]) -> Vec<String> {
+fn files_tree_paths(section: &[String]) -> Vec<String> {
     let mut dir = String::new();
     let mut paths = Vec::new();
     for line in fenced_block(section) {
@@ -972,18 +988,13 @@ fn files_tree_paths(section: &[&str]) -> Vec<String> {
 /// rendered README while every path and artifact check still passed against
 /// the hidden copy, so the guard would go silent at exactly the moment the
 /// documentation it guards disappeared.
-fn fenced_block(section: &[&str]) -> Vec<String> {
-    let mut open = false;
-    let visible: Vec<String> = section
+fn fenced_block(section: &[String]) -> Vec<String> {
+    section
         .iter()
-        .map(|line| visible_outside_comments(line, &mut open))
-        .collect();
-
-    visible
-        .into_iter()
         .skip_while(|line| !line.trim_start().starts_with("```"))
         .skip(1)
         .take_while(|line| !line.trim_start().starts_with("```"))
+        .cloned()
         .collect()
 }
 
@@ -1101,8 +1112,8 @@ fn is_delimiter_row(line: &str) -> bool {
 /// rendered one had drifted: the guard passed, reading a table nobody can see.
 /// That is the failure `fenced_block` already guards against for the file
 /// tree, fixed the same way.
-fn component_table(section: &[&str]) -> Vec<String> {
-    let visible = rendered_lines(section);
+fn component_table(section: &[String]) -> Vec<String> {
+    let visible = blank_fenced(section);
 
     let Some(header) = visible
         .iter()
@@ -1215,14 +1226,16 @@ fn outside_code_spans(cell: &str) -> String {
 /// the README advertised something else.
 #[test]
 fn a_commented_out_component_name_is_not_the_declared_one() {
-    let section = [
-        "| Component | Role | Relationship |",
-        "|---|---|---|",
-        "| <!-- `nir-rs` --> `replacement` | graph interchange | **Declared** |",
-    ];
+    let readme = concat!(
+        "## Ecosystem\n",
+        "\n",
+        "| Component | Role | Relationship |\n",
+        "|---|---|---|\n",
+        "| <!-- `nir-rs` --> `replacement` | graph interchange | **Declared** |\n",
+    );
 
     assert_eq!(
-        readme_declared_components(&section),
+        readme_declared_components(&readme_section(readme, "## Ecosystem")),
         vec!["replacement".to_owned()],
         "the declared crate must be the one a reader sees, not one inside a comment",
     );
@@ -1236,21 +1249,54 @@ fn a_commented_out_component_name_is_not_the_declared_one() {
 /// saying the documentation is accurate after the documentation is gone.
 #[test]
 fn a_fence_inside_an_html_comment_is_not_the_first_block() {
-    let section = [
-        "<!--",
-        "```text",
-        "hidden/tree.rs",
-        "```",
-        "-->",
-        "```text",
-        "visible/tree.rs",
-        "```",
-    ];
+    let readme = concat!(
+        "## Files\n",
+        "\n",
+        "<!--\n",
+        "```text\n",
+        "hidden/tree.rs\n",
+        "```\n",
+        "-->\n",
+        "```text\n",
+        "visible/tree.rs\n",
+        "```\n",
+    );
 
     assert_eq!(
-        fenced_block(&section),
+        fenced_block(&readme_section(readme, "## Files")),
         vec!["visible/tree.rs".to_owned()],
         "a commented-out fence must not be read as the section's tree",
+    );
+}
+
+/// A comment opened on the heading line still hides what follows it.
+///
+/// The heading renders -- its visible prefix is intact -- so it is found, and
+/// the section below it begins *inside* an open comment. Every scanner used to
+/// restart its own comment state from the section it was handed, which put the
+/// `<!--` one line out of reach and made the hidden fence the section's first
+/// block. Resolving comment state over the whole document before slicing is
+/// what closes it.
+#[test]
+fn a_comment_opened_on_the_heading_line_hides_the_section_below_it() {
+    let readme = concat!(
+        "## Files <!--\n",
+        "\n",
+        "```text\n",
+        "hidden/tree.rs\n",
+        "```\n",
+        "\n",
+        "-->\n",
+        "\n",
+        "```text\n",
+        "visible/tree.rs\n",
+        "```\n",
+    );
+
+    assert_eq!(
+        fenced_block(&readme_section(readme, "## Files")),
+        vec!["visible/tree.rs".to_owned()],
+        "a comment opened on the heading line must hide the fence below it",
     );
 }
 
