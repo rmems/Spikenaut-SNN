@@ -1550,10 +1550,17 @@ fn a_marker_in_a_link_destination_is_not_a_declaration() {
 /// `escaping_paths` reads the path as written, which a symlink defeats, and
 /// `exists()` follows the link -- so the guard passed on a host file the
 /// repository does not ship.
+///
+/// Built under `CARGO_TARGET_TMPDIR` rather than `std::env::temp_dir()`. The
+/// shared temp directory is world-writable with predictable names, so a test
+/// that creates a symlink there is itself the attack it is testing for -- and
+/// this one runs in CI. Cargo gives integration tests a private directory
+/// under `target/` for exactly this.
 #[cfg(unix)]
 #[test]
 fn a_path_through_a_symlink_out_of_the_repository_is_rejected() {
-    let base = std::env::temp_dir().join(format!("spikenaut-unrooted-{}", std::process::id()));
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("unrooted-paths");
+    let _ = std::fs::remove_dir_all(&base);
     let repo = base.join("repo");
     let elsewhere = base.join("elsewhere");
     std::fs::create_dir_all(&repo).expect("create the fake repository root");
