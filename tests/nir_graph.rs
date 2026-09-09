@@ -763,23 +763,45 @@ fn visible_outside_comments(line: &str, open: &mut bool) -> String {
 /// block from ending it early.
 fn readme_section<'a>(readme: &'a str, heading: &str) -> Vec<&'a str> {
     let lines: Vec<&str> = readme.lines().collect();
-    match heading_line(&lines, heading) {
-        Some(at) => section_body(&lines, at),
+    let rendered = rendered_lines(&lines);
+    match heading_line(&rendered, heading) {
+        Some(at) => section_body(&lines, &rendered, at),
         None => Vec::new(),
     }
 }
 
-/// The index of `heading`, ignoring any that appear inside a fenced block.
-fn heading_line(lines: &[&str], heading: &str) -> Option<usize> {
+/// Each line as a *scanner* should see it: HTML comments removed with state
+/// carried across lines, and every fenced line blanked.
+///
+/// Three separate scans each grew their own partial version of this and each
+/// was found wrong in a different way -- a heading hidden in a comment was
+/// still located, a table inside a fenced example was still selected, and a
+/// section did not end where Markdown ends it. They are one question, so this
+/// answers it once. Blanking rather than dropping keeps indices aligned with
+/// the original slice, which is what lets the raw lines still be returned:
+/// `fenced_block` needs the fence contents, it is only *locating* that must
+/// ignore them.
+fn rendered_lines(lines: &[&str]) -> Vec<String> {
+    let mut open = false;
     let mut fenced = false;
-    for (at, line) in lines.iter().enumerate() {
-        if line.trim_start().starts_with("```") {
-            fenced = !fenced;
-        } else if !fenced && dedent(line).trim_end() == heading {
-            return Some(at);
-        }
-    }
-    None
+    lines
+        .iter()
+        .map(|line| {
+            let visible = visible_outside_comments(line, &mut open);
+            if visible.trim_start().starts_with("```") {
+                fenced = !fenced;
+                return String::new();
+            }
+            if fenced { String::new() } else { visible }
+        })
+        .collect()
+}
+
+/// The index of `heading`, ignoring any that appear inside a fenced block.
+fn heading_line(rendered: &[String], heading: &str) -> Option<usize> {
+    rendered
+        .iter()
+        .position(|line| dedent(line).trim_end() == heading)
 }
 
 /// `line` with the indentation Markdown permits before an ATX heading removed.
@@ -802,18 +824,19 @@ fn dedent(line: &str) -> &str {
 /// Fence state is tracked here too, so a `## ` inside the section's own fenced
 /// block -- a Markdown sample, a shell comment -- does not end the section
 /// early.
-fn section_body<'a>(lines: &[&'a str], at: usize) -> Vec<&'a str> {
-    let mut fenced = false;
-    let mut body = Vec::new();
-    for line in &lines[at + 1..] {
-        if line.trim_start().starts_with("```") {
-            fenced = !fenced;
-        } else if !fenced && dedent(line).starts_with("## ") {
-            break;
-        }
-        body.push(*line);
-    }
-    body
+fn section_body<'a>(lines: &[&'a str], rendered: &[String], at: usize) -> Vec<&'a str> {
+    let ends = rendered[at + 1..]
+        .iter()
+        .position(|line| {
+            let heading = dedent(line);
+            // A level-one heading closes a level-two section too. Stopping
+            // only at `## ` left the rest of the document in the body, so a
+            // component table under a later `# ` could be selected after the
+            // real one had drifted.
+            heading.starts_with("# ") || heading.starts_with("## ")
+        })
+        .map_or(lines.len(), |offset| at + 1 + offset);
+    lines[at + 1..ends].to_vec()
 }
 
 /// A CRLF checkout, or a stray trailing space, must not make the dependency
@@ -1116,11 +1139,7 @@ fn is_delimiter_row(line: &str) -> bool {
 /// That is the failure `fenced_block` already guards against for the file
 /// tree, fixed the same way.
 fn component_table(section: &[&str]) -> Vec<String> {
-    let mut open = false;
-    let visible: Vec<String> = section
-        .iter()
-        .map(|line| visible_outside_comments(line, &mut open))
-        .collect();
+    let visible = rendered_lines(section);
 
     let Some(header) = visible
         .iter()
