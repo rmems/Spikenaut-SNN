@@ -393,9 +393,13 @@ fn renamed_package(line: &str) -> Option<String> {
     let rest = line[at + "package".len()..]
         .trim_start()
         .strip_prefix('=')?;
-    let quoted = rest.trim_start().strip_prefix('"')?;
-    let end = quoted.find('"')?;
-    Some(quoted[..end].to_owned())
+    let rest = rest.trim_start();
+    // TOML has two string spellings and Cargo accepts either, so reading only
+    // the basic form left `package = 'replacement'` resolving to its key.
+    let quote = rest.chars().next().filter(|&c| c == '"' || c == '\'')?;
+    let body = &rest[quote.len_utf8()..];
+    let end = body.find(quote)?;
+    Some(body[..end].to_owned())
 }
 
 /// The dependency-table kind, with any `[target.<cfg or triple>.…]` prefix
@@ -960,12 +964,35 @@ fn is_indented_code(line: &str) -> bool {
 
 /// The index of `heading`, ignoring any that appear inside a fenced block.
 fn heading_lines(located: &[String], heading: &str) -> Vec<usize> {
-    located
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| atx_heading(line).as_deref() == Some(heading))
-        .map(|(at, _)| at)
+    (0..located.len())
+        .filter(|&at| heading_at(located, at).as_deref() == Some(heading))
         .collect()
+}
+
+/// The heading the line at `at` is, in either of Markdown's two spellings.
+///
+/// A setext heading is its text with `===` or `---` underneath, and its level
+/// comes from which. Teaching only `opens_section` about that -- as the commit
+/// before this one did -- left the once-only check counting ATX copies alone,
+/// so a duplicate written setext was both *treated as a boundary* and *not
+/// counted*: the first section validated, the second read by nothing. Both
+/// questions now go through here, so neither can learn a syntax the other has
+/// not.
+fn heading_at(lines: &[String], at: usize) -> Option<String> {
+    if let Some(atx) = atx_heading(&lines[at]) {
+        return Some(atx);
+    }
+    let text = dedent(&lines[at]).trim();
+    if text.is_empty() {
+        return None;
+    }
+    let underline = lines.get(at + 1).filter(|next| is_setext_underline(next))?;
+    let hashes = if dedent(underline).trim_end().starts_with('=') {
+        "#"
+    } else {
+        "##"
+    };
+    Some(format!("{hashes} {text}"))
 }
 
 /// `line` as an ATX heading, with the separator after its `#`s normalised.
@@ -1042,19 +1069,8 @@ fn section_body(visible: &[String], located: &[String], at: usize) -> Vec<String
 /// left the rest of the document in the body, so a component table under a
 /// later `# ` could be selected after the real one had drifted.
 fn opens_section(body: &[String], offset: usize) -> bool {
-    if atx_heading(&body[offset])
+    heading_at(body, offset)
         .is_some_and(|heading| heading.starts_with("# ") || heading.starts_with("## "))
-    {
-        return true;
-    }
-    // Setext: `Appendix` underlined with `====` or `----` on the next line is
-    // a heading of level one or two, and Markdown ends the section there just
-    // as an ATX heading does. Delegating only to `atx_heading` meant a whole
-    // valid heading syntax did not close a section at all.
-    !body[offset].trim().is_empty()
-        && body
-            .get(offset + 1)
-            .is_some_and(|next| is_setext_underline(next))
 }
 
 /// Whether `line` is a setext underline -- all `=` or all `-`.
@@ -1548,7 +1564,8 @@ fn link_target(text: &str) -> Option<LinkSpan> {
     let end = if is_inline {
         closing_paren(after)?
     } else {
-        after.find(']')?
+        // An escaped bracket is a character in the label, not its close.
+        unescaped(after, ']')?
     };
     Some(LinkSpan {
         text_ends: at + 1,
@@ -1606,6 +1623,21 @@ fn tag_end(tag: &str) -> Option<usize> {
     })
 }
 
+/// The first `needle` in `text` that a backslash does not escape.
+fn unescaped(text: &str, needle: char) -> Option<usize> {
+    let mut escaped = false;
+    text.char_indices().find_map(|(at, ch)| {
+        if std::mem::take(&mut escaped) {
+            return None;
+        }
+        if ch == '\\' {
+            escaped = true;
+            return None;
+        }
+        (ch == needle).then_some(at)
+    })
+}
+
 /// The `)` that closes an inline link, given everything after its `](`.
 ///
 /// CommonMark puts three things between `](` and the closing `)`, and taking
@@ -1625,8 +1657,20 @@ fn tag_end(tag: &str) -> Option<usize> {
 /// tracks: a quote character inside the destination itself is an ordinary
 /// character and must not open one.
 fn closing_paren(after: &str) -> Option<usize> {
+    // CommonMark's angle-bracket destination -- `](<https://host/a)b>)` --
+    // holds its own parentheses: everything up to the closing `>` is
+    // destination text. Reading the first `)` as the close ended the link
+    // inside the URL and put the rest of it back on the visible side.
+    let lead = after.len() - after.trim_start().len();
+    let start = match after[lead..].strip_prefix('<') {
+        Some(inside) => lead + 1 + unescaped(inside, '>')? + 1,
+        None => 0,
+    };
     let mut scan = LinkScan::default();
-    after.char_indices().find_map(|(at, ch)| scan.step(at, ch))
+    after[start..]
+        .char_indices()
+        .find_map(|(at, ch)| scan.step(at, ch))
+        .map(|at| at + start)
 }
 
 /// The state [`closing_paren`] carries from one character to the next.
@@ -2263,6 +2307,62 @@ fn a_renamed_dependency_resolves_to_its_package() {
         vec!["nir-rs".to_owned()],
         "an ordinary dependency still reads as its key",
     );
+}
+
+/// A setext duplicate is the same heading, and must be counted as one.
+///
+/// The commit before this one taught `opens_section` about setext and left
+/// the once-only check reading ATX alone -- so a setext duplicate ended the
+/// first section *and* went uncounted, which is worse than either alone.
+#[test]
+fn a_setext_heading_is_the_same_heading() {
+    let setext = ["Ecosystem".to_owned(), "---------".to_owned()];
+    assert_eq!(heading_at(&setext, 0).as_deref(), Some("## Ecosystem"));
+
+    let h1 = ["Appendix".to_owned(), "========".to_owned()];
+    assert_eq!(
+        heading_at(&h1, 0).as_deref(),
+        Some("# Appendix"),
+        "`=` is level one"
+    );
+
+    let prose = ["just a line".to_owned(), "another".to_owned()];
+    assert_eq!(heading_at(&prose, 0), None);
+}
+
+/// Escapes and angle brackets do not end a link early.
+#[test]
+fn a_link_target_ends_where_commonmark_ends_it() {
+    assert_eq!(
+        outside_link_destinations(r"[not declared][label\]**Declared**]"),
+        "[not declared]",
+        "an escaped bracket is part of the reference label",
+    );
+    assert_eq!(
+        outside_link_destinations("[not declared](<https://example.invalid/)**Declared**>)"),
+        "[not declared]",
+        "an angle-bracketed destination holds its own parentheses",
+    );
+    assert_eq!(
+        outside_link_destinations("**Declared** [#8](https://example.invalid/x)"),
+        "**Declared** [#8]",
+        "an ordinary link is unaffected",
+    );
+}
+
+/// Cargo accepts either TOML string spelling for a rename.
+#[test]
+fn a_rename_is_read_in_both_toml_spellings() {
+    for manifest in [
+        "[dependencies]\naxon-encoder = { package = 'replacement' }\n",
+        "[dependencies]\naxon-encoder = { package = \"replacement\" }\n",
+    ] {
+        assert_eq!(
+            dependency_tables(manifest).1,
+            vec!["replacement".to_owned()],
+            "both quotings name the same package",
+        );
+    }
 }
 
 /// An HTML comment opened on one line and closed on a later one hides every
