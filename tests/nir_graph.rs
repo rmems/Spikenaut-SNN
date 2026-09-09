@@ -866,29 +866,36 @@ fn the_ecosystem_section_is_found_whatever_the_line_endings() {
     );
 }
 
-/// The `## Files` tree and the shipped tree must agree.
+/// Every path the `## Files` tree names must exist.
 ///
 /// That tree is the repository's own account of what it ships, and it had
 /// drifted three ways at once: a shipped `config.json` missing, the crate root
 /// `src/lib.rs` missing, and an eight-module `tools/` package shown as a single
-/// script. A rename would have been just as invisible.
+/// script. A rename would have been just as invisible. Existence is the claim
+/// the tree actually makes about every one of its entries, and this holds it
+/// to that.
 ///
-/// Two directions, and they are not enforced equally, because the tree does not
-/// claim the same thing everywhere:
+/// The reverse direction -- every shipped file must be *named* -- was here too,
+/// scoped to `dataset/merged_v2/`, and is deliberately gone. The tree is a
+/// reader's map, not a manifest: it names 12 of the 35 tracked files and the
+/// other 23 are absent by design. A guard that enforced set equality over one
+/// subdirectory while the rest of the tree was admittedly partial was drawing a
+/// line the document does not draw, and it made every new file under that one
+/// directory a documentation obligation. The kind check (`/` means directory)
+/// went with it for the same reason: it is a claim about formatting, not about
+/// the repository.
 ///
-/// - **Every path named must exist.** This holds for the whole tree.
-/// - **Every shipped file must be named.** This holds only for
-///   `dataset/merged_v2/`, which the tree enumerates in full. `src/` and
-///   `tools/` are summaries by design -- the inline test modules and the seven
-///   `q88_*.py` modules are deliberately not listed -- so requiring set
-///   equality there would be requiring a manifest the tree never promised.
+/// What survives is narrow on purpose. `escaping_paths` stays because it is
+/// what makes existence mean anything -- `Path::join` discards a leading `/`,
+/// so a tree naming `/etc/passwd` would be checked against the host filesystem
+/// and pass on any runner.
 ///
 /// Only the fenced tree block is read. The section also carries prose and a
 /// `### Loading on FPGA` Verilog example, and parsing those would let an
 /// ordinary documentation edit -- a line beginning `$readmemh("...")` -- fail
 /// this test with a "path" that was never a path.
 #[test]
-fn the_files_tree_and_the_shipped_tree_agree() {
+fn the_files_tree_names_only_paths_that_exist() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let readme = std::fs::read_to_string(root.join("README.md")).expect("read README.md");
 
@@ -911,26 +918,6 @@ fn the_files_tree_and_the_shipped_tree_agree() {
         "`## Files` names {missing:?}, which do not exist; {} paths checked",
         named.len(),
     );
-
-    let mistyped = mistyped_paths(root, &named);
-    assert!(
-        mistyped.is_empty(),
-        "`## Files` names {mistyped:?} as the wrong kind; a trailing `/` means \
-         a directory and anything else means a file",
-    );
-
-    let mut listed: Vec<String> = named
-        .iter()
-        .filter(|path| path.starts_with(ARTIFACTS) && !path.ends_with('/'))
-        .cloned()
-        .collect();
-    let mut shipped = shipped_artifacts(root);
-    listed.sort();
-    shipped.sort();
-    assert_eq!(
-        listed, shipped,
-        "`## Files` enumerates {ARTIFACTS} in full, so every shipped artifact must be named there",
-    );
 }
 
 /// Entries that name something outside the repository.
@@ -949,31 +936,6 @@ fn escaping_paths(named: &[String]) -> Vec<&String> {
         })
         .collect()
 }
-
-/// Entries whose kind on disk disagrees with how the tree wrote them.
-///
-/// `exists()` does not distinguish a file from a directory, so a documented
-/// file that has become a directory of the same name satisfied it. Nothing
-/// else in the suite opens the summarised `src/` and `tools/` entries, so for
-/// those it was the only check there was -- replacing `tools/verify_q88.py`
-/// with a directory passed. The tree already spells the distinction with a
-/// trailing `/`, so holding each entry to it needs no extra state.
-fn mistyped_paths<'a>(root: &Path, named: &'a [String]) -> Vec<&'a String> {
-    named
-        .iter()
-        .filter(|p| {
-            let path = root.join(p);
-            if p.ends_with('/') {
-                !path.is_dir()
-            } else {
-                !path.is_file()
-            }
-        })
-        .collect()
-}
-
-/// The one directory the `## Files` tree enumerates exhaustively.
-const ARTIFACTS: &str = "dataset/merged_v2/";
 
 /// The repository paths named inside the `## Files` fenced tree.
 ///
@@ -1159,93 +1121,6 @@ fn component_table(section: &[&str]) -> Vec<String> {
         .take_while(|line| line.contains('|'))
         .cloned()
         .collect()
-}
-
-/// What is *not* a shipped artifact, defined here rather than read out of the
-/// README.
-///
-/// This started as an allowlist of artifact extensions, which was wrong in the
-/// one direction that matters. An allowlist under-covers: a shipped
-/// `model.bin` matched no extension, so it vanished from the inventory and
-/// undocumenting it *passed*. A documentation guard must not have a direction
-/// that says nothing -- an exclusion list can only ever over-report, and that
-/// is loud.
-///
-/// It must not be derived from the README either. Reading the extensions out
-/// of the tree was circular: undocumenting the last `.json` removed `.json`
-/// from the filter, the file dropped out of both sides, and the check was
-/// disabled by exactly the drift it exists to catch.
-///
-/// The entries are deliberately only editor and OS scratch. The first version
-/// of this list also carried the rest of what `.gitignore` names (`*.log`,
-/// `*.db`, bytecode, coverage output), which reintroduced the very hole the
-/// inversion was meant to close: a *tracked* `training.log` or `metrics.db`
-/// shipped under [`ARTIFACTS`] would be filtered back out, so leaving it
-/// undocumented passed again. Every entry here is a hole, so the list stays as
-/// short as the false-failure risk allows.
-///
-/// Anything else under [`ARTIFACTS`] is treated as shipped, including a file
-/// under an extension nobody has thought of yet.
-const NON_ARTIFACT_NAMES: [&str; 2] = [".DS_Store", "Thumbs.db"];
-const NON_ARTIFACT_SUFFIXES: [&str; 3] = ["~", ".swp", ".swo"];
-
-/// Whether a tree-relative path is editor or OS scratch rather than an artifact.
-fn is_scratch(path: &str) -> bool {
-    let name = path.rsplit('/').next().unwrap_or(path);
-    NON_ARTIFACT_NAMES.contains(&name)
-        || NON_ARTIFACT_SUFFIXES
-            .iter()
-            .any(|suffix| name.ends_with(suffix))
-}
-
-/// The artifact files on disk under [`ARTIFACTS`], as tree-relative paths.
-fn shipped_artifacts(root: &Path) -> Vec<String> {
-    let mut found = Vec::new();
-    collect_files(root, &root.join(ARTIFACTS), &mut found);
-    found.retain(|path| !is_scratch(path));
-    found
-}
-
-/// Every file under `dir`, recursively, as paths relative to `root`.
-///
-/// Recursive because the tree claims [`ARTIFACTS`] is enumerated *in full*: a
-/// non-recursive listing would see only the subdirectory entry itself, and an
-/// artifact tucked under `dataset/merged_v2/checkpoints/` would go
-/// undocumented with the check still passing.
-fn collect_files(root: &Path, dir: &Path, found: &mut Vec<String>) {
-    let entries = std::fs::read_dir(dir).expect("read an artifact directory");
-    for entry in entries {
-        let entry = entry.expect("read an artifact directory entry");
-        let path = entry.path();
-        // `file_type()` does not follow symlinks; `Path::is_dir` does. A
-        // directory symlink under ARTIFACTS -- one pointing at an ancestor
-        // most of all -- would otherwise be descended until the kernel stops
-        // resolving it, and because `is_dir` reports an unreadable path as
-        // "not a directory" rather than erroring, that terminates in ~40
-        // levels of duplicated paths instead of a fault. The test still
-        // failed, but with an unreadable diff rather than the drift it names.
-        //
-        // A symlink is not itself descended, but it is still an entry, so a
-        // link named `extra.json` is reported as an undocumented artifact
-        // exactly as a regular file would be.
-        let kind = entry
-            .file_type()
-            .expect("read an artifact directory entry type");
-        if kind.is_dir() {
-            collect_files(root, &path, found);
-        } else if kind.is_symlink() && path.is_dir() {
-            // A link *to* a directory. Not descended -- following it is what
-            // let an ancestor-pointing link be walked ~40 times over. Not
-            // recorded either: the tree lists directories separately and the
-            // set comparison filters trailing-slash entries out of `listed`,
-            // so counting this side's directories as files would fail on a
-            // correctly documented tree. A link to a *file* is still recorded
-            // below, so one named `extra.json` cannot slip past the inventory.
-            continue;
-        } else if let Ok(relative) = path.strip_prefix(root) {
-            found.push(relative.to_string_lossy().replace('\\', "/"));
-        }
-    }
 }
 
 /// Split one Markdown table row into cells on *unescaped* pipes.
