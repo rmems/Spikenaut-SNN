@@ -20,12 +20,6 @@
 
 use neuromod::LifNeuron;
 
-/// crates.io version this integration was wired against.
-///
-/// `tests/neuromod_host.rs` asserts the lockfile resolves this exact `0.5.x`
-/// package from `registry+https://github.com/rust-lang/crates.io-index`.
-pub const NEUROMOD_CRATE_VERSION: &str = "0.5.2";
-
 /// A single host-side LIF cell wrapping `neuromod::LifNeuron`.
 ///
 /// The wrapper exists so this crate names the published type and the step

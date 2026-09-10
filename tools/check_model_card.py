@@ -110,10 +110,16 @@ CLAIMS: tuple[Claim, ...] = (
     Claim(
         name="neuromod-is-a-declared-dependency",
         why=(
-            "Cargo.toml declares neuromod from crates.io. The old "
+            "Cargo.toml declares neuromod from crates.io. A published "
+            "copy must name the crate and mark that Ecosystem row "
+            "**Declared**. Omitting neuromod entirely, the old "
             "'Published, but not a dependency' wording, or a plain "
             "'crates.io dependency' without the Declared marker, would "
             "contradict the manifest."
+        ),
+        required=(
+            "[`neuromod`]",
+            "| LIF engine, learning rules, neuromodulators | **Declared**",
         ),
         forbidden=(
             "Published, but **not** a dependency",

@@ -103,4 +103,4 @@ pub use graph::{
 };
 pub use kinetic::{KINETIC_SIGNALS_CRATE_VERSION, KineticError, KineticFeatures, KineticPipeline};
 pub use model::{MERGED_V2_PROVENANCE, ModelError, Neuron, SnnModel, is_q8_8, quantize_q8_8};
-pub use neuromod_host::{HostLif, NEUROMOD_CRATE_VERSION};
+pub use neuromod_host::HostLif;
