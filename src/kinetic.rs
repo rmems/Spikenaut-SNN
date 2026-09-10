@@ -72,7 +72,7 @@ pub const SMA_WINDOW: usize = 8;
 /// Ring-buffer capacity handed to [`VolEstimator::new`].
 pub const VOL_WINDOW: usize = 16;
 
-/// Causal history retained for Hurst, entropy, and moments.
+/// Causal history retained for Hurst, entropy, moments, and Hawkes events.
 ///
 /// [`compute_hurst`] needs at least 32 samples before it leaves the
 /// uninformative `H = 0.5` default; 64 gives it a short but legal window.
@@ -241,7 +241,8 @@ pub struct KineticPipeline {
     surprise_params: SurpriseParams,
     hawkes_params: HawkesParams,
     history: VecDeque<f64>,
-    event_times: Vec<f64>,
+    /// Anomaly event times for [`compute_hawkes`], capped like [`history`].
+    event_times: VecDeque<f64>,
     previous: Option<f64>,
     ticks: usize,
 }
@@ -259,7 +260,7 @@ impl KineticPipeline {
             surprise_params: SurpriseParams::default(),
             hawkes_params: HawkesParams::default(),
             history: VecDeque::with_capacity(HISTORY_WINDOW),
-            event_times: Vec::new(),
+            event_times: VecDeque::with_capacity(HISTORY_WINDOW),
             previous: None,
             ticks: 0,
         }
@@ -292,7 +293,7 @@ impl KineticPipeline {
         let z_score = ZScore::compute(raw, stats.mean, stats.variance.sqrt());
         let hurst = compute_hurst(window);
         let entropy = compute_shannon_entropy(window, ENTROPY_BINS);
-        let hawkes = compute_hawkes(&self.event_times, &self.hawkes_params);
+        let hawkes = compute_hawkes(self.event_times.make_contiguous(), &self.hawkes_params);
 
         self.previous = Some(raw);
         self.ticks += 1;
@@ -340,12 +341,15 @@ impl KineticPipeline {
         let Some(previous) = self.previous else {
             return (0.0, self.vol.rms());
         };
+        // kinetic-signals 0.4.0 already zeros surprise when either sample is
+        // <= 0, so this call is defined for non-positive pairs. The positivity
+        // gate below is only for log-return volatility and Hawkes events.
         let surprise = compute_surprise(raw, previous, &self.surprise_params);
         if previous > 0.0 && raw > 0.0 {
             self.vol.push((raw / previous).ln().abs() as f32);
             if detect_anomaly(&surprise, &self.surprise_params) {
                 let t = self.ticks as f64 * self.surprise_params.dt;
-                self.event_times.push(t);
+                push_capped(&mut self.event_times, t, HISTORY_WINDOW);
             }
         }
         (surprise.surprise, self.vol.rms())
@@ -358,16 +362,16 @@ impl Default for KineticPipeline {
     }
 }
 
-/// Drop the oldest sample when `history` reaches `cap`.
+/// Drop the oldest entry when `buf` reaches `cap`.
 ///
 /// A [`VecDeque`] keeps the eviction O(1). `Vec::remove(0)` would copy the
 /// whole window on every tick after fill; the kinetic-signals slice APIs then
 /// see a contiguous view via [`VecDeque::make_contiguous`].
-fn push_capped(history: &mut VecDeque<f64>, raw: f64, cap: usize) {
-    if history.len() == cap {
-        history.pop_front();
+fn push_capped(buf: &mut VecDeque<f64>, value: f64, cap: usize) {
+    if buf.len() == cap {
+        buf.pop_front();
     }
-    history.push_back(raw);
+    buf.push_back(value);
 }
 
 /// Affine map of a raw-unit value through [`RAW_RANGE`] into [`INPUT_RANGE`].
@@ -449,5 +453,32 @@ mod tests {
         assert_eq!(FEATURE_NAMES.len(), FEATURE_COUNT);
         let features = KineticPipeline::new().step(1.0).expect("finite");
         assert_eq!(features.as_array().len(), FEATURE_NAMES.len());
+    }
+
+    #[test]
+    fn non_positive_samples_yield_finite_zero_surprise() {
+        let mut pipeline = KineticPipeline::new();
+        assert_eq!(pipeline.step(100.0).expect("finite").surprise, 0.0);
+        let zeroed = pipeline.step(0.0).expect("zero is a finite sample");
+        assert!(zeroed.is_finite());
+        assert_eq!(zeroed.surprise, 0.0);
+        let negative = pipeline.step(-8.0).expect("negative is a finite sample");
+        assert!(negative.is_finite());
+        assert_eq!(negative.surprise, 0.0);
+        assert!(pipeline.step(120.0).expect("recovered").is_finite());
+    }
+
+    #[test]
+    fn hawkes_event_history_stays_capped() {
+        let mut pipeline = KineticPipeline::new();
+        // Alternate a calm level and a jump so nearly every transition is an
+        // anomaly and would otherwise grow `event_times` without bound.
+        for tick in 0..(HISTORY_WINDOW * 4) {
+            let raw = if tick % 2 == 0 { 100.0 } else { 220.0 };
+            let features = pipeline.step(raw).expect("finite");
+            assert!(features.is_finite(), "tick {tick}");
+        }
+        assert!(pipeline.event_times.len() <= HISTORY_WINDOW);
+        assert_eq!(pipeline.event_times.len(), HISTORY_WINDOW);
     }
 }
