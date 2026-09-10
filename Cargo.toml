@@ -28,4 +28,4 @@ publish = false
 [dependencies]
 axon-encoder = "0.4"
 kinetic-signals = "0.4"
-nir-rs = "0.4.2"
+nir-rs = "0.4.3"
