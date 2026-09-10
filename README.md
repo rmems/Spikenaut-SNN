@@ -238,6 +238,8 @@ src/                               # Rust, `spikenaut-snn`
 ├── kinetic.rs                     # Host-side kinetic-signals front end
                                    # upstream of encode.rs; does not
                                    # replace axon-encoder
+├── neuromod_host.rs               # Host-side neuromod 0.5 LifNeuron
+                                   # adapter; does not rewrite weights
 └── json.rs                        # Strict reader, so the dependency list
                                    # stays at what Cargo.toml declares
 ```
@@ -336,7 +338,7 @@ Spikenaut-SNN is a weights and model repository that now also carries a thin Rus
 | [`nir-rs`](https://crates.io/crates/nir-rs) 0.4.3 | NIR graph interchange | **Declared** in `Cargo.toml`, resolved from crates.io — [#8](https://github.com/rmems/Spikenaut-SNN/issues/8) |
 | [`kinetic-signals`](https://crates.io/crates/kinetic-signals) 0.4.0 | Causal temporal features (Hurst / Hawkes / surprise / volatility / entropy / EMA-SMA / Z-score / moments) | **Declared** in `Cargo.toml`, resolved from crates.io — host-side preprocessing **upstream of** `axon-encoder`; does not replace it. FPGA parity is not blocked: software and FPGA should see the same encoded sequence. RAW / KINETIC / HYBRID ablation remains open — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14) |
 | [`axon-encoder`](https://crates.io/crates/axon-encoder) 0.4.0 | Telemetry → spike encoding | **Declared** in `Cargo.toml`, resolved from crates.io — downstream of `kinetic-signals` — [#9](https://github.com/rmems/Spikenaut-SNN/issues/9) |
-| [`neuromod`](https://crates.io/crates/neuromod) 0.5.2 | LIF engine, learning rules, neuromodulators | Published, but **not** a dependency — `Cargo.toml` excludes it deliberately — [#5](https://github.com/rmems/Spikenaut-SNN/issues/5) |
+| [`neuromod`](https://crates.io/crates/neuromod) 0.5.2 | LIF engine, learning rules, neuromodulators | **Declared** from crates.io — host-side `LifNeuron` adapter only; does not rewrite weights, Distill, FPGA, or training — [#5](https://github.com/rmems/Spikenaut-SNN/issues/5) |
 | `silicon-bridge` | Q8.8 `.mem` export | Dependency once published — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
 | `synaptic-mesh` | Dale 80:20 polarity, 16-channel router | Dependency once published — [#16](https://github.com/rmems/Spikenaut-SNN/issues/16) |
 | `limbic-critic` | TD critic → neuromodulator adapter | Optional dependency once published — [#10](https://github.com/rmems/Spikenaut-SNN/issues/10) |

@@ -578,8 +578,8 @@ impl TelemetryEncoder {
     /// non-finite-frame check in [`encode_step`](Self::encode_step) -- the one
     /// guarantee this wrapper exists to add. The neuromodulator-gain entry
     /// points are therefore not reachable from here, which also keeps
-    /// `neuromod`-shaped surface out of a crate that deliberately does not
-    /// depend on it.
+    /// `neuromod`-shaped surface out of this module -- gain curves belong
+    /// to their own ticket.
     #[must_use]
     pub fn as_rate_encoder(&self) -> &RateEncoder {
         &self.inner

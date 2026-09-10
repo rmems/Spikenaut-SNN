@@ -20,7 +20,11 @@ publish = false
 #
 # axon-encoder: 0.4.x is experimental pre-1.0, so `"0.4"` is `>=0.4.0, <0.5.0`.
 # Default features are empty; the optional `serde` and `ndarray` features are
-# left off, and neuromod stays out of the tree on purpose.
+# left off.
+#
+# neuromod: 0.5.x is experimental pre-1.0, so `"0.5"` is `>=0.5.0, <0.6.0`.
+# Declared from crates.io (issue #5). Host-side adapter only — it does not
+# rewrite Spikenaut weights, Distill, FPGA, or training loops.
 #
 # kinetic-signals: same `"0.4"` bound. It is a causal temporal feature layer
 # *upstream* of axon-encoder (issue #14) and does not replace it. Host-side
@@ -28,4 +32,5 @@ publish = false
 [dependencies]
 axon-encoder = "0.4"
 kinetic-signals = "0.4"
+neuromod = "0.5"
 nir-rs = "0.4.3"

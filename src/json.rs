@@ -3,8 +3,9 @@
 //! Minimal RFC 8259 JSON reader.
 //!
 //! This repository deliberately keeps its dependency list minimal -- currently
-//! `nir-rs`, `axon-encoder`, and `kinetic-signals` -- so the model loader parses `snn_model.json`
-//! itself rather than pulling in a serde stack for one small, fixed-shape file.
+//! `nir-rs`, `axon-encoder`, `kinetic-signals`, and `neuromod` -- so the model
+//! loader parses `snn_model.json` itself rather than pulling in a serde stack
+//! for one small, fixed-shape file.
 //! The bound is the point, not the number: `tests/nir_graph.rs` asserts the
 //! manifest's exact *runtime* dependency set, so adopting a crate the library
 //! links against fails that test until the adoption is deliberate. Dev- and
