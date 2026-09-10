@@ -493,8 +493,9 @@ fn the_batch_path_rejects_non_finite_frames_too() {
 }
 
 /// Acceptance criterion from issue #9: `axon-encoder` resolves to 0.4.x from
-/// crates.io, not from a git or sibling-path pin, and it does not drag
-/// `neuromod` or `silicon-bridge` into the tree.
+/// crates.io, not from a git or sibling-path pin, and it does not depend on
+/// `neuromod` or `silicon-bridge`. `neuromod` is a sibling declared dep
+/// (issue #5), not a transitive of this encoder.
 #[test]
 fn axon_encoder_resolves_from_crates_io() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -518,12 +519,14 @@ fn axon_encoder_resolves_from_crates_io() {
         !lock.contains("source = \"git+") && !lock.contains("[[patch"),
         "every locked package must come from the registry",
     );
-    for forbidden in ["neuromod", "silicon-bridge"] {
-        assert!(
-            !lock.contains(&format!("name = \"{forbidden}\"")),
-            "{forbidden} must stay out of the dependency tree",
-        );
-    }
+    assert!(
+        !entry.contains("neuromod") && !entry.contains("silicon-bridge"),
+        "axon-encoder itself must not depend on neuromod or silicon-bridge, got:\n{entry}",
+    );
+    assert!(
+        !lock.contains("name = \"silicon-bridge\""),
+        "silicon-bridge must stay out of the dependency tree",
+    );
 }
 
 /// A rate above one expected spike per step emits the whole count, not one.

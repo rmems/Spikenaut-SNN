@@ -1,7 +1,8 @@
 [toolchain]
 # kinetic-signals 0.4.0 and nir-rs 0.4.3 declare rust-version = "1.98.1"
-# (edition 2024). axon-encoder 0.4.0 still declares 1.97.1; the pin is the
-# highest MSRV among crates.io dependencies so a stale default toolchain
-# fails at `rustup` resolution rather than deep inside dependency compilation.
+# (edition 2024). axon-encoder 0.4.0 and neuromod 0.5.2 still declare
+# 1.97.1; the pin is the highest MSRV among crates.io dependencies so a
+# stale default toolchain fails at `rustup` resolution rather than deep
+# inside dependency compilation. neuromod does not raise it.
 channel = "1.98.1"
 components = ["rustfmt", "clippy"]

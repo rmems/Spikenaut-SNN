@@ -19,7 +19,7 @@ updates:
 # Deliberately github-actions only. A `cargo` ecosystem here would open pull
 # requests against `[dependencies]`, and the suite already asserts that table
 # exactly: `nir_rs_resolves_from_crates_io` requires the runtime set to be
-# exactly axon-encoder and nir-rs, with nir-rs resolving to 0.4.x from the
+# axon-encoder, kinetic-signals, neuromod and nir-rs, each resolving from the
 # registry. A bot bump would fail it -- which is the test working -- but the
 # fix belongs in a commit that also updates the README's Ecosystem table and
 # the reasoning behind the pin, not in an automated one. `pip` is likewise

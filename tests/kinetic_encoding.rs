@@ -189,12 +189,14 @@ fn kinetic_signals_resolves_from_crates_io() {
         !lock.contains("source = \"git+") && !lock.contains("[[patch"),
         "every locked package must come from the registry",
     );
-    for forbidden in ["neuromod", "silicon-bridge"] {
-        assert!(
-            !lock.contains(&format!("name = \"{forbidden}\"")),
-            "{forbidden} must stay out of the dependency tree",
-        );
-    }
+    assert!(
+        !entry.contains("neuromod") && !entry.contains("silicon-bridge"),
+        "kinetic-signals itself must not depend on neuromod or silicon-bridge, got:\n{entry}",
+    );
+    assert!(
+        !lock.contains("name = \"silicon-bridge\""),
+        "silicon-bridge must stay out of the dependency tree",
+    );
 }
 
 fn replay(samples: &[f64]) -> Vec<[f64; FEATURE_COUNT]> {

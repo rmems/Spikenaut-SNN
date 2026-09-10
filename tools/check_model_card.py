@@ -108,12 +108,17 @@ CLAIMS: tuple[Claim, ...] = (
         forbidden=(STALE_INPUT_CHANNELS_ROW,),
     ),
     Claim(
-        name="neuromod-is-not-a-dependency",
+        name="neuromod-is-a-declared-dependency",
         why=(
-            "Cargo.toml excludes neuromod on purpose. Listing it as a plain "
-            "'crates.io dependency' contradicts the table's own Declared legend."
+            "Cargo.toml declares neuromod from crates.io. The old "
+            "'Published, but not a dependency' wording, or a plain "
+            "'crates.io dependency' without the Declared marker, would "
+            "contradict the manifest."
         ),
-        forbidden=("| LIF engine, learning rules, neuromodulators | crates.io dependency |",),
+        forbidden=(
+            "Published, but **not** a dependency",
+            "| LIF engine, learning rules, neuromodulators | crates.io dependency |",
+        ),
     ),
     Claim(
         name="moved-repositories",

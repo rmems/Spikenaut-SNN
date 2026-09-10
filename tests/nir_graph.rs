@@ -562,8 +562,8 @@ fn nir_rs_resolves_from_crates_io() {
     names.sort_unstable();
     assert_eq!(
         names,
-        ["axon-encoder", "kinetic-signals", "nir-rs"],
-        "`[dependencies]` must declare exactly axon-encoder, kinetic-signals and nir-rs, found: {names:?}",
+        ["axon-encoder", "kinetic-signals", "neuromod", "nir-rs"],
+        "`[dependencies]` must declare exactly axon-encoder, kinetic-signals, neuromod and nir-rs, found: {names:?}",
     );
 
     let lock_path: PathBuf = root.join("Cargo.lock");
@@ -671,12 +671,10 @@ fn off_grid_public_parameters_are_rejected() {
 ///
 /// This does not police the prose, and should not be read as if it did. A row
 /// that implies a dependency without using the marker reads as a
-/// non-dependency here and passes -- which is what the `neuromod` row did for
-/// as long as its relationship said "crates.io dependency" against a manifest
-/// saying it "stays out of the tree on purpose". That one was caught by
-/// reading, not by a test, and a rewording like it still would be. The marker
-/// is what this test makes load-bearing; the wording around it is review's
-/// job.
+/// non-dependency here and passes. The marker is what this test makes
+/// load-bearing; the wording around it is review's job. `neuromod` is now a
+/// **Declared** crates.io dependency (issue #5); a row that dropped the
+/// marker would fail the set equality below.
 #[test]
 fn the_readme_dependency_table_agrees_with_the_manifest() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
