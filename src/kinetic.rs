@@ -39,6 +39,7 @@
 //! unused width, not invented signals. The squash functions are this crate's;
 //! they are not part of kinetic-signals.
 
+use std::collections::VecDeque;
 use std::fmt;
 
 use axon_encoder::types::EncodedOutput;
@@ -239,7 +240,7 @@ pub struct KineticPipeline {
     vol: VolEstimator,
     surprise_params: SurpriseParams,
     hawkes_params: HawkesParams,
-    history: Vec<f64>,
+    history: VecDeque<f64>,
     event_times: Vec<f64>,
     previous: Option<f64>,
     ticks: usize,
@@ -257,7 +258,7 @@ impl KineticPipeline {
             vol: VolEstimator::new(VOL_WINDOW),
             surprise_params: SurpriseParams::default(),
             hawkes_params: HawkesParams::default(),
-            history: Vec::with_capacity(HISTORY_WINDOW),
+            history: VecDeque::with_capacity(HISTORY_WINDOW),
             event_times: Vec::new(),
             previous: None,
             ticks: 0,
@@ -286,10 +287,11 @@ impl KineticPipeline {
         push_capped(&mut self.history, raw, HISTORY_WINDOW);
 
         let (surprise, volatility) = self.observe_transition(raw);
-        let stats = compute_signal_stats(&self.history);
+        let window = self.history.make_contiguous();
+        let stats = compute_signal_stats(window);
         let z_score = ZScore::compute(raw, stats.mean, stats.variance.sqrt());
-        let hurst = compute_hurst(&self.history);
-        let entropy = compute_shannon_entropy(&self.history, ENTROPY_BINS);
+        let hurst = compute_hurst(window);
+        let entropy = compute_shannon_entropy(window, ENTROPY_BINS);
         let hawkes = compute_hawkes(&self.event_times, &self.hawkes_params);
 
         self.previous = Some(raw);
@@ -357,11 +359,15 @@ impl Default for KineticPipeline {
 }
 
 /// Drop the oldest sample when `history` reaches `cap`.
-fn push_capped(history: &mut Vec<f64>, raw: f64, cap: usize) {
+///
+/// A [`VecDeque`] keeps the eviction O(1). `Vec::remove(0)` would copy the
+/// whole window on every tick after fill; the kinetic-signals slice APIs then
+/// see a contiguous view via [`VecDeque::make_contiguous`].
+fn push_capped(history: &mut VecDeque<f64>, raw: f64, cap: usize) {
     if history.len() == cap {
-        history.remove(0);
+        history.pop_front();
     }
-    history.push(raw);
+    history.push_back(raw);
 }
 
 /// Affine map of a raw-unit value through [`RAW_RANGE`] into [`INPUT_RANGE`].
