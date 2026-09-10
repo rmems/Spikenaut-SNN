@@ -17,6 +17,10 @@
 //! (continuous → spikes)
 //! ```
 //!
+//! Unused adapter channels sit at the bottom of [`INPUT_RANGE`], which the
+//! existing encoder maps to [`crate::encode::BASE_RATE_HZ`] liveness ticks.
+//! That is unused width, not invented kinetic features and not a silent feed.
+//!
 //! This is the KINETIC arm of issue #14. RAW vs KINETIC vs HYBRID training
 //! and held-out Supervisor v3 metrics are out of scope here: this module
 //! only proves the published crate can sit in front of the existing encoder
@@ -35,9 +39,9 @@
 //!
 //! kinetic-signals returns named scalars, not a 16-wide axon frame. The
 //! adapter in [`KineticFeatures::to_encoder_frame`] maps a small first-pass
-//! set onto the existing encoder width and leaves unused channels at zero —
-//! unused width, not invented signals. The squash functions are this crate's;
-//! they are not part of kinetic-signals.
+//! set onto the existing encoder width and leaves unused channels at the
+//! encoder idle floor — unused width, not invented signals. The squash
+//! functions are this crate's; they are not part of kinetic-signals.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -166,7 +170,10 @@ pub struct KineticFeatures {
     pub hurst: f64,
     /// [`compute_shannon_entropy`] relative entropy on the causal window.
     pub entropy_relative: f64,
-    /// [`compute_hawkes`] intensity over anomaly events at times `≤ t`.
+    /// [`compute_hawkes`] post-event intensity at the last anomaly (`μ` if none).
+    ///
+    /// The 0.4.0 batch API evaluates at the last event time, so this value
+    /// stays put between anomalies rather than decaying on every tick.
     pub hawkes_intensity: f64,
     /// [`compute_signal_stats`] skewness on the causal window.
     pub skewness: f64,
@@ -202,9 +209,11 @@ impl KineticFeatures {
     /// Map the named features onto the 16-wide [`TelemetryEncoder`] frame.
     ///
     /// Channels 0–10 carry the first-pass set; 11–15 stay at the bottom of
-    /// [`INPUT_RANGE`] as unused width. Squashing is this adapter's, so a
-    /// kinetic-signals scalar that is already in `[0, 1]` (Hurst, relative
-    /// entropy, RMS volatility) is copied, not reshaped.
+    /// [`INPUT_RANGE`] as unused width. The #9 encoder maps that floor to
+    /// [`crate::encode::BASE_RATE_HZ`] — idle liveness, not silence.
+    /// Squashing is this adapter's, so a kinetic-signals scalar that is
+    /// already in `[0, 1]` (Hurst, relative entropy, RMS volatility) is
+    /// copied, not reshaped.
     #[must_use]
     pub fn to_encoder_frame(&self) -> [f32; CHANNEL_COUNT] {
         let (lo, hi) = INPUT_RANGE;
