@@ -150,7 +150,7 @@ What is left, then, is a 16-wide input in which five channels are always zero �
 **The v2 map is a proposal, not a fixed contract.** The replacement state contract is being defined in [#20](https://github.com/rmems/Spikenaut-SNN/issues/20), under one governing rule: logical state variables are *not* equivalent to physical SNN axons. Signals are never invented or duplicated just to fill 16 slots. Instead an explicit adapter sits between them:
 
 ```text
-raw state → state adapter → encoder → fixed-width SNN stimuli
+raw state → state adapter (optional kinetic-signals) → encoder → fixed-width SNN stimuli
 ```
 
 The adapter accepts a variable number of legitimate source signals, so the raw feature count can change without the input contract breaking. Every signal must declare its unit, source of truth, timestamp and sampling semantics, valid range, normalization, missing-value and staleness behavior, and provenance. Missing signals are masked, never silently zeroed.
@@ -235,6 +235,9 @@ src/                               # Rust, `spikenaut-snn`
 ├── encode.rs                      # Telemetry -> spikes, on the proposed
                                    # channel map; not a runtime, and not
                                    # the shipped weights' input contract
+├── kinetic.rs                     # Host-side kinetic-signals front end
+                                   # upstream of encode.rs; does not
+                                   # replace axon-encoder
 └── json.rs                        # Strict reader, so the dependency list
                                    # stays at what Cargo.toml declares
 ```
@@ -331,10 +334,10 @@ Spikenaut-SNN is a weights and model repository that now also carries a thin Rus
 | Component | Role | Relationship |
 |---|---|---|
 | [`nir-rs`](https://crates.io/crates/nir-rs) 0.4.2 | NIR graph interchange | **Declared** in `Cargo.toml`, resolved from crates.io — [#8](https://github.com/rmems/Spikenaut-SNN/issues/8) |
-| [`axon-encoder`](https://crates.io/crates/axon-encoder) 0.4.0 | Telemetry → spike encoding | **Declared** in `Cargo.toml`, resolved from crates.io — [#9](https://github.com/rmems/Spikenaut-SNN/issues/9) |
+| [`kinetic-signals`](https://crates.io/crates/kinetic-signals) 0.4.0 | Causal temporal features (Hurst / Hawkes / surprise / volatility / entropy / EMA-SMA / Z-score / moments) | **Declared** in `Cargo.toml`, resolved from crates.io — host-side preprocessing **upstream of** `axon-encoder`; does not replace it. FPGA parity is not blocked: software and FPGA should see the same encoded sequence. RAW / KINETIC / HYBRID ablation remains open — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14) |
+| [`axon-encoder`](https://crates.io/crates/axon-encoder) 0.4.0 | Telemetry → spike encoding | **Declared** in `Cargo.toml`, resolved from crates.io — downstream of `kinetic-signals` — [#9](https://github.com/rmems/Spikenaut-SNN/issues/9) |
 | [`neuromod`](https://crates.io/crates/neuromod) 0.5.2 | LIF engine, learning rules, neuromodulators | Published, but **not** a dependency — `Cargo.toml` excludes it deliberately — [#5](https://github.com/rmems/Spikenaut-SNN/issues/5) |
 | `silicon-bridge` | Q8.8 `.mem` export | Dependency once published — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
-| `kinetic-signals` | Feature math for channels 0–13 | Dependency once published — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14) |
 | `synaptic-mesh` | Dale 80:20 polarity, 16-channel router | Dependency once published — [#16](https://github.com/rmems/Spikenaut-SNN/issues/16) |
 | `limbic-critic` | TD critic → neuromodulator adapter | Optional dependency once published — [#10](https://github.com/rmems/Spikenaut-SNN/issues/10) |
 | `plasticity-lab` | Reproducible training loops | Only once it actually writes weight deltas — [#17](https://github.com/rmems/Spikenaut-SNN/issues/17) |

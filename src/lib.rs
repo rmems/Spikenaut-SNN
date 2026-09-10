@@ -20,12 +20,17 @@
 //!
 //! [`CHANNEL_MAP`]: encode::CHANNEL_MAP
 //!
-//! Its dependency list is deliberately minimal -- currently [`nir_rs`] and
-//! [`axon_encoder`], both from crates.io. The bound is the claim, not the
-//! number: `tests/nir_graph.rs` asserts the manifest's exact *runtime*
-//! dependency set, so adopting a crate this library links against fails that
-//! test until the adoption is deliberate. Dev- and build-dependencies are
-//! outside that set by design, and bounded by review rather than by CI.
+//! Its dependency list is deliberately minimal -- currently [`nir_rs`],
+//! [`axon_encoder`], and [`kinetic_signals`], all from crates.io. The bound is
+//! the claim, not the number: `tests/nir_graph.rs` asserts the manifest's exact
+//! *runtime* dependency set, so adopting a crate this library links against
+//! fails that test until the adoption is deliberate. Dev- and
+//! build-dependencies are outside that set by design, and bounded by review
+//! rather than by CI.
+//!
+//! [`kinetic`] is host-side preprocessing *upstream* of [`encode`]: raw
+//! telemetry → kinetic-signals features → the existing [`TelemetryEncoder`].
+//! It does not replace axon-encoder.
 //!
 //! The graph [`load_default_lif_graph`] returns is the shipped `merged_v2`
 //! artifact ([`model::MERGED_V2_PROVENANCE`]): 16-neuron LIF with known
@@ -82,6 +87,7 @@
 pub mod encode;
 pub mod graph;
 pub mod json;
+pub mod kinetic;
 pub mod model;
 
 pub use encode::{CHANNEL_COUNT, CHANNEL_MAP, NonFiniteFrame, TelemetryEncoder, TelemetrySource};
@@ -89,4 +95,5 @@ pub use graph::{
     Provenance, build_lif_graph, build_lif_graph_with_provenance, load_default_lif_graph,
     resistance_from_decay,
 };
+pub use kinetic::{KINETIC_SIGNALS_CRATE_VERSION, KineticError, KineticFeatures, KineticPipeline};
 pub use model::{MERGED_V2_PROVENANCE, ModelError, Neuron, SnnModel, is_q8_8, quantize_q8_8};
