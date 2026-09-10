@@ -104,3 +104,13 @@ jobs:
         run: |
           python3 tools/verify_q88.py --self-test
           python3 -m tools.verify_q88 --self-test
+
+      # Only the repository's own copy is checked here. The Hugging Face card
+      # is not in this checkout and fetching it would put a network call in a
+      # job whose whole point is that it needs nothing installed and nothing
+      # reachable. Checking that copy is a `--card` run a maintainer makes
+      # before publishing; see the tool's docstring.
+      - name: Check the model card carries the landed corrections
+        run: |
+          python3 tools/check_model_card.py
+          python3 tools/check_model_card.py --self-test
