@@ -72,6 +72,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "kinetic-signals"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "283f1bac80af9db929c73eb2e9e9a29a0b01d214efd818ca3f5d9f9b4acda7f9"
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -79,9 +85,9 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "nir-rs"
-version = "0.4.2"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ed73b1c3c81aea3a0339788123328b27f8ed11734a6c0a7466ccbfff9f2de53"
+checksum = "0d8fed797cf76b6b07a5624a426956e8d5c88cb889e01764ebb7dfde069d7f86"
 dependencies = [
  "indexmap",
  "thiserror",
@@ -133,6 +139,7 @@ name = "spikenaut-snn"
 version = "0.1.0"
 dependencies = [
  "axon-encoder",
+ "kinetic-signals",
  "nir-rs",
 ]
 

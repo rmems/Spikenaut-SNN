@@ -562,8 +562,8 @@ fn nir_rs_resolves_from_crates_io() {
     names.sort_unstable();
     assert_eq!(
         names,
-        ["axon-encoder", "nir-rs"],
-        "`[dependencies]` must declare exactly axon-encoder and nir-rs, found: {names:?}",
+        ["axon-encoder", "kinetic-signals", "nir-rs"],
+        "`[dependencies]` must declare exactly axon-encoder, kinetic-signals and nir-rs, found: {names:?}",
     );
 
     let lock_path: PathBuf = root.join("Cargo.lock");

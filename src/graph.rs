@@ -32,7 +32,7 @@
 //! `Linear` node the graph is identical for every possible weight matrix, and
 //! nothing a consumer runs would depend on what the model learned.
 //!
-//! `nir-rs` 0.4.2 offers both `Affine` (`y = W x + b`) and `Linear`
+//! `nir-rs` 0.4.3 offers both `Affine` (`y = W x + b`) and `Linear`
 //! (`y = W x`). The model stores no bias, so `Linear` is the exact fit; an
 //! `Affine` node would have to invent a zero bias tensor that is not part of
 //! the artifact.
