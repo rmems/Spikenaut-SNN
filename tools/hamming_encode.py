@@ -15,7 +15,6 @@ try:
         FROZEN_MINMAX,
         LIVE_COLUMNS,
         N_INPUTS,
-        ParseError,
         TEST_EP_HI,
         TEST_EP_LO,
         TRAIN_EP_HI,
@@ -24,6 +23,7 @@ try:
         VAL_EP_LO,
         f32,
     )
+    from .q88_core import ParseError
 except ImportError:
     from hamming_const import (
         EMBARGO_EPS,
@@ -31,7 +31,6 @@ except ImportError:
         FROZEN_MINMAX,
         LIVE_COLUMNS,
         N_INPUTS,
-        ParseError,
         TEST_EP_HI,
         TEST_EP_LO,
         TRAIN_EP_HI,
@@ -40,6 +39,7 @@ except ImportError:
         VAL_EP_LO,
         f32,
     )
+    from q88_core import ParseError
 
 EPISODE_RE = re.compile(r"^gpu-(\d{6})$")
 

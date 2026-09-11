@@ -1,4 +1,4 @@
-"""Shared Hamming constants and Q8.8 imports (script vs ``-m``).
+"""Shared Hamming constants (script vs ``-m``).
 
 Kept small and import-cycle-free so encode / LIF / measure can all
 depend on it. ``SelfTestFailure`` is not imported here -- only the CLI
@@ -11,29 +11,9 @@ import struct
 from pathlib import Path
 
 try:  # package import: `python3 -m tools.measure_hamming`
-    from .q88_core import (
-        N_INPUTS,
-        N_NEURONS,
-        ParseError,
-        Q88RangeError,
-        as_finite_float,
-        decode_q88,
-        encode_q88_hex,
-        load_model,
-        parse_mem,
-    )
+    from .q88_core import N_INPUTS, N_NEURONS
 except ImportError:  # direct script: `python3 tools/measure_hamming.py`
-    from q88_core import (
-        N_INPUTS,
-        N_NEURONS,
-        ParseError,
-        Q88RangeError,
-        as_finite_float,
-        decode_q88,
-        encode_q88_hex,
-        load_model,
-        parse_mem,
-    )
+    from q88_core import N_INPUTS, N_NEURONS
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_DIR = REPO_ROOT / "tools" / "fixtures" / "hamming_method"
@@ -48,6 +28,9 @@ LIVE_COLUMNS: tuple[str, ...] = (
     "mem_clock_mhz",
 )
 N_LIVE_AXONS = len(LIVE_COLUMNS)
+# Unused encoder width: axons 5-15 stay 0. Ties the live-column count
+# to the 16-wide bank so N_INPUTS is not a re-export-only import.
+UNUSED_AXONS = tuple(range(N_LIVE_AXONS, N_INPUTS))
 
 # Frozen minmax from v3 state_telemetry train, sha lineage 74acdd0f.
 # Do not refit on val/test. Copied from SynapticDistill.jl FROZEN_MINMAX.

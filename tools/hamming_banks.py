@@ -5,33 +5,29 @@ from __future__ import annotations
 from pathlib import Path
 
 try:
-    from .hamming_const import (
-        N_INPUTS,
-        N_NEURONS,
-        ParseError,
-        Q88RangeError,
-        as_finite_float,
-        decode_q88,
-        encode_q88_hex,
-        f32,
-        load_model,
-        parse_mem,
-    )
+    from .hamming_const import N_INPUTS, N_NEURONS, f32
     from .hamming_lif import LifBank
-except ImportError:
-    from hamming_const import (
-        N_INPUTS,
-        N_NEURONS,
+    from .q88_core import (
         ParseError,
         Q88RangeError,
         as_finite_float,
         decode_q88,
         encode_q88_hex,
-        f32,
         load_model,
         parse_mem,
     )
+except ImportError:
+    from hamming_const import N_INPUTS, N_NEURONS, f32
     from hamming_lif import LifBank
+    from q88_core import (
+        ParseError,
+        Q88RangeError,
+        as_finite_float,
+        decode_q88,
+        encode_q88_hex,
+        load_model,
+        parse_mem,
+    )
 
 
 def hidden_json_mem_mismatches(model: dict, mem_dir: Path) -> tuple[int, int]:

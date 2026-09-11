@@ -16,9 +16,9 @@ try:
         N_EXC,
         N_INPUTS,
         N_NEURONS,
-        ParseError,
         f32,
     )
+    from .q88_core import ParseError
 except ImportError:
     from hamming_const import (
         E_WTA_MIN,
@@ -27,9 +27,9 @@ except ImportError:
         N_EXC,
         N_INPUTS,
         N_NEURONS,
-        ParseError,
         f32,
     )
+    from q88_core import ParseError
 
 
 @dataclass

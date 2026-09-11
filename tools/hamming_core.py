@@ -49,11 +49,8 @@ try:
         I_DRIVE_EXP024,
         LIVE_COLUMNS,
         N_EXC,
-        N_LIVE_AXONS,
-        N_INPUTS,
-        ParseError,
         SHIPPED_DIR,
-        encode_q88_hex,
+        UNUSED_AXONS,
         f32,
     )
     from .hamming_encode import (
@@ -66,6 +63,7 @@ try:
         select_samples,
     )
     from .hamming_lif import LifBank, apply_kwta, hamming_bits, keep_lif_step
+    from .q88_core import ParseError, encode_q88_hex
 except ImportError:
     from hamming_banks import (
         bank_from_json,
@@ -82,11 +80,8 @@ except ImportError:
         I_DRIVE_EXP024,
         LIVE_COLUMNS,
         N_EXC,
-        N_LIVE_AXONS,
-        N_INPUTS,
-        ParseError,
         SHIPPED_DIR,
-        encode_q88_hex,
+        UNUSED_AXONS,
         f32,
     )
     from hamming_encode import (
@@ -99,6 +94,7 @@ except ImportError:
         select_samples,
     )
     from hamming_lif import LifBank, apply_kwta, hamming_bits, keep_lif_step
+    from q88_core import ParseError, encode_q88_hex
 
 # Re-export the public harness surface so callers keep importing hamming_core.
 __all__ = (
@@ -269,44 +265,33 @@ def _refuse_exp024_on_shipped(condition: str, mem_dir: Path) -> None:
 
 def _unused_axon_notes(samples: list[Sample]) -> list[str]:
     unused = [
-        c
+        axon
         for sample in samples
-        for c in range(N_LIVE_AXONS, N_INPUTS)
-        if sample.stim[c] != 0.0
+        for axon in UNUSED_AXONS
+        if sample.stim[axon] != 0.0
     ]
     if not unused:
         return []
     return [f"UNUSED-AXON LEAK: {len(unused)} non-zero values on axons 5-15"]
 
 
-def _protocol_for(
-    *,
-    condition: str,
-    weights_label: str,
-    float_json: Path,
-    mem_dir: Path,
-    split: str,
-    seed: str,
-    n_ticks: int,
-    i_drive: float,
-    samples: list[Sample],
-) -> Protocol:
+def _protocol_for(ctx: dict, samples: list[Sample]) -> Protocol:
     return Protocol(
-        condition=condition,
-        weights_label=weights_label,
-        float_json=float_json,
-        mem_dir=mem_dir,
+        condition=ctx["condition"],
+        weights_label=ctx["weights_label"],
+        float_json=ctx["float_json"],
+        mem_dir=ctx["mem_dir"],
         encoder=(
             f"legal 5-ch train-scaled; frozen minmax lineage {FROZEN_LINEAGE}; "
             "axons 0-4 = "
             + ", ".join(LIVE_COLUMNS)
             + "; unused axons 5-15 = 0"
         ),
-        split=split,
+        split=ctx["split"],
         episodes=_episode_span(samples),
-        seed=seed,
-        n_ticks=n_ticks,
-        i_drive=i_drive,
+        seed=ctx["seed"],
+        n_ticks=len(samples),
+        i_drive=ctx["i_drive"],
         stepper=(
             "Python keep-LIF in tools/hamming_core.py "
             "(v = decay*v + W@stim; decay is KEEP). "
@@ -345,15 +330,16 @@ def measure(
     mismatches, compared = hidden_json_mem_mismatches(model, mem_dir)
     return Measurement(
         protocol=_protocol_for(
-            condition=condition,
-            weights_label=weights_label,
-            float_json=float_json,
-            mem_dir=mem_dir,
-            split=split,
-            seed=seed,
-            n_ticks=len(samples),
-            i_drive=i_drive,
-            samples=samples,
+            {
+                "condition": condition,
+                "weights_label": weights_label,
+                "float_json": float_json,
+                "mem_dir": mem_dir,
+                "split": split,
+                "seed": seed,
+                "i_drive": i_drive,
+            },
+            samples,
         ),
         k_none=run_pair(float_bank, q88_bank, samples, None),
         k_4=run_pair(float_bank, q88_bank, samples, 4),
