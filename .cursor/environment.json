@@ -1,0 +1,8 @@
+{
+  "name": "Spikenaut-SNN",
+  "user": "ubuntu",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "install": "rustup show\ncargo fetch --locked\ncargo build --locked --all-targets"
+}
