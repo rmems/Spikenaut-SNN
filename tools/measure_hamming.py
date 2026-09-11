@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -82,6 +83,19 @@ except ImportError:  # direct script: `python3 tools/measure_hamming.py`
         pin_matches,
         report,
     )
+
+
+def _finite_float(text: str) -> float:
+    """argparse type: a finite float. Rejects nan / inf / -inf."""
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid float value: {text!r}") from exc
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError(
+            f"--i-drive must be a finite number, got {text!r}"
+        )
+    return value
 
 
 _CLI_ARGUMENTS: tuple[tuple[tuple[str, ...], dict], ...] = (
@@ -161,7 +175,7 @@ _CLI_ARGUMENTS: tuple[tuple[tuple[str, ...], dict], ...] = (
     (
         ("--i-drive",),
         {
-            "type": float,
+            "type": _finite_float,
             "default": None,
             "help": (
                 "Dale I bias added to neurons 12-15 (default 0 on the method "
@@ -222,22 +236,16 @@ def _print_pin_failures(failures: list[str]) -> None:
         print(f"  {item}", file=sys.stderr)
 
 
-def _check_method_pin(measurement, expect_path: Path | None) -> int:
-    if expect_path is None:
-        return 0
-    failures = pin_matches(measurement, load_expected(expect_path))
-    if not failures:
-        return 0
-    _print_pin_failures(failures)
-    return 1
-
-
 def _publish(kwargs: dict, expect_path: Path | None) -> int:
+    expected = load_expected(expect_path) if expect_path is not None else None
     measurement = measure(**kwargs)
     ok = report(measurement)
-    pin_rc = _check_method_pin(measurement, expect_path)
-    if pin_rc:
-        return pin_rc
+    if expected is None:
+        return 0 if ok else 1
+    failures = pin_matches(measurement, expected)
+    if failures:
+        _print_pin_failures(failures)
+        return 1
     return 0 if ok else 1
 
 
@@ -261,12 +269,30 @@ def _method_kwargs(args: argparse.Namespace) -> tuple[dict, dict]:
     return kwargs, paths
 
 
+def _custom_method_paths(args: argparse.Namespace) -> bool:
+    return any(
+        path is not None for path in (args.jsonl, args.float_json, args.mem_dir)
+    )
+
+
 def _method_expect_path(args: argparse.Namespace, paths: dict) -> Path | None:
     if args.expect_json is not None:
         return args.expect_json
-    if args.jsonl is None and args.float_json is None:
+    if not _custom_method_paths(args):
         return paths["expect"]
     return None
+
+
+def _refuse_unpinned_custom_fixture(args: argparse.Namespace, condition: str) -> None:
+    if condition != CONDITION_METHOD_FIXTURE:
+        return
+    if _custom_method_paths(args) and args.expect_json is None:
+        raise ParseError(
+            "condition method-fixture with custom --jsonl / --float-json / "
+            "--mem-dir needs --expect-json (a method pin, not a Hamming "
+            "gate). Refusing to label custom artifacts as the in-repo "
+            "fixture without a pin."
+        )
 
 
 def _require_jsonl(args: argparse.Namespace, condition: str) -> None:
@@ -327,6 +353,7 @@ def _external_kwargs(args: argparse.Namespace, condition: str) -> dict:
 
 def _run_measurement(args: argparse.Namespace) -> int:
     condition = _infer_condition(args)
+    _refuse_unpinned_custom_fixture(args, condition)
     if condition == CONDITION_METHOD_FIXTURE:
         kwargs, paths = _method_kwargs(args)
         return _publish(kwargs, _method_expect_path(args, paths))

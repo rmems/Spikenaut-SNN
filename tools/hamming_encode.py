@@ -84,7 +84,12 @@ def _live_number(record: dict, column: str) -> float | None:
             f"{column}: expected a finite number or null, got "
             f"{type(raw).__name__} {raw!r}"
         )
-    number = float(raw)
+    try:
+        number = float(raw)
+    except (OverflowError, ValueError) as exc:
+        raise ParseError(
+            f"{column}: {raw!r} is not representable as a float ({exc})"
+        ) from exc
     if not math.isfinite(number):
         raise ParseError(f"{column}: expected a finite number, got {raw!r}")
     return number
@@ -164,7 +169,7 @@ def load_jsonl(path: Path) -> list[dict]:
 
 
 def _refuse_non_v3(record: dict, lineno: int) -> None:
-    if is_forbidden_derived(record) and not is_state_telemetry(record):
+    if is_forbidden_derived(record):
         raise ParseError(
             f"line {lineno}: refusing *_derived / tick_rate sensors "
             "(closed form of tick_rate). Legal live columns: "

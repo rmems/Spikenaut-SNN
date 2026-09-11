@@ -118,6 +118,29 @@ def _condition_tail(measurement: Measurement) -> list[str]:
         ]
     if proto.condition != "exp-024":
         return []
+    return _exp024_delta_lines(measurement)
+
+
+def _exp024_comparable(measurement: Measurement) -> bool:
+    """True only for the recorded exp-024 test holdout (n=117653)."""
+    proto = measurement.protocol
+    claimed = EXP024_CLAIMED
+    if proto.split != "test":
+        return False
+    if proto.n_ticks != claimed["n_ticks"]:
+        return False
+    if measurement.k_none.n_ticks != claimed["n_ticks"]:
+        return False
+    episodes = proto.episodes
+    return "gpu-000170" in episodes and "gpu-000198" in episodes
+
+
+def _exp024_delta_lines(measurement: Measurement) -> list[str]:
+    if not _exp024_comparable(measurement):
+        return [
+            "exp-024 deltas are N/A (not comparable): this run is not the",
+            "recorded holdout (test gpu-000170..198, n=117653).",
+        ]
     claimed = EXP024_CLAIMED
     delta_none = measurement.k_none.pct - claimed["k_none_pct"]
     delta_4 = measurement.k_4.pct - claimed["k_4_pct"]

@@ -30,6 +30,7 @@ Standard library only.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -375,6 +376,34 @@ def measure_method_fixture() -> Measurement:
     )
 
 
+_PIN_FLOAT_KEYS = ("k_none_pct", "k_none_bits", "k_4_pct", "k_4_bits")
+_PIN_INT_KEYS = ("n_ticks", "hidden_json_mem_mismatches")
+
+
+def _pin_number(payload: dict, key: str, where: str, *, as_int: bool) -> float | int:
+    if key not in payload:
+        raise ParseError(f"{where}: missing pin field {key!r}")
+    raw = payload[key]
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ParseError(
+            f"{where}: {key} must be a finite number, got "
+            f"{type(raw).__name__} {raw!r}"
+        )
+    try:
+        number = float(raw)
+    except (OverflowError, ValueError) as exc:
+        raise ParseError(
+            f"{where}: {key} is not a finite number ({exc})"
+        ) from exc
+    if not math.isfinite(number):
+        raise ParseError(f"{where}: {key} must be a finite number, got {raw!r}")
+    if not as_int:
+        return number
+    if number != int(number):
+        raise ParseError(f"{where}: {key} must be an integer, got {raw!r}")
+    return int(number)
+
+
 def load_expected(path: Path) -> dict:
     if not path.is_file():
         raise ParseError(f"missing expected pin: {path}")
@@ -384,6 +413,11 @@ def load_expected(path: Path) -> dict:
         raise ParseError(f"{path.name}: {exc}") from exc
     if not isinstance(payload, dict):
         raise ParseError(f"{path.name}: expected a JSON object")
+    where = path.name
+    for key in _PIN_FLOAT_KEYS:
+        payload[key] = _pin_number(payload, key, where, as_int=False)
+    for key in _PIN_INT_KEYS:
+        payload[key] = _pin_number(payload, key, where, as_int=True)
     return payload
 
 

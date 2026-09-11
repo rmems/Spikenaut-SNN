@@ -79,9 +79,9 @@ def _require(condition: bool, message: str) -> None:
 
 _require.calls = 0
 
-SELF_TEST_SECTIONS = 10
-EXPECTED_REQUIRE_CALLS = 23
-EXPECTED_GUARD_CHECKS = 5
+SELF_TEST_SECTIONS = 16
+EXPECTED_REQUIRE_CALLS = 33
+EXPECTED_GUARD_CHECKS = 9
 
 
 def _v3_row(episode: str, mem_util: float = 75.0, temp: float = 0.0) -> dict:
@@ -304,6 +304,138 @@ def keep_lif_and_kwta_unit(stream) -> int:
     return 6
 
 
+def _cli_main():
+    try:
+        from .measure_hamming import main
+    except ImportError:
+        from measure_hamming import main
+
+    return main
+
+
+def nonfinite_i_drive_is_rejected(stream) -> int:
+    """11 -- nan / inf / -inf --i-drive is a CLI error, never a quiet OK."""
+    print("11. non-finite --i-drive is rejected", file=stream)
+    main = _cli_main()
+    for token in ("nan", "inf", "-inf"):
+        try:
+            rc = main([f"--i-drive={token}"])
+        except SystemExit as exc:
+            rc = exc.code
+        _require(rc not in (0, None), f"--i-drive={token} exited {rc}")
+    return 3
+
+
+def malformed_expect_json_is_parse_error(tmp: Path, stream) -> int:
+    """12 -- missing/nonnumeric pin fields are ParseError, not KeyError."""
+    print("12. malformed --expect-json is ParseError", file=stream)
+    missing = tmp / "missing_fields.json"
+    missing.write_text("{}", encoding="utf-8")
+    try:
+        load_expected(missing)
+    except ParseError as exc:
+        _require("k_none_pct" in str(exc), f"wrong error: {exc}")
+    else:
+        raise SelfTestFailure("empty expect-json did not raise ParseError")
+    bad = tmp / "nonnumeric.json"
+    bad.write_text(
+        json.dumps(
+            {
+                "k_none_pct": "nope",
+                "k_none_bits": 2.0,
+                "k_4_pct": 100.0,
+                "k_4_bits": 3.0,
+                "n_ticks": 4,
+                "hidden_json_mem_mismatches": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        load_expected(bad)
+    except ParseError as exc:
+        _require("k_none_pct" in str(exc), f"wrong error: {exc}")
+    else:
+        raise SelfTestFailure("nonnumeric expect-json did not raise ParseError")
+    return 4
+
+
+def custom_method_fixture_without_pin_refused(stream) -> int:
+    """13 -- method-fixture + custom --mem-dir without a pin is exit 2."""
+    print("13. method-fixture + custom --mem-dir without pin is refused", file=stream)
+    rc = _cli_main()(
+        ["--condition", "method-fixture", "--mem-dir", str(SHIPPED_DIR)]
+    )
+    _require(rc == 2, f"custom method-fixture exited {rc}, expected 2")
+    return 1
+
+
+def overflowing_live_number_is_parse_error(stream) -> int:
+    """14 -- a huge live-column int is ParseError, not OverflowError."""
+    print("14. overflowing live column is ParseError (not OverflowError)", file=stream)
+    row = _v3_row("gpu-000000")
+    row["mem_util_pct"] = 10**1000
+    try:
+        select_samples([row], "all")
+    except OverflowError as exc:
+        raise SelfTestFailure("overflow leaked OverflowError") from exc
+    except ParseError as exc:
+        _require("mem_util_pct" in str(exc), f"wrong error: {exc}")
+    else:
+        raise SelfTestFailure("overflowing live column was accepted")
+    return 2
+
+
+def mixed_live_forbidden_refused(stream) -> int:
+    """15 -- a live row plus a forbidden derived sensor is refused."""
+    print("15. live + forbidden derived row is ParseError", file=stream)
+    row = _v3_row("gpu-000000")
+    row["tick_rate"] = 1.0
+    try:
+        select_samples([row], "all")
+    except ParseError as exc:
+        _require("tick_rate" in str(exc) or "derived" in str(exc), f"wrong error: {exc}")
+    else:
+        raise SelfTestFailure("mixed live+forbidden row was accepted")
+    return 2
+
+
+def exp024_delta_suppressed_for_wrong_split(stream) -> int:
+    """16 -- exp-024 deltas are N/A unless the recorded holdout matches."""
+    print("16. exp-024 deltas are N/A on a different holdout", file=stream)
+    try:
+        from .hamming_report import render
+    except ImportError:
+        from hamming_report import render
+
+    proto = Protocol(
+        condition="exp-024",
+        weights_label="synthetic train split",
+        float_json=FIXTURE_DIR / "snn_model.json",
+        mem_dir=FIXTURE_DIR,
+        encoder="synthetic",
+        split="train",
+        episodes="gpu-000000",
+        seed="123",
+        n_ticks=4,
+        i_drive=0.05,
+        stepper="synthetic",
+        compared="synthetic",
+    )
+    scored = KResult(k=None, n_ticks=4, disagree_ticks=1, mean_bits=1.0, pct=10.0)
+    fake = Measurement(
+        protocol=proto,
+        k_none=scored,
+        k_4=KResult(k=4, n_ticks=4, disagree_ticks=1, mean_bits=1.0, pct=20.0),
+        hidden_json_mem_mismatches=0,
+        hidden_compared=256,
+    )
+    text = "\n".join(render(fake))
+    _require("N/A" in text or "not comparable" in text, f"deltas not marked N/A: {text}")
+    _require("delta_pct=" not in text, "subtracted exp-024 deltas on train split")
+    return 2
+
+
 def _scenarios() -> tuple[tuple[Callable[..., int], ...], tuple[Callable[..., int], ...]]:
     standalone = (
         method_fixture_matches_pin,
@@ -313,11 +445,17 @@ def _scenarios() -> tuple[tuple[Callable[..., int], ...], tuple[Callable[..., in
         unused_axons_stay_zero,
         empty_report_refuses,
         keep_lif_and_kwta_unit,
+        nonfinite_i_drive_is_rejected,
+        custom_method_fixture_without_pin_refused,
+        overflowing_live_number_is_parse_error,
+        mixed_live_forbidden_refused,
+        exp024_delta_suppressed_for_wrong_split,
     )
     tempdir = (
         empty_holdout_is_parse_error,
         malformed_jsonl_is_parse_error,
         unlabeled_merged_v2_refused_as_exp024,
+        malformed_expect_json_is_parse_error,
     )
     return standalone, tempdir
 
@@ -370,8 +508,11 @@ def self_test(stream=sys.stdout) -> bool:
         "The harness rejects an empty holdout, malformed JSONL, a missing "
         "episode_id,\ninterleaved episodes, a wrong method pin, and unlabeled "
         "merged_v2 as exp-024;\nunused axons stay 0; report() refuses a 0-tick "
-        "result; keep-LIF + K-WTA unit\nvectors hold; and the in-repo method "
-        "fixture still matches its pin.",
+        "result; keep-LIF + K-WTA unit\nvectors hold; non-finite --i-drive, "
+        "malformed expect-json, overflowing live\ncolumns, mixed forbidden "
+        "sensors, and unpinned custom method-fixture paths\nare refused; "
+        "exp-024 deltas stay N/A on a different holdout; and the in-repo\n"
+        "method fixture still matches its pin.",
         file=stream,
     )
     return True
