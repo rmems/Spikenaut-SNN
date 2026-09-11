@@ -33,8 +33,15 @@ RUN useradd --create-home --shell /bin/bash ubuntu \
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
+# The Cloud Agent install/terminal shells do not inherit this image's ENV PATH,
+# so the rustup proxies are also symlinked onto a PATH dir every shell already
+# has and exported from a login profile. Without this, `install` runs before
+# PATH is set and fails with `rustup: command not found`.
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --no-modify-path --default-toolchain 1.98.1 --profile minimal -c rustfmt -c clippy \
-    && chown -R ubuntu:ubuntu "$RUSTUP_HOME" "$CARGO_HOME"
+    && chown -R ubuntu:ubuntu "$RUSTUP_HOME" "$CARGO_HOME" \
+    && ln -sf /usr/local/cargo/bin/* /usr/local/bin/ \
+    && printf 'export RUSTUP_HOME=%s\nexport CARGO_HOME=%s\nexport PATH=%s/bin:$PATH\n' \
+        "$RUSTUP_HOME" "$CARGO_HOME" "$CARGO_HOME" > /etc/profile.d/rust.sh
 
 USER ubuntu
