@@ -56,6 +56,7 @@ try:  # package import: `python3 -m tools.measure_hamming`
         CONDITION_EXP024,
         CONDITION_METHOD_FIXTURE,
         CONDITION_SHIPPED,
+        FIXTURE_DIR,
         I_DRIVE_EXP024,
         ParseError,
         Q88RangeError,
@@ -72,6 +73,7 @@ except ImportError:  # direct script: `python3 tools/measure_hamming.py`
         CONDITION_EXP024,
         CONDITION_METHOD_FIXTURE,
         CONDITION_SHIPPED,
+        FIXTURE_DIR,
         I_DRIVE_EXP024,
         ParseError,
         Q88RangeError,
@@ -216,11 +218,22 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _under_dir(path: Path, root: Path) -> bool:
+    resolved = path.resolve()
+    root = root.resolve()
+    return resolved == root or root in resolved.parents
+
+
+def _provided_artifact_paths(args: argparse.Namespace) -> list[Path]:
+    return [p for p in (args.jsonl, args.float_json, args.mem_dir) if p is not None]
+
+
 def _infer_condition(args: argparse.Namespace) -> str:
     """Pick a condition without silently calling the shipped ramp exp-024."""
     if args.condition is not None:
         return args.condition
-    if args.jsonl is None and args.float_json is None and args.mem_dir is None:
+    provided = _provided_artifact_paths(args)
+    if not provided or all(_under_dir(path, FIXTURE_DIR) for path in provided):
         return CONDITION_METHOD_FIXTURE
     if args.mem_dir is not None and args.mem_dir.resolve() == SHIPPED_DIR.resolve():
         return CONDITION_SHIPPED
@@ -377,8 +390,7 @@ def main(argv: list[str] | None = None) -> int:
             except ImportError:
                 from hamming_selftest import self_test
 
-            self_test()
-            return 0
+            return 0 if self_test() else 1
         return _run_measurement(args)
     except SelfTestFailure as exc:
         print(f"\nSELF-TEST FAILED: {exc}", file=sys.stderr)

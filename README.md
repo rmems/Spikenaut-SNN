@@ -224,7 +224,7 @@ dataset/merged_v2/
 tools/                             # Python package, standard library only
 ├── verify_q88.py                  # Q8.8 encoding verifier (#4)
 └── measure_hamming.py             # float-vs-Q8.8 Hamming holdout (#39):
-                                   # keep-LIF stepper used only here;
+                                   # CLI; keep-LIF stepper is hamming_core.py;
                                    # --self-test proves it can fail.
                                    # Measurement, not a pass/fail gate.
 
@@ -247,8 +247,9 @@ src/                               # Rust, `spikenaut-snn`
 The artifacts are the product; the code exists to check them and to hand them
 to consumers in a standard form. The Rust crate still does not run the
 network — `Neuron::membrane_potential` is decoded and never advanced.
-`tools/measure_hamming.py` is the documented exception: a standard-library
-**keep-LIF** stepper used only to publish float-vs-Q8.8 Hamming on a holdout
+`tools/measure_hamming.py` is the documented exception: it publishes
+float-vs-Q8.8 Hamming on a holdout via a standard-library **keep-LIF**
+stepper in `tools/hamming_core.py`
 ([#39](https://github.com/rmems/Spikenaut-SNN/issues/39)). That is not a
 claim `src/` executes spikes, and it is not a Hamming pass/fail gate — the
 tolerance is blocked on the output/decision contract

@@ -64,7 +64,7 @@ try:
         select_samples,
     )
     from .hamming_lif import LifBank, apply_kwta, hamming_bits, keep_lif_step
-    from .q88_core import ParseError, encode_q88_hex
+    from .q88_core import ParseError, encode_q88_hex, read_utf8_text
 except ImportError:
     from hamming_banks import (
         bank_from_json,
@@ -95,7 +95,7 @@ except ImportError:
         select_samples,
     )
     from hamming_lif import LifBank, apply_kwta, hamming_bits, keep_lif_step
-    from q88_core import ParseError, encode_q88_hex
+    from q88_core import ParseError, encode_q88_hex, read_utf8_text
 
 # Re-export the public harness surface so callers keep importing hamming_core.
 __all__ = (
@@ -106,6 +106,7 @@ __all__ = (
     "FIXTURE_DIR",
     "FROZEN_LINEAGE",
     "I_DRIVE_EXP024",
+    "KResult",
     "LifBank",
     "LIVE_COLUMNS",
     "Measurement",
@@ -131,6 +132,7 @@ __all__ = (
     "measure_method_fixture",
     "method_fixture_paths",
     "pin_matches",
+    "run_pair",
     "select_samples",
 )
 
@@ -254,13 +256,20 @@ def _episode_span(samples: list[Sample]) -> str:
     return f"{ids[0]}..{ids[-1]} ({len(ids)} episodes)"
 
 
-def _refuse_exp024_on_shipped(condition: str, mem_dir: Path) -> None:
-    if condition == CONDITION_EXP024 and mem_dir.resolve() == SHIPPED_DIR.resolve():
+def _refuse_exp024_on_shipped(
+    condition: str, mem_dir: Path, float_json: Path
+) -> None:
+    if condition != CONDITION_EXP024:
+        return
+    shipped = SHIPPED_DIR.resolve()
+    mem_hit = mem_dir.resolve() == shipped
+    float_hit = float_json.resolve().parent == shipped
+    if mem_hit or float_hit:
         raise ParseError(
             "condition exp-024 refuses dataset/merged_v2: that is the shipped "
             "ramp, not the exp-023 PASS Distill knobs scratch. Pass the "
-            "scratch --mem-dir, or use --condition shipped-merged-v2 to "
-            "label a different condition."
+            "scratch --mem-dir / --float-json, or use --condition "
+            "shipped-merged-v2 to label a different condition."
         )
 
 
@@ -323,7 +332,7 @@ def measure(
     weights_label: str,
 ) -> Measurement:
     """Compare float-JSON vs Q8.8-decoded banks on a holdout JSONL."""
-    _refuse_exp024_on_shipped(condition, mem_dir)
+    _refuse_exp024_on_shipped(condition, mem_dir, float_json)
     samples = select_samples(load_jsonl(jsonl), split)
     _require_samples(samples, split)
     float_bank, model = bank_from_json(float_json, "float-json", i_drive)
@@ -408,7 +417,7 @@ def load_expected(path: Path) -> dict:
     if not path.is_file():
         raise ParseError(f"missing expected pin: {path}")
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(read_utf8_text(path))
     except json.JSONDecodeError as exc:
         raise ParseError(f"{path.name}: {exc}") from exc
     if not isinstance(payload, dict):
@@ -418,6 +427,12 @@ def load_expected(path: Path) -> dict:
         payload[key] = _pin_number(payload, key, where, as_int=False)
     for key in _PIN_INT_KEYS:
         payload[key] = _pin_number(payload, key, where, as_int=True)
+    cond = payload.get("condition")
+    if cond != CONDITION_METHOD_FIXTURE:
+        raise ParseError(
+            f"{where}: pin condition must be {CONDITION_METHOD_FIXTURE!r}, "
+            f"got {cond!r}"
+        )
     return payload
 
 

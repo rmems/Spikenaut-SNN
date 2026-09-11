@@ -80,8 +80,8 @@ def _require(condition: bool, message: str) -> None:
 _require.calls = 0
 
 SELF_TEST_SECTIONS = 16
-EXPECTED_REQUIRE_CALLS = 33
-EXPECTED_GUARD_CHECKS = 9
+EXPECTED_REQUIRE_CALLS = 34
+EXPECTED_GUARD_CHECKS = 10
 
 
 def _v3_row(episode: str, mem_util: float = 75.0, temp: float = 0.0) -> dict:
@@ -153,11 +153,11 @@ def malformed_jsonl_is_parse_error(tmp: Path, stream) -> int:
             i_drive=0.0,
             weights_label="self-test bad jsonl",
         )
-    except ParseError:
-        pass
+    except ParseError as exc:
+        _require("not a JSON object" in str(exc), f"wrong error: {exc}")
     else:
         raise SelfTestFailure("malformed JSONL did not raise ParseError")
-    return 1
+    return 2
 
 
 def missing_episode_id_is_parse_error(stream) -> int:
@@ -322,7 +322,7 @@ def nonfinite_i_drive_is_rejected(stream) -> int:
             rc = main([f"--i-drive={token}"])
         except SystemExit as exc:
             rc = exc.code
-        _require(rc not in (0, None), f"--i-drive={token} exited {rc}")
+        _require(rc == 2, f"--i-drive={token} exited {rc}, expected 2")
     return 3
 
 
@@ -347,6 +347,7 @@ def malformed_expect_json_is_parse_error(tmp: Path, stream) -> int:
                 "k_4_bits": 3.0,
                 "n_ticks": 4,
                 "hidden_json_mem_mismatches": 2,
+                "condition": "method-fixture",
             }
         ),
         encoding="utf-8",
@@ -383,7 +384,7 @@ def overflowing_live_number_is_parse_error(stream) -> int:
         _require("mem_util_pct" in str(exc), f"wrong error: {exc}")
     else:
         raise SelfTestFailure("overflowing live column was accepted")
-    return 2
+    return 3
 
 
 def mixed_live_forbidden_refused(stream) -> int:

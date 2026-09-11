@@ -30,6 +30,23 @@ except ImportError:
     )
 
 
+def _require_hidden_shape(neurons, entries, weights_name: str) -> None:
+    expected = N_NEURONS * N_INPUTS
+    if len(entries) != expected:
+        raise ParseError(f"{weights_name}: {len(entries)} words, expected {expected}")
+    if not isinstance(neurons, list) or len(neurons) != N_NEURONS:
+        got = 0 if not isinstance(neurons, list) else len(neurons)
+        raise ParseError(f"snn_model.json: {got} neurons, expected {N_NEURONS}")
+
+
+def _row_weights(neuron: dict, index: int) -> list:
+    weights = neuron["weights"]
+    if not isinstance(weights, list) or len(weights) != N_INPUTS:
+        got = type(weights).__name__ if not isinstance(weights, list) else len(weights)
+        raise ParseError(f"neurons[{index}].weights: {got} entries, expected {N_INPUTS}")
+    return weights
+
+
 def hidden_json_mem_mismatches(model: dict, mem_dir: Path) -> tuple[int, int]:
     """Count hidden-weight slots whose Q8.8 encoding disagrees with ``.mem``.
 
@@ -41,13 +58,10 @@ def hidden_json_mem_mismatches(model: dict, mem_dir: Path) -> tuple[int, int]:
     neurons = model["neurons"]
     mismatches = 0
     compared = 0
-    expected = N_NEURONS * N_INPUTS
-    if len(entries) != expected:
-        raise ParseError(
-            f"{weights_path.name}: {len(entries)} words, expected {expected}"
-        )
+    _require_hidden_shape(neurons, entries, weights_path.name)
     for i, neuron in enumerate(neurons):
-        for j, weight in enumerate(neuron["weights"]):
+        weights = _row_weights(neuron, i)
+        for j, weight in enumerate(weights):
             value = as_finite_float(weight, f"neurons[{i}].weights[{j}]")
             try:
                 want = encode_q88_hex(value)
@@ -60,6 +74,12 @@ def hidden_json_mem_mismatches(model: dict, mem_dir: Path) -> tuple[int, int]:
     return mismatches, compared
 
 
+def _require_keep_factor(value: float, where: str) -> float:
+    if value < 0.0 or value > 1.0:
+        raise ParseError(f"{where}: keep-factor {value} is outside [0, 1]")
+    return value
+
+
 def bank_from_json(path: Path, name: str, i_drive: float) -> tuple[LifBank, dict]:
     model = load_model(path)
     neurons = model["neurons"]
@@ -68,7 +88,10 @@ def bank_from_json(path: Path, name: str, i_drive: float) -> tuple[LifBank, dict
     threshold = []
     for i, neuron in enumerate(neurons):
         decay.append(
-            f32(as_finite_float(neuron["decay_rate"], f"neurons[{i}].decay_rate"))
+            _require_keep_factor(
+                f32(as_finite_float(neuron["decay_rate"], f"neurons[{i}].decay_rate")),
+                f"neurons[{i}].decay_rate",
+            )
         )
         threshold.append(
             f32(as_finite_float(neuron["threshold"], f"neurons[{i}].threshold"))
@@ -111,7 +134,12 @@ def bank_from_mem(mem_dir: Path, name: str, i_drive: float) -> LifBank:
     return LifBank(
         name=name,
         weights=weights,
-        decay=[f32(decode_q88(e.word)) for e in decay],
+        decay=[
+            _require_keep_factor(
+                f32(decode_q88(e.word)), f"parameters_decay.mem[{i}]"
+            )
+            for i, e in enumerate(decay)
+        ],
         threshold=[f32(decode_q88(e.word)) for e in thresh],
         i_drive=f32(i_drive),
     )

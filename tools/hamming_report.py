@@ -22,7 +22,9 @@ def _stream_safe(text: str, stream) -> str:
     encoding = getattr(stream, "encoding", None) or "utf-8"
     try:
         text.encode(encoding)
-    except (UnicodeEncodeError, LookupError):
+    except LookupError:
+        return text.encode("utf-8", "backslashreplace").decode("utf-8")
+    except UnicodeEncodeError:
         return text.encode(encoding, "backslashreplace").decode(encoding)
     return text
 

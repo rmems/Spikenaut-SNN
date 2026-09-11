@@ -11,9 +11,9 @@ import struct
 from pathlib import Path
 
 try:  # package import: `python3 -m tools.measure_hamming`
-    from .q88_core import N_INPUTS, N_NEURONS
+    from .q88_core import N_INPUTS, N_NEURONS, ParseError
 except ImportError:  # direct script: `python3 tools/measure_hamming.py`
-    from q88_core import N_INPUTS, N_NEURONS
+    from q88_core import N_INPUTS, N_NEURONS, ParseError
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_DIR = REPO_ROOT / "tools" / "fixtures" / "hamming_method"
@@ -61,10 +61,8 @@ CONDITION_METHOD_FIXTURE = "method-fixture"
 CONDITION_EXP024 = "exp-024"
 CONDITION_SHIPPED = "shipped-merged-v2"
 
-FORBIDDEN_SENSORS = (
+_FORBIDDEN_EXTRAS = (
     "hashrate_mh_derived",
-    "power_w_derived",
-    "gpu_temp_c_derived",
     "reward_hint_derived",
     "tick_rate",
     "fan_speed_pct",
@@ -72,6 +70,7 @@ FORBIDDEN_SENSORS = (
     "vram_temp_c",
     "step_idx",
 )
+FORBIDDEN_SENSORS = tuple(f"{column}_derived" for column in LIVE_COLUMNS) + _FORBIDDEN_EXTRAS
 
 
 def f32(value: float) -> float:
@@ -81,4 +80,9 @@ def f32(value: float) -> float:
     float is binary64; leaving the extra bits in would invent a third
     arithmetic that neither bank used.
     """
-    return struct.unpack("=f", struct.pack("=f", float(value)))[0]
+    try:
+        return struct.unpack("=f", struct.pack("=f", float(value)))[0]
+    except (OverflowError, struct.error, ValueError) as exc:
+        raise ParseError(
+            f"value {value!r} is not representable as binary32 ({exc})"
+        ) from exc

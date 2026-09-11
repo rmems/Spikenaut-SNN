@@ -23,7 +23,7 @@ try:
         VAL_EP_LO,
         f32,
     )
-    from .q88_core import ParseError
+    from .q88_core import ParseError, read_utf8_text
 except ImportError:
     from hamming_const import (
         EMBARGO_EPS,
@@ -39,7 +39,7 @@ except ImportError:
         VAL_EP_LO,
         f32,
     )
-    from q88_core import ParseError
+    from q88_core import ParseError, read_utf8_text
 
 EPISODE_RE = re.compile(r"^gpu-(\d{6})$")
 
@@ -137,18 +137,16 @@ class Sample:
     source_line: int
 
 
-def load_jsonl(path: Path) -> list[dict]:
-    """Read a JSONL file; each non-blank line must be a JSON object."""
+def load_jsonl(path: Path) -> list[tuple[int, dict]]:
+    """Read a JSONL file; each non-blank line must be a JSON object.
+
+    Returns ``(file_lineno, record)`` so later refusals cite the true
+    file line, not the compacted index after blank-line skips.
+    """
     if not path.is_file():
         raise ParseError(f"missing file: {path}")
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise ParseError(f"{path.name}: not valid UTF-8 ({exc})") from exc
-    except OSError as exc:
-        raise ParseError(f"{path}: cannot be read ({exc})") from exc
-
-    records: list[dict] = []
+    text = read_utf8_text(path)
+    records: list[tuple[int, dict]] = []
     for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
         if not line:
@@ -164,8 +162,21 @@ def load_jsonl(path: Path) -> list[dict]:
                 f"{path.name}:{lineno}: expected a JSON object, got "
                 f"{type(parsed).__name__}"
             )
-        records.append(parsed)
+        records.append((lineno, parsed))
     return records
+
+
+def _as_row(item: object, fallback_lineno: int) -> tuple[int, dict]:
+    if isinstance(item, tuple) and len(item) == 2:
+        lineno, record = item
+        if isinstance(lineno, int) and isinstance(record, dict):
+            return lineno, record
+    if isinstance(item, dict):
+        return fallback_lineno, item
+    raise ParseError(
+        f"internal row {fallback_lineno}: expected a JSON object, got "
+        f"{type(item).__name__}"
+    )
 
 
 def _refuse_non_v3(record: dict, lineno: int) -> None:
@@ -226,8 +237,8 @@ def _require_split_rows(
 ) -> None:
     if split != "all" and not had_episode:
         raise ParseError(
-            "No episode_id on records; cannot select "
-            f"{split} gpu-######. Refusing to evaluate the wrong split."
+            f"NOTHING WAS MEASURED: 0 records for split={split!r}. "
+            "The JSONL is empty; this is not a missing episode_id."
         )
     if split == "test" and not out and not allow_unsplit:
         raise ParseError(
@@ -238,7 +249,7 @@ def _require_split_rows(
 
 
 def select_samples(
-    records: list[dict],
+    records: list,
     split: str,
     *,
     allow_unsplit: bool = False,
@@ -260,7 +271,8 @@ def select_samples(
     prev: int | None = None
     had_episode = False
 
-    for lineno, record in enumerate(records, start=1):
+    for fallback, item in enumerate(records, start=1):
+        lineno, record = _as_row(item, fallback)
         _refuse_non_v3(record, lineno)
         raw_id, index = _require_episode_id(record, lineno)
         had_episode = True
