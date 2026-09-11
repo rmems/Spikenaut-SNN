@@ -53,6 +53,7 @@ try:
         SHIPPED_DIR,
         UNUSED_AXONS,
         f32,
+        under_dir,
     )
     from .hamming_encode import (
         Sample,
@@ -84,6 +85,7 @@ except ImportError:
         SHIPPED_DIR,
         UNUSED_AXONS,
         f32,
+        under_dir,
     )
     from hamming_encode import (
         Sample,
@@ -134,6 +136,7 @@ __all__ = (
     "pin_matches",
     "run_pair",
     "select_samples",
+    "under_dir",
 )
 
 # Historical exp-024 figures. Published here as the named measurement;
@@ -261,10 +264,7 @@ def _refuse_exp024_on_shipped(
 ) -> None:
     if condition != CONDITION_EXP024:
         return
-    shipped = SHIPPED_DIR.resolve()
-    mem_hit = mem_dir.resolve() == shipped
-    float_hit = float_json.resolve().parent == shipped
-    if mem_hit or float_hit:
+    if under_dir(mem_dir, SHIPPED_DIR) or under_dir(float_json, SHIPPED_DIR):
         raise ParseError(
             "condition exp-024 refuses dataset/merged_v2: that is the shipped "
             "ramp, not the exp-023 PASS Distill knobs scratch. Pass the "
@@ -337,7 +337,9 @@ def measure(
     _require_samples(samples, split)
     float_bank, model = bank_from_json(float_json, "float-json", i_drive)
     q88_bank = bank_from_mem(mem_dir, "q88-decoded", i_drive)
-    mismatches, compared = hidden_json_mem_mismatches(model, mem_dir)
+    mismatches, compared = hidden_json_mem_mismatches(
+        model, mem_dir, float_json.name
+    )
     return Measurement(
         protocol=_protocol_for(
             {

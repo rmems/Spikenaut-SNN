@@ -7,6 +7,7 @@ and self-test raise or catch it.
 
 from __future__ import annotations
 
+import math
 import struct
 from pathlib import Path
 
@@ -73,16 +74,32 @@ _FORBIDDEN_EXTRAS = (
 FORBIDDEN_SENSORS = tuple(f"{column}_derived" for column in LIVE_COLUMNS) + _FORBIDDEN_EXTRAS
 
 
+def under_dir(path: Path, root: Path) -> bool:
+    """True when ``path`` is ``root`` or any descendant of ``root``."""
+    resolved = path.resolve()
+    root = root.resolve()
+    return resolved == root or root in resolved.parents
+
+
 def f32(value: float) -> float:
     """Snap ``value`` onto IEEE-754 binary32, matching Julia ``Float32``.
 
     The Distill sidecar does every LIF update in Float32. Python's default
     float is binary64; leaving the extra bits in would invent a third
-    arithmetic that neither bank used.
+    arithmetic that neither bank used. Non-finite values are refused so a
+    NaN cannot travel a silent Hamming path through public ``measure()``.
     """
     try:
-        return struct.unpack("=f", struct.pack("=f", float(value)))[0]
-    except (OverflowError, struct.error, ValueError) as exc:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ParseError(
+            f"value {value!r} is not representable as binary32 ({exc})"
+        ) from exc
+    if not math.isfinite(number):
+        raise ParseError(f"value {value!r} is not a finite binary32")
+    try:
+        return struct.unpack("=f", struct.pack("=f", number))[0]
+    except (OverflowError, struct.error) as exc:
         raise ParseError(
             f"value {value!r} is not representable as binary32 ({exc})"
         ) from exc

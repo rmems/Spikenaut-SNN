@@ -147,7 +147,12 @@ def load_jsonl(path: Path) -> list[tuple[int, dict]]:
         raise ParseError(f"missing file: {path}")
     text = read_utf8_text(path)
     records: list[tuple[int, dict]] = []
-    for lineno, raw in enumerate(text.splitlines(), start=1):
+    # ASCII CRLF/CR only -- same idiom as q88_core.parse_mem. str.splitlines()
+    # also breaks on U+2028/U+2029/U+0085, which can appear inside a JSON
+    # string on one true file line and would then mis-number later refusals.
+    for lineno, raw in enumerate(
+        text.replace("\r\n", "\n").replace("\r", "\n").split("\n"), start=1
+    ):
         line = raw.strip()
         if not line:
             continue
@@ -249,7 +254,7 @@ def _require_split_rows(
 
 
 def select_samples(
-    records: list,
+    records: list[tuple[int, dict]] | list[dict],
     split: str,
     *,
     allow_unsplit: bool = False,

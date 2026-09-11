@@ -29,6 +29,7 @@ try:
         method_fixture_paths,
         pin_matches,
         select_samples,
+        under_dir,
     )
     from .hamming_report import report
     from .q88_core import Q88RangeError, SelfTestFailure
@@ -55,6 +56,7 @@ except ImportError:
         method_fixture_paths,
         pin_matches,
         select_samples,
+        under_dir,
     )
     from hamming_report import report
     from q88_core import Q88RangeError, SelfTestFailure
@@ -84,4 +86,5 @@ __all__ = (
     "pin_matches",
     "report",
     "select_samples",
+    "under_dir",
 )

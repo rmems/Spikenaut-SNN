@@ -30,24 +30,33 @@ except ImportError:
     )
 
 
-def _require_hidden_shape(neurons, entries, weights_name: str) -> None:
+def _require_hidden_shape(
+    neurons, entries, weights_name: str, label: str = "model"
+) -> None:
     expected = N_NEURONS * N_INPUTS
     if len(entries) != expected:
         raise ParseError(f"{weights_name}: {len(entries)} words, expected {expected}")
     if not isinstance(neurons, list) or len(neurons) != N_NEURONS:
         got = 0 if not isinstance(neurons, list) else len(neurons)
-        raise ParseError(f"snn_model.json: {got} neurons, expected {N_NEURONS}")
+        raise ParseError(f"{label}: {got} neurons, expected {N_NEURONS}")
 
 
-def _row_weights(neuron: dict, index: int) -> list:
-    weights = neuron["weights"]
+def _row_weights(neuron: object, index: int) -> list:
+    if not isinstance(neuron, dict):
+        raise ParseError(
+            f"neurons[{index}]: expected a JSON object, got "
+            f"{type(neuron).__name__}"
+        )
+    weights = neuron.get("weights")
     if not isinstance(weights, list) or len(weights) != N_INPUTS:
         got = type(weights).__name__ if not isinstance(weights, list) else len(weights)
         raise ParseError(f"neurons[{index}].weights: {got} entries, expected {N_INPUTS}")
     return weights
 
 
-def hidden_json_mem_mismatches(model: dict, mem_dir: Path) -> tuple[int, int]:
+def hidden_json_mem_mismatches(
+    model: dict, mem_dir: Path, label: str = "model"
+) -> tuple[int, int]:
     """Count hidden-weight slots whose Q8.8 encoding disagrees with ``.mem``.
 
     This is the encoding-half check exp-024 reported as ``0/256``. It is
@@ -58,7 +67,7 @@ def hidden_json_mem_mismatches(model: dict, mem_dir: Path) -> tuple[int, int]:
     neurons = model["neurons"]
     mismatches = 0
     compared = 0
-    _require_hidden_shape(neurons, entries, weights_path.name)
+    _require_hidden_shape(neurons, entries, weights_path.name, label)
     for i, neuron in enumerate(neurons):
         weights = _row_weights(neuron, i)
         for j, weight in enumerate(weights):

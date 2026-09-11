@@ -67,6 +67,7 @@ try:  # package import: `python3 -m tools.measure_hamming`
         method_fixture_paths,
         pin_matches,
         report,
+        under_dir,
     )
 except ImportError:  # direct script: `python3 tools/measure_hamming.py`
     from hamming_imports import (
@@ -84,6 +85,7 @@ except ImportError:  # direct script: `python3 tools/measure_hamming.py`
         method_fixture_paths,
         pin_matches,
         report,
+        under_dir,
     )
 
 
@@ -218,12 +220,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _under_dir(path: Path, root: Path) -> bool:
-    resolved = path.resolve()
-    root = root.resolve()
-    return resolved == root or root in resolved.parents
-
-
 def _provided_artifact_paths(args: argparse.Namespace) -> list[Path]:
     return [p for p in (args.jsonl, args.float_json, args.mem_dir) if p is not None]
 
@@ -233,7 +229,7 @@ def _infer_condition(args: argparse.Namespace) -> str:
     if args.condition is not None:
         return args.condition
     provided = _provided_artifact_paths(args)
-    if not provided or all(_under_dir(path, FIXTURE_DIR) for path in provided):
+    if not provided or all(under_dir(path, FIXTURE_DIR) for path in provided):
         return CONDITION_METHOD_FIXTURE
     if args.mem_dir is not None and args.mem_dir.resolve() == SHIPPED_DIR.resolve():
         return CONDITION_SHIPPED
