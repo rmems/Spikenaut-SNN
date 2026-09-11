@@ -1,0 +1,10 @@
+{
+  "k_none_pct": 100.0,
+  "k_none_bits": 2.0,
+  "k_4_pct": 100.0,
+  "k_4_bits": 3.0,
+  "n_ticks": 4,
+  "hidden_json_mem_mismatches": 2,
+  "condition": "method-fixture",
+  "note": "Harness regression pin for tools/fixtures/hamming_method. Not an exp-024 figure and not a Hamming acceptance threshold (#20)."
+}

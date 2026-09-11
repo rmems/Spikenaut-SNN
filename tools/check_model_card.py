@@ -55,7 +55,7 @@ README = REPO_ROOT / "README.md"
 
 # Guards against a manifest silently emptied or padded by a bad edit. Bump
 # deliberately when a claim is added or retired.
-EXPECTED_CLAIMS = 7
+EXPECTED_CLAIMS = 8
 
 # Historical 1.6 KB is allowed only on a line that also carries this
 # annotation. The spec-table row is forbidden even when annotated.
@@ -176,6 +176,23 @@ CLAIMS: tuple[Claim, ...] = (
         required=(
             "unassessed",
             "neither confirm as a check that",
+        ),
+    ),
+    Claim(
+        name="hamming-measurement-not-a-gate",
+        why=(
+            "Issue #39 publishes float-vs-Q8.8 Hamming with its protocol. A "
+            "copy that omits the harness, or that treats the number as a "
+            "pass/fail gate, or that claims the Rust crate now runs the "
+            "network, would undo the landed correction."
+        ),
+        required=(
+            "measure_hamming.py",
+            "keep-LIF",
+            "deferred to [#20]",
+        ),
+        forbidden=(
+            "Nothing here runs the network.",
         ),
     ),
 )

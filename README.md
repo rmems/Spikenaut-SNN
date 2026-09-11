@@ -222,11 +222,11 @@ dataset/merged_v2/
 └── snn_model.json                 # Full model definition (float values)
 
 tools/                             # Python package, standard library only
-└── verify_q88.py                  # Entry point: re-derives every Q8.8 word
-                                   # from the JSON floats and checks it
-                                   # against the .mem files; --self-test
-                                   # proves it can fail. The checker itself
-                                   # is the sibling q88_*.py modules.
+├── verify_q88.py                  # Q8.8 encoding verifier (#4)
+└── measure_hamming.py             # float-vs-Q8.8 Hamming holdout (#39):
+                                   # keep-LIF stepper used only here;
+                                   # --self-test proves it can fail.
+                                   # Measurement, not a pass/fail gate.
 
 src/                               # Rust, `spikenaut-snn`
 ├── lib.rs                         # Crate root: what the library exposes
@@ -245,7 +245,15 @@ src/                               # Rust, `spikenaut-snn`
 ```
 
 The artifacts are the product; the code exists to check them and to hand them
-to consumers in a standard form. Nothing here runs the network.
+to consumers in a standard form. The Rust crate still does not run the
+network — `Neuron::membrane_potential` is decoded and never advanced.
+`tools/measure_hamming.py` is the documented exception: a standard-library
+**keep-LIF** stepper used only to publish float-vs-Q8.8 Hamming on a holdout
+([#39](https://github.com/rmems/Spikenaut-SNN/issues/39)). That is not a
+claim `src/` executes spikes, and it is not a Hamming pass/fail gate — the
+tolerance is blocked on the output/decision contract
+([#20](https://github.com/rmems/Spikenaut-SNN/issues/20)). Protocol:
+`tools/HAMMING_PROTOCOL.md`.
 
 ### Loading on FPGA
 
@@ -288,6 +296,7 @@ A replacement corpus, `qubic_ticks_snn.jsonl` (~27,430 records), and a data adap
 - **Placeholder decay rates set every LIF time constant.** The 16 decay rates are `torch.linspace(0.8, 0.95, 16)` sample defaults. They *were* converted to Q8.8 — by `simple_convert.py::save_fpga_format`, whose `float_to_q8_8` is `int(value * 256)`, truncating rather than rounding — but never trained: the conversion started from a `linspace`, not from learned values. Since `tau = -dt/ln(decay_rate)` at `dt = 1 ms`, they fix the membrane time constants at **4.40 ms through 19.19 ms** (measured from the shipped file, not from the source `linspace`) by accident rather than by fit. **Retraining the weights does not touch them** — they need validation or replacement in their own right. [#13](https://github.com/rmems/Spikenaut-SNN/issues/13)
 - **Purely excitatory hidden layer.** All 256 hidden weights are positive. What this categorically prevents is **lateral competition**: with no cross-neuron inhibition there is no winner-take-all, no surround suppression and no divisive normalization. It does not make noise rejection or contrast selectivity impossible — the threshold gates *spiking*, so subthreshold input is integrated into the membrane potential but does not reach the output, and the graduated thresholds (1.125-1.594) set that gate differently per neuron, which is heterogeneous selectivity without any recurrence. Note it is not memoryless: each LIF neuron's decaying membrane potential retains recent input, so the gap is **long-horizon and recurrent** memory, not temporal state as such. [#3](https://github.com/rmems/Spikenaut-SNN/issues/3)
 - **No FPGA parity evidence.** Spike agreement, action agreement, membrane-potential error, and quantization error against the software model have not been measured. Hardware numbers below are synthesis reports. [#6](https://github.com/rmems/Spikenaut-SNN/issues/6)
+- **Float-vs-Q8.8 Hamming is published as a measurement, not a gate.** `tools/measure_hamming.py` reports per-tick Hamming (%) and mean bits for `k=none` and `k=4` with the full protocol (weights, encoder, episodes, seed). exp-024 claimed `k=none` 13.187% / 0.1608 bits and `k=4` 56.188% / 1.697 bits on the exp-023 PASS Distill knobs scratch (seed 123 / 5 ep), legal 5-ch train-scaled encoder, frozen minmax lineage `74acdd0f`, v3 test `gpu-000170..198` (n=117653). Those scratch weights and the JSONL are not in this repository; the in-repo run is a method fixture, not a reproduction. A pass threshold is deferred to [#20](https://github.com/rmems/Spikenaut-SNN/issues/20). [#39](https://github.com/rmems/Spikenaut-SNN/issues/39), [#4](https://github.com/rmems/Spikenaut-SNN/issues/4)
 - **Export tooling clamps negatives.** `silicon-bridge`'s `encode_q88` currently clamps negative values to zero, which would destroy the signed `parameters_output_weights.mem`. Signed Q8.8 is a hard requirement before that path is adopted. [#15](https://github.com/rmems/Spikenaut-SNN/issues/15)
 - **The output layer is random and has no float source.** The 48 signed values in `parameters_output_weights.mem` were produced by an unseeded `torch.randn(3, 16) * 0.1` with no training step, so the three output rows are a random readout. `snn_model.json` records only the 16 hidden-layer neurons, so they also have no float counterpart here to cross-validate against. They are checked structurally instead (count, encoding, round-trip, sign integrity). A sign-preserving exporter regression would go undetected until the output layer is added to `snn_model.json`. [#4](https://github.com/rmems/Spikenaut-SNN/issues/4)
 - **Upstream dataset hygiene.** Sibling telemetry datasets still carry dead columns, schema drift, mixed timestamp formats, synthetic tail records, and stuck values. [#2](https://github.com/rmems/Spikenaut-SNN/issues/2), [#3](https://github.com/rmems/Spikenaut-SNN/issues/3)
