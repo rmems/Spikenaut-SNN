@@ -42,10 +42,9 @@ def _k_line(prefix: str, result) -> str:
     )
 
 
-def render(measurement: Measurement, stream=sys.stdout) -> list[str]:
-    """Format the protocol + numbers. Does not decide a Hamming gate."""
+def _protocol_lines(measurement: Measurement) -> list[str]:
     proto = measurement.protocol
-    lines = [
+    return [
         "float-vs-Q8.8 Hamming holdout  (issue #39)",
         f"repo root: {_rel(REPO_ROOT)}",
         "",
@@ -66,7 +65,11 @@ def render(measurement: Measurement, stream=sys.stdout) -> list[str]:
             f"  hidden json<->mem : {measurement.hidden_json_mem_mismatches}/"
             f"{measurement.hidden_compared}"
         ),
-        "",
+    ]
+
+
+def _results_lines(measurement: Measurement) -> list[str]:
+    lines = [
         "RESULTS  (measurement, not a pass/fail gate; tolerance blocked on #20)",
         _k_line("k=none", measurement.k_none),
         _k_line("k=4", measurement.k_4),
@@ -75,63 +78,73 @@ def render(measurement: Measurement, stream=sys.stdout) -> list[str]:
         lines.append("")
         lines.append("NOTES")
         lines.extend(f"  {note}" for note in measurement.notes)
+    return lines
 
-    lines.extend(
-        [
-            "",
-            "exp-024 reference (scratch weights + v3 JSONL are not in this repo)",
-            f"  weights : {EXP024_CLAIMED['weights']}",
-            f"  encoder : legal 5-ch train-scaled; frozen minmax lineage {FROZEN_LINEAGE}",
-            f"  split   : {EXP024_CLAIMED['split']} (n={EXP024_CLAIMED['n_ticks']})",
-            f"  seed    : {EXP024_CLAIMED['seed']} / {EXP024_CLAIMED['epochs']} ep",
-            (
-                f"  claimed : k=none {EXP024_CLAIMED['k_none_pct']}% / "
-                f"{EXP024_CLAIMED['k_none_bits']} bits; "
-                f"k=4 {EXP024_CLAIMED['k_4_pct']}% / "
-                f"{EXP024_CLAIMED['k_4_bits']} bits; "
-                f"hidden json<->mem {EXP024_CLAIMED['hidden_json_mem_mismatches']}/256"
-            ),
-            "  Reproduce with external paths, never by overwriting dataset/merged_v2:",
-            "    python3 tools/measure_hamming.py --condition exp-024 \\",
-            "        --jsonl PATH/state_telemetry.jsonl \\",
-            "        --float-json PATH/snn_model.json --mem-dir PATH/",
-        ]
-    )
+
+def _exp024_reference_lines() -> list[str]:
+    claimed = EXP024_CLAIMED
+    return [
+        "exp-024 reference (scratch weights + v3 JSONL are not in this repo)",
+        f"  weights : {claimed['weights']}",
+        f"  encoder : legal 5-ch train-scaled; frozen minmax lineage {FROZEN_LINEAGE}",
+        f"  split   : {claimed['split']} (n={claimed['n_ticks']})",
+        f"  seed    : {claimed['seed']} / {claimed['epochs']} ep",
+        (
+            f"  claimed : k=none {claimed['k_none_pct']}% / "
+            f"{claimed['k_none_bits']} bits; "
+            f"k=4 {claimed['k_4_pct']}% / "
+            f"{claimed['k_4_bits']} bits; "
+            f"hidden json<->mem {claimed['hidden_json_mem_mismatches']}/256"
+        ),
+        "  Reproduce with external paths, never by overwriting dataset/merged_v2:",
+        "    python3 tools/measure_hamming.py --condition exp-024 \\",
+        "        --jsonl PATH/state_telemetry.jsonl \\",
+        "        --float-json PATH/snn_model.json --mem-dir PATH/",
+    ]
+
+
+def _condition_tail(measurement: Measurement) -> list[str]:
+    proto = measurement.protocol
     if proto.condition == "method-fixture":
-        lines.extend(
-            [
-                "",
-                "This default run is the in-repo method fixture. It proves the",
-                "harness can score Hamming; it does not reproduce exp-024's",
-                "figures (those weights and the 117653-tick JSONL are not shipped).",
-            ]
-        )
-    elif proto.condition == "shipped-merged-v2":
-        lines.extend(
-            [
-                "",
-                "This is the shipped merged_v2 ramp, labeled as a different",
-                "condition. It is not the exp-023 PASS Distill knobs scratch.",
-            ]
-        )
-    elif proto.condition == "exp-024":
-        claimed = EXP024_CLAIMED
-        delta_none = measurement.k_none.pct - claimed["k_none_pct"]
-        delta_4 = measurement.k_4.pct - claimed["k_4_pct"]
-        lines.extend(
-            [
-                "",
-                "exp-024 comparison against the claimed figures:",
-                (
-                    f"  k=none delta_pct={delta_none:+.3f}  "
-                    f"delta_bits={measurement.k_none.mean_bits - claimed['k_none_bits']:+.4f}"
-                ),
-                (
-                    f"  k=4    delta_pct={delta_4:+.3f}  "
-                    f"delta_bits={measurement.k_4.mean_bits - claimed['k_4_bits']:+.4f}"
-                ),
-            ]
-        )
+        return [
+            "This default run is the in-repo method fixture. It proves the",
+            "harness can score Hamming; it does not reproduce exp-024's",
+            "figures (those weights and the 117653-tick JSONL are not shipped).",
+        ]
+    if proto.condition == "shipped-merged-v2":
+        return [
+            "This is the shipped merged_v2 ramp, labeled as a different",
+            "condition. It is not the exp-023 PASS Distill knobs scratch.",
+        ]
+    if proto.condition != "exp-024":
+        return []
+    claimed = EXP024_CLAIMED
+    delta_none = measurement.k_none.pct - claimed["k_none_pct"]
+    delta_4 = measurement.k_4.pct - claimed["k_4_pct"]
+    return [
+        "exp-024 comparison against the claimed figures:",
+        (
+            f"  k=none delta_pct={delta_none:+.3f}  "
+            f"delta_bits={measurement.k_none.mean_bits - claimed['k_none_bits']:+.4f}"
+        ),
+        (
+            f"  k=4    delta_pct={delta_4:+.3f}  "
+            f"delta_bits={measurement.k_4.mean_bits - claimed['k_4_bits']:+.4f}"
+        ),
+    ]
+
+
+def render(measurement: Measurement, stream=sys.stdout) -> list[str]:
+    """Format the protocol + numbers. Does not decide a Hamming gate."""
+    lines = _protocol_lines(measurement)
+    lines.append("")
+    lines.extend(_results_lines(measurement))
+    lines.append("")
+    lines.extend(_exp024_reference_lines())
+    tail = _condition_tail(measurement)
+    if tail:
+        lines.append("")
+        lines.extend(tail)
     lines.append("")
     lines.append(
         "OK: measurement published. No Hamming tolerance is applied (#20)."

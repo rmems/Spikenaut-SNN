@@ -23,7 +23,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 try:  # package import
-    from .hamming_core import (
+    from .hamming_imports import (
         CONDITION_EXP024,
         FIXTURE_DIR,
         KResult,
@@ -42,11 +42,11 @@ try:  # package import
         measure_method_fixture,
         method_fixture_paths,
         pin_matches,
+        report,
         select_samples,
     )
-    from .hamming_report import report
 except ImportError:
-    from hamming_core import (
+    from hamming_imports import (
         CONDITION_EXP024,
         FIXTURE_DIR,
         KResult,
@@ -65,9 +65,9 @@ except ImportError:
         measure_method_fixture,
         method_fixture_paths,
         pin_matches,
+        report,
         select_samples,
     )
-    from hamming_report import report
 
 
 def _require(condition: bool, message: str) -> None:

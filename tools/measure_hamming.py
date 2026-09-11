@@ -51,37 +51,143 @@ import sys
 from pathlib import Path
 
 try:  # package import: `python3 -m tools.measure_hamming`
-    from .hamming_core import (
+    from .hamming_imports import (
         CONDITION_EXP024,
         CONDITION_METHOD_FIXTURE,
         CONDITION_SHIPPED,
         I_DRIVE_EXP024,
         ParseError,
-        SelfTestFailure,
+        Q88RangeError,
         SHIPPED_DIR,
+        SelfTestFailure,
         load_expected,
         measure,
         method_fixture_paths,
         pin_matches,
+        report,
     )
-    from .hamming_report import report
-    from .q88_core import Q88RangeError
 except ImportError:  # direct script: `python3 tools/measure_hamming.py`
-    from hamming_core import (
+    from hamming_imports import (
         CONDITION_EXP024,
         CONDITION_METHOD_FIXTURE,
         CONDITION_SHIPPED,
         I_DRIVE_EXP024,
         ParseError,
-        SelfTestFailure,
+        Q88RangeError,
         SHIPPED_DIR,
+        SelfTestFailure,
         load_expected,
         measure,
         method_fixture_paths,
         pin_matches,
+        report,
     )
-    from hamming_report import report
-    from q88_core import Q88RangeError
+
+
+_CLI_ARGUMENTS: tuple[tuple[tuple[str, ...], dict], ...] = (
+    (
+        ("--self-test",),
+        {
+            "action": "store_true",
+            "help": (
+                "prove the harness can fail: assert it rejects an empty holdout, "
+                "malformed JSONL, a wrong method pin, unlabeled merged_v2 as "
+                "exp-024, and that the in-repo fixture still yields its pinned "
+                "Hamming"
+            ),
+        },
+    ),
+    (
+        ("--condition",),
+        {
+            "choices": (
+                CONDITION_METHOD_FIXTURE,
+                CONDITION_EXP024,
+                CONDITION_SHIPPED,
+            ),
+            "default": None,
+            "help": (
+                "which parameter set this run is. Default with no paths is "
+                "method-fixture. exp-024 refuses dataset/merged_v2."
+            ),
+        },
+    ),
+    (
+        ("--jsonl",),
+        {
+            "type": Path,
+            "default": None,
+            "help": (
+                "v3 state_telemetry JSONL (required for exp-024 / shipped-merged-v2)"
+            ),
+        },
+    ),
+    (
+        ("--float-json",),
+        {
+            "type": Path,
+            "default": None,
+            "help": "snn_model.json float bank (default: method fixture or shipped)",
+        },
+    ),
+    (
+        ("--mem-dir",),
+        {
+            "type": Path,
+            "default": None,
+            "help": (
+                "directory holding parameters*.mem "
+                "(default: method fixture or shipped)"
+            ),
+        },
+    ),
+    (
+        ("--split",),
+        {
+            "choices": ("train", "val", "test", "all"),
+            "default": None,
+            "help": (
+                "episode split (default: all for method-fixture, test otherwise)"
+            ),
+        },
+    ),
+    (
+        ("--seed",),
+        {
+            "default": None,
+            "help": "training seed to record on the protocol (exp-024: 123)",
+        },
+    ),
+    (
+        ("--i-drive",),
+        {
+            "type": float,
+            "default": None,
+            "help": (
+                "Dale I bias added to neurons 12-15 (default 0 on the method "
+                f"fixture, {I_DRIVE_EXP024} on exp-024 / shipped-merged-v2)"
+            ),
+        },
+    ),
+    (
+        ("--expect-json",),
+        {
+            "type": Path,
+            "default": None,
+            "help": (
+                "optional method pin (k_none_pct / k_4_pct / ...). Used by the "
+                "in-repo fixture. Not a Hamming acceptance threshold."
+            ),
+        },
+    ),
+    (
+        ("--weights-label",),
+        {
+            "default": None,
+            "help": "override the protocol's weights line",
+        },
+    ),
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -91,77 +197,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "(issue #39). Measurement, not a pass/fail gate."
         )
     )
-    parser.add_argument(
-        "--self-test",
-        action="store_true",
-        help=(
-            "prove the harness can fail: assert it rejects an empty holdout, "
-            "malformed JSONL, a wrong method pin, unlabeled merged_v2 as "
-            "exp-024, and that the in-repo fixture still yields its pinned "
-            "Hamming"
-        ),
-    )
-    parser.add_argument(
-        "--condition",
-        choices=(CONDITION_METHOD_FIXTURE, CONDITION_EXP024, CONDITION_SHIPPED),
-        default=None,
-        help=(
-            "which parameter set this run is. Default with no paths is "
-            "method-fixture. exp-024 refuses dataset/merged_v2."
-        ),
-    )
-    parser.add_argument(
-        "--jsonl",
-        type=Path,
-        default=None,
-        help="v3 state_telemetry JSONL (required for exp-024 / shipped-merged-v2)",
-    )
-    parser.add_argument(
-        "--float-json",
-        type=Path,
-        default=None,
-        help="snn_model.json float bank (default: method fixture or shipped)",
-    )
-    parser.add_argument(
-        "--mem-dir",
-        type=Path,
-        default=None,
-        help="directory holding parameters*.mem (default: method fixture or shipped)",
-    )
-    parser.add_argument(
-        "--split",
-        choices=("train", "val", "test", "all"),
-        default=None,
-        help="episode split (default: all for method-fixture, test otherwise)",
-    )
-    parser.add_argument(
-        "--seed",
-        default=None,
-        help="training seed to record on the protocol (exp-024: 123)",
-    )
-    parser.add_argument(
-        "--i-drive",
-        type=float,
-        default=None,
-        help=(
-            "Dale I bias added to neurons 12-15 (default 0 on the method "
-            f"fixture, {I_DRIVE_EXP024} on exp-024 / shipped-merged-v2)"
-        ),
-    )
-    parser.add_argument(
-        "--expect-json",
-        type=Path,
-        default=None,
-        help=(
-            "optional method pin (k_none_pct / k_4_pct / ...). Used by the "
-            "in-repo fixture. Not a Hamming acceptance threshold."
-        ),
-    )
-    parser.add_argument(
-        "--weights-label",
-        default=None,
-        help="override the protocol's weights line",
-    )
+    for flags, kwargs in _CLI_ARGUMENTS:
+        parser.add_argument(*flags, **kwargs)
     return parser
 
 
@@ -176,45 +213,63 @@ def _infer_condition(args: argparse.Namespace) -> str:
     return CONDITION_EXP024
 
 
-def _run_measurement(args: argparse.Namespace) -> int:
-    condition = _infer_condition(args)
+def _print_pin_failures(failures: list[str]) -> None:
+    print(
+        "METHOD PIN FAILED (harness regression, not a Hamming gate):",
+        file=sys.stderr,
+    )
+    for item in failures:
+        print(f"  {item}", file=sys.stderr)
 
-    if condition == CONDITION_METHOD_FIXTURE:
-        paths = method_fixture_paths()
-        measurement = measure(
-            float_json=args.float_json or paths["float_json"],
-            mem_dir=args.mem_dir or paths["mem_dir"],
-            jsonl=args.jsonl or paths["jsonl"],
-            split=args.split or "all",
-            condition=CONDITION_METHOD_FIXTURE,
-            seed=args.seed
-            or "n/a (analog current; Poisson unused when learn=false)",
-            i_drive=0.0 if args.i_drive is None else args.i_drive,
-            weights_label=args.weights_label
-            or (
-                "in-repo method fixture tools/fixtures/hamming_method "
-                "(NOT exp-023 scratch, NOT shipped merged_v2 ramp)"
-            ),
-        )
-        ok = report(measurement)
-        expect_path = args.expect_json
-        if expect_path is None and args.jsonl is None and args.float_json is None:
-            expect_path = paths["expect"]
-        failures = (
-            pin_matches(measurement, load_expected(expect_path))
-            if expect_path is not None
-            else []
-        )
-        if failures:
-            print(
-                "METHOD PIN FAILED (harness regression, not a Hamming gate):",
-                file=sys.stderr,
-            )
-            for item in failures:
-                print(f"  {item}", file=sys.stderr)
-            return 1
-        return 0 if ok else 1
 
+def _check_method_pin(measurement, expect_path: Path | None) -> int:
+    if expect_path is None:
+        return 0
+    failures = pin_matches(measurement, load_expected(expect_path))
+    if not failures:
+        return 0
+    _print_pin_failures(failures)
+    return 1
+
+
+def _publish(kwargs: dict, expect_path: Path | None) -> int:
+    measurement = measure(**kwargs)
+    ok = report(measurement)
+    pin_rc = _check_method_pin(measurement, expect_path)
+    if pin_rc:
+        return pin_rc
+    return 0 if ok else 1
+
+
+def _method_kwargs(args: argparse.Namespace) -> tuple[dict, dict]:
+    paths = method_fixture_paths()
+    kwargs = {
+        "float_json": args.float_json or paths["float_json"],
+        "mem_dir": args.mem_dir or paths["mem_dir"],
+        "jsonl": args.jsonl or paths["jsonl"],
+        "split": args.split or "all",
+        "condition": CONDITION_METHOD_FIXTURE,
+        "seed": args.seed
+        or "n/a (analog current; Poisson unused when learn=false)",
+        "i_drive": 0.0 if args.i_drive is None else args.i_drive,
+        "weights_label": args.weights_label
+        or (
+            "in-repo method fixture tools/fixtures/hamming_method "
+            "(NOT exp-023 scratch, NOT shipped merged_v2 ramp)"
+        ),
+    }
+    return kwargs, paths
+
+
+def _method_expect_path(args: argparse.Namespace, paths: dict) -> Path | None:
+    if args.expect_json is not None:
+        return args.expect_json
+    if args.jsonl is None and args.float_json is None:
+        return paths["expect"]
+    return None
+
+
+def _require_jsonl(args: argparse.Namespace, condition: str) -> None:
     if args.jsonl is None:
         raise ParseError(
             f"condition {condition} needs --jsonl PATH to a v3 "
@@ -222,55 +277,60 @@ def _run_measurement(args: argparse.Namespace) -> int:
             "repository; this tool will not invent an HF download."
         )
 
-    if condition == CONDITION_SHIPPED:
-        float_json = args.float_json or (SHIPPED_DIR / "snn_model.json")
-        mem_dir = args.mem_dir or SHIPPED_DIR
-        split = args.split or "test"
-        seed = args.seed or "n/a (shipped merged_v2 has no training seed here)"
-        i_drive = I_DRIVE_EXP024 if args.i_drive is None else args.i_drive
-        weights_label = args.weights_label or (
+
+def _shipped_kwargs(args: argparse.Namespace) -> dict:
+    return {
+        "float_json": args.float_json or (SHIPPED_DIR / "snn_model.json"),
+        "mem_dir": args.mem_dir or SHIPPED_DIR,
+        "jsonl": args.jsonl,
+        "split": args.split or "test",
+        "condition": CONDITION_SHIPPED,
+        "seed": args.seed or "n/a (shipped merged_v2 has no training seed here)",
+        "i_drive": I_DRIVE_EXP024 if args.i_drive is None else args.i_drive,
+        "weights_label": args.weights_label
+        or (
             "shipped merged_v2 ramp -- DIFFERENT condition from exp-024 "
             "(exp-023 PASS Distill knobs scratch is not in this repo)"
+        ),
+    }
+
+
+def _exp024_kwargs(args: argparse.Namespace) -> dict:
+    if args.float_json is None or args.mem_dir is None:
+        raise ParseError(
+            "condition exp-024 needs --float-json and --mem-dir pointing "
+            "at the exp-023 PASS Distill knobs scratch. "
+            "dataset/merged_v2 is refused for this condition."
         )
-    else:
-        if args.float_json is None or args.mem_dir is None:
-            raise ParseError(
-                "condition exp-024 needs --float-json and --mem-dir pointing "
-                "at the exp-023 PASS Distill knobs scratch. "
-                "dataset/merged_v2 is refused for this condition."
-            )
-        float_json = args.float_json
-        mem_dir = args.mem_dir
-        split = args.split or "test"
-        seed = args.seed or "123"
-        i_drive = I_DRIVE_EXP024 if args.i_drive is None else args.i_drive
-        weights_label = args.weights_label or (
+    return {
+        "float_json": args.float_json,
+        "mem_dir": args.mem_dir,
+        "jsonl": args.jsonl,
+        "split": args.split or "test",
+        "condition": CONDITION_EXP024,
+        "seed": args.seed or "123",
+        "i_drive": I_DRIVE_EXP024 if args.i_drive is None else args.i_drive,
+        "weights_label": args.weights_label
+        or (
             "exp-023 PASS Distill knobs scratch (seed 123 / 5 ep) -- "
             "caller-supplied paths, not shipped merged_v2"
-        )
+        ),
+    }
 
-    measurement = measure(
-        float_json=float_json,
-        mem_dir=mem_dir,
-        jsonl=args.jsonl,
-        split=split,
-        condition=condition,
-        seed=seed,
-        i_drive=i_drive,
-        weights_label=weights_label,
-    )
-    ok = report(measurement)
-    if args.expect_json is not None:
-        failures = pin_matches(measurement, load_expected(args.expect_json))
-        if failures:
-            print(
-                "METHOD PIN FAILED (harness regression, not a Hamming gate):",
-                file=sys.stderr,
-            )
-            for item in failures:
-                print(f"  {item}", file=sys.stderr)
-            return 1
-    return 0 if ok else 1
+
+def _external_kwargs(args: argparse.Namespace, condition: str) -> dict:
+    _require_jsonl(args, condition)
+    if condition == CONDITION_SHIPPED:
+        return _shipped_kwargs(args)
+    return _exp024_kwargs(args)
+
+
+def _run_measurement(args: argparse.Namespace) -> int:
+    condition = _infer_condition(args)
+    if condition == CONDITION_METHOD_FIXTURE:
+        kwargs, paths = _method_kwargs(args)
+        return _publish(kwargs, _method_expect_path(args, paths))
+    return _publish(_external_kwargs(args, condition), args.expect_json)
 
 
 def main(argv: list[str] | None = None) -> int:
