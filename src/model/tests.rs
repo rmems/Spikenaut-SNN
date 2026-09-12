@@ -28,14 +28,16 @@ fn loads_shipped_model() {
     assert_eq!(model.len(), NEURON_COUNT);
     assert!(!model.is_empty());
     assert_eq!(model.neurons[0].weights.len(), NEURON_COUNT);
-    assert_eq!(model.neurons[0].threshold, 1.125);
-    assert_eq!(model.neurons[0].decay_rate, 0.796875);
+    assert_eq!(model.neurons[0].threshold, 410.0 / 256.0);
+    assert_eq!(model.neurons[0].decay_rate, 218.0 / 256.0);
     assert_eq!(model.neurons[0].membrane_potential, 0.0);
     assert!(!model.neurons[0].last_spike);
     assert_eq!(model.thresholds().len(), NEURON_COUNT);
     assert_eq!(model.decay_rates().len(), NEURON_COUNT);
     assert!(MERGED_V2_PROVENANCE.contains("shipped merged_v2 artifact"));
-    assert!(MERGED_V2_PROVENANCE.contains("not a post-exp-009 legal-encoder retrain"));
+    assert!(MERGED_V2_PROVENANCE.contains("exp-025 Dale health-PASS"));
+    assert!(MERGED_V2_PROVENANCE.contains("post-exp-009 legal-encoder retrain"));
+    assert!(!MERGED_V2_PROVENANCE.contains("not a post-exp-009"));
 }
 
 #[test]
@@ -193,8 +195,8 @@ fn taus_seconds_rejects_extreme_timesteps() {
     assert!(model.taus_seconds(f64::MAX).is_err());
     assert!(model.taus_seconds(TIMESTEP_SECONDS).is_ok());
 
-    // The shipped decays run 0.796875..=0.94921875, so `|ln(decay)|` is at
-    // most 0.227 and a subnormal timestep still divides to a nonzero
+    // The shipped decays are keep `00DA` = 0.8515625, so `|ln(decay)|` is
+    // about 0.161 and a subnormal timestep still divides to a nonzero
     // subnormal — no underflow for this model.
     assert!(model.taus_seconds(5e-324).is_ok());
 
@@ -257,8 +259,8 @@ fn rejects_malformed_models() {
             "the document carries unknown member(s) `output_weights`",
         ),
         (
-            r#"{"neurons": [{"decay_rate": 0.5, "inhibitory": true, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0], "last_spike": false}]}"#,
-            "neuron 0 carries unknown member(s) `inhibitory`",
+            r#"{"neurons": [{"cell_type": "E", "decay_rate": 0.5, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0], "last_spike": false}]}"#,
+            "neuron 0 carries unknown member(s) `cell_type`",
         ),
     ];
     for (text, expected) in cases {
@@ -376,12 +378,9 @@ fn the_extreme_codes_survive_seven_digit_printing() {
 /// A member this decoder does not read must not pass silently, because the
 /// builder stamps `Provenance::MERGED_V2` on what comes out.
 ///
-/// The retrain tracked by issues #2 and #3 is expected to add per-neuron
-/// parameters — signed output weights, an excitatory/inhibitory flag. If a
-/// revised artifact decoded by dropping them, the graph would keep claiming
-/// to be the shipped model while describing strictly less of it. Loudly
-/// refusing an unknown member is what makes that revision a visible schema
-/// change rather than a silent truncation.
+/// exp-025 allowlists sidecar `output_weights` / `inhibitory`. A member
+/// outside that list must still fail, or a later revision would decode by
+/// silent truncation while the graph kept the `merged_v2` stamp.
 #[test]
 fn an_unknown_member_is_never_dropped_silently() {
     let shipped = std::fs::read_to_string(default_model_path()).unwrap();
@@ -408,12 +407,12 @@ fn an_unknown_member_is_never_dropped_silently() {
 fn decoding_restores_exact_q8_8_values() {
     let model = SnnModel::load_default().unwrap();
 
-    // `0.808594` in the JSON; `parameters_decay.mem` line 2 is `00CF`.
-    assert_eq!(model.neurons[1].decay_rate, 207.0 / 256.0);
-    assert_eq!(model.neurons[1].decay_rate, 0.808_593_75);
-    // `0.7539062` in the JSON; `parameters_weights.mem` line 2 is `00C1`.
-    assert_eq!(model.neurons[0].weights[1], 193.0 / 256.0);
-    assert_eq!(model.neurons[0].weights[1], 0.753_906_25);
+    // `0.85` in the JSON; every `parameters_decay.mem` line is `00DA`.
+    assert_eq!(model.neurons[1].decay_rate, 218.0 / 256.0);
+    assert_eq!(model.neurons[1].decay_rate, 0.851_562_5);
+    // First hidden row, column 1; `parameters_weights.mem` line 2 is `000E`.
+    assert_eq!(model.neurons[0].weights[1], 14.0 / 256.0);
+    assert_eq!(model.neurons[0].weights[1], 0.054_687_5);
 
     // No stored number is left off the grid.
     for neuron in &model.neurons {

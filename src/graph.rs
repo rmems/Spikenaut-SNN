@@ -25,10 +25,10 @@
 //!
 //! # The `Linear` node
 //!
-//! The 256 stored weights are the layer's learned input weights: the README
-//! records that the hidden layer is purely excitatory and that the network has
-//! *no* recurrent feedback, so there is nothing recurrent for them to be. They
-//! belong on the wire between `Input` and the population — without the
+//! The 256 stored weights are the layer's learned input weights: the network
+//! has *no* recurrent feedback, so there is nothing recurrent for them to be.
+//! Sign is mixed (outgoing Dale is on the sidecar readout, not this matrix).
+//! They belong on the wire between `Input` and the population — without the
 //! `Linear` node the graph is identical for every possible weight matrix, and
 //! nothing a consumer runs would depend on what the model learned.
 //!
@@ -63,11 +63,11 @@
 //! be applied.
 //!
 //! Leaving `R = 1` would therefore hand consumers a different network. The
-//! shipped decay rates run from `0.796875` to `0.94921875`, so `(1 - decay)`
-//! attenuates every input to between 20% and 5% of its trained magnitude, and
-//! the units with the longest memory are starved the hardest. Setting
-//! `R = 1 / (1 - decay_rate)` per unit cancels the factor and makes one NIR
-//! step reproduce the model's step exactly. [`resistance_from_decay`] does it.
+//! shipped decay rates are keep `00DA` = `0.8515625`, so `(1 - decay)`
+//! attenuates every input to about 14.8% of its trained magnitude if `R` is
+//! left at 1. Setting `R = 1 / (1 - decay_rate)` per unit cancels the factor
+//! and makes one NIR step reproduce the model's step exactly.
+//! [`resistance_from_decay`] does it.
 //!
 //! # Provenance
 //!
@@ -190,8 +190,8 @@ impl Provenance<'static> {
 /// This is the only constructor that stamps [`Provenance::MERGED_V2`], and the
 /// stamp is true by construction: the model is loaded and consumed here, so no
 /// caller can have modified it. The graph is the repository's 16-neuron LIF
-/// artifact, not a post-exp-009 legal-encoder retrain and not session-holdout
-/// 5-ch v3.
+/// artifact: exp-025 Dale health-PASS, a post-exp-009 legal-encoder retrain
+/// on session-holdout 5-ch v3.
 ///
 /// # Errors
 ///

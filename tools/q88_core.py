@@ -62,7 +62,9 @@ EXPECTED_ARTIFACTS = (
     "parameters_output_weights.mem",
 )
 
-# Pin of the shipped output-weight image. snn_model.json has no output layer,
+# Pin of the shipped output-weight image. exp-025 snn_model.json also carries
+# per-neuron output_weights (3-wide, neuron-major); the .mem pin remains the
+# CI gate so a well-formed hex swap still fails even if JSON is rewritten.
 # so this is the independent reference -- computed from the file as shipped,
 # not invented JSON floats. Update both pins together if the artifact is
 # intentionally replaced.
@@ -81,15 +83,15 @@ EXPECTED_ARTIFACTS = (
 #     w=[l.strip().upper() for l in Path('dataset/merged_v2/parameters_output_weights.mem').read_text(encoding='utf-8').splitlines() if l.strip()]; \
 #     print(hashlib.sha256(chr(10).join(w).encode('ascii')).hexdigest())"
 OUTPUT_WEIGHTS_CANON_SHA256 = (
-    "03e83737fb42cce90e2a9a23bf7404caf0d650cab5ea9864aebc634b7a98edcb"
+    "4375c18b27dece04a7c927a43fec6f315c540f6ce9e01e1ea6dfc3bd155cd5cb"
 )
 OUTPUT_WEIGHTS_HEX: tuple[str, ...] = (
-    "FFF9", "001E", "FFFC", "0042", "000E", "0025", "FFE3", "0025",
-    "FFD9", "0007", "FFD6", "000C", "001A", "0018", "0009", "FFF0",
-    "FFE6", "FFF1", "FFF8", "0005", "FFEC", "0003", "0006", "FFF4",
-    "FFEE", "0017", "0000", "FFFD", "FFF2", "FFF8", "0024", "0004",
-    "0015", "FFF4", "FFFF", "001C", "001E", "FFE2", "FFFF", "FFEF",
-    "FFF5", "FFED", "FFF2", "0012", "FFEF", "0026", "0016", "FFF3",
+    "0060", "0048", "0019", "0061", "0049", "001A", "0060", "0048",
+    "0019", "005F", "0047", "0018", "005F", "0049", "001A", "0060",
+    "004A", "001A", "0006", "0007", "0004", "000A", "0009", "0005",
+    "0004", "0001", "000D", "001F", "0015", "0017", "0060", "004A",
+    "001A", "005F", "0049", "001A", "0000", "FFF7", "FFE9", "0000",
+    "FFF6", "FFE8", "0000", "FFF6", "FFE8", "0000", "FFF7", "FFE9",
 )
 
 # ---------------------------------------------------------------------------
@@ -792,11 +794,11 @@ def check_signed_section(
 ) -> SectionResult:
     """Check the signed output-weight section.
 
-    snn_model.json has no output layer, so there is no float column to
-    cross-validate against. The shipped file is pinned by the sha256 of its
-    canonical token sequence and by the exact 48 hex words. Sign-integrity
-    and decode->re-encode stay as defense in depth: they catch clamp-to-zero
-    and broken codecs, but a well-formed FFF9->FFF8 swap still round-trips.
+    exp-025 snn_model.json carries per-neuron output_weights, but this
+    checker still pins the .mem by the sha256 of its canonical token
+    sequence and by the exact 48 hex words. Sign-integrity and
+    decode->re-encode stay as defense in depth: they catch clamp-to-zero
+    and broken codecs, but a well-formed FFF7->FFF8 swap still round-trips.
 
       * exact value count,
       * shipped-file pin (when ``pin`` carries one); the sha covers the parsed
@@ -863,9 +865,10 @@ def verify_shipped() -> list[SectionResult]:
     """Run all four section checks against the artifacts shipped in the repo.
 
     Thresholds, decay rates, and hidden weights are re-derived from
-    snn_model.json and compared value by value; the output weights have no
-    JSON source and are checked against the shipped-file pin plus the signed
-    invariants. Returns one SectionResult per section -- it does not print,
+    snn_model.json and compared value by value; the output weights are
+    checked against the shipped-file pin plus the signed invariants
+    (JSON now also carries per-neuron output_weights; the pin is still
+    the CI gate). Returns one SectionResult per section -- it does not print,
     exit, or raise on a mismatch; that is ``report()``'s job.
 
     Raises:
@@ -912,8 +915,8 @@ def verify_shipped() -> list[SectionResult]:
         ),
         check_signed_section(
             "output weights    (parameters_output_weights.mem)",
-            "shipped-file canonical sha256 + gold hex pin; "
-            "snn_model.json has no output layer",
+            "shipped-file canonical sha256 + gold hex pin "
+            "(exp-025 JSON also carries neurons[].output_weights)",
             parse_mem(MEM_OUTPUT),
             N_OUTPUT_WEIGHTS,
             pin=ShippedPin(
