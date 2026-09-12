@@ -264,10 +264,10 @@ impl SnnModel {
     ///   invariant: every number must be finite and inside the Q8.8 range, and
     ///   `decay_rate` must lie in `(0, 1)`
     /// - [`ModelError::Schema`] if the document or any neuron carries a member
-    ///   outside the Distill sidecar allowlist ([`DOCUMENT_MEMBERS`],
-    ///   [`NEURON_MEMBERS`]). Sidecar provenance and per-neuron
-    ///   `output_weights` / `inhibitory` are accepted but not mapped onto the
-    ///   NIR graph. A key outside those lists is still a schema change.
+    ///   outside the Distill sidecar allowlist. Sidecar provenance and
+    ///   per-neuron `output_weights` / `inhibitory` are accepted but not
+    ///   mapped onto the NIR graph. A key outside those lists is still a
+    ///   schema change.
     ///
     /// Numbers are snapped onto the Q8.8 grid; see [`quantize_q8_8`].
     pub fn from_json_str(text: &str) -> Result<Self, ModelError> {

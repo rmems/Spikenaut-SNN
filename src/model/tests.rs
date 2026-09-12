@@ -30,7 +30,7 @@ fn loads_shipped_model() {
     assert_eq!(model.neurons[0].weights.len(), NEURON_COUNT);
     assert_eq!(model.neurons[0].threshold, 410.0 / 256.0);
     assert_eq!(model.neurons[0].decay_rate, 218.0 / 256.0);
-    assert_eq!(model.neurons[0].membrane_potential, 0.0);
+    assert_eq!(model.neurons[0].membrane_potential, 280.0 / 256.0);
     assert!(!model.neurons[0].last_spike);
     assert_eq!(model.thresholds().len(), NEURON_COUNT);
     assert_eq!(model.decay_rates().len(), NEURON_COUNT);

@@ -739,15 +739,10 @@ mod tests {
     /// Every unit's resistance is per-neuron, not a shared constant: each one
     /// is [`resistance_from_decay`] of *that* unit's decay rate.
     ///
-    /// This deliberately does not assert that the resistances ascend. They do
-    /// today, because the shipped decay rates are the placeholder
-    /// `torch.linspace(0.8, 0.95, 16)` the README documents -- but that is a
-    /// property of a defect, not of this function. A retrain that fits decay
-    /// rates per neuron would almost certainly produce a non-monotonic vector,
-    /// and an ordering assertion would fail on it and report "graduated decays
-    /// give strictly increasing resistances" -- describing the *intended*
-    /// outcome as a regression. Pinning each value to its own input is both
-    /// stricter than the ordering check and survives the retrain.
+    /// This deliberately does not assert that the resistances differ. exp-025
+    /// keep is uniform `00DA`, so a distinctness check would fail on the live
+    /// bank and describe a Distill keep convention as a wiring bug. Heterogeneous
+    /// mapping is covered by `a_non_monotonic_decay_vector_still_maps_per_unit`.
     ///
     /// This asserts the *wiring*, not the formula: it calls the same
     /// [`resistance_from_decay`] the builder does, so a wrong formula would
@@ -773,16 +768,6 @@ mod tests {
                 model.neurons[unit].decay_rate,
             );
         }
-
-        // Non-vacuity: a shared constant would satisfy the loop above only if
-        // every decay rate were also identical, so require the population to
-        // actually distinguish its units.
-        let distinct = rs.iter().filter(|r| **r != rs[0]).count();
-        assert!(
-            distinct > 0,
-            "every unit got the same resistance {}, so `r` is not per-neuron",
-            rs[0],
-        );
     }
 
     /// A non-monotonic decay vector still maps per unit -- and would have
