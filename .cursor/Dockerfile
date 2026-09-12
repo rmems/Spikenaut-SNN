@@ -6,22 +6,30 @@
 # pinned at the minor level so patch releases roll forward without a Dockerfile
 # edit. This is the *development* interpreter only -- CI still pins 3.11 on
 # purpose (see .github/workflows/ci.yml), and the tools parse back to 3.8.
+# Hub tag python:3.14-slim-bookworm is current (verified 2026-09); do not
+# downgrade to 3.12.
 FROM python:3.14-slim-bookworm
 
 # git and curl are required in a fully custom Cloud Agent image; build-essential
 # and pkg-config supply the C toolchain the Rust dependencies link against, and
 # sudo matches the Cloud Agent convention of a passwordless non-root user.
+# Package versions are pinned (Hadolint DL3008 / Codacy BestPractice) to the
+# Debian bookworm amd64 packages published on deb.debian.org as of 2026-09-12.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        build-essential \
-        ca-certificates \
-        curl \
-        git \
-        pkg-config \
-        sudo \
+        build-essential=12.9 \
+        ca-certificates=20230311+deb12u1 \
+        curl=7.88.1-10+deb12u15 \
+        git=1:2.39.5-0+deb12u3 \
+        pkg-config=1.8.1-1 \
+        sudo=1.9.13p3-1+deb12u4 \
     && rm -rf /var/lib/apt/lists/*
 
-# Cloud Agent tooling (git checkout, terminals) expects an `ubuntu` user.
+# Cloud Agent tooling (git checkout, terminals, environment `install`) expects
+# an `ubuntu` user with passwordless sudo. NOPASSWD is required: the Cloud
+# Agent convention has no interactive TTY for a sudo password, and the
+# harness must be able to install packages and mutate the image as root.
+# Do not remove NOPASSWD or the agent cannot complete setup.
 RUN useradd --create-home --shell /bin/bash ubuntu \
     && echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/ubuntu \
     && chmod 0440 /etc/sudoers.d/ubuntu
