@@ -1,0 +1,4 @@
+{"episode_id": "gpu-000170", "mem_util_pct": 75.0, "power_w": 8.527000427246094, "gpu_temp_c": 0.0, "sm_clock_mhz": 180.0, "mem_clock_mhz": 405.0}
+{"episode_id": "gpu-000170", "mem_util_pct": 75.0, "power_w": 8.527000427246094, "gpu_temp_c": 34.5, "sm_clock_mhz": 180.0, "mem_clock_mhz": 405.0}
+{"episode_id": "gpu-000171", "mem_util_pct": 75.0, "power_w": 8.527000427246094, "gpu_temp_c": 0.0, "sm_clock_mhz": 180.0, "mem_clock_mhz": 405.0}
+{"episode_id": "gpu-000171", "mem_util_pct": 75.0, "power_w": 8.527000427246094, "gpu_temp_c": 34.5, "sm_clock_mhz": 180.0, "mem_clock_mhz": 405.0}

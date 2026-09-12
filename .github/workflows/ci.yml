@@ -106,6 +106,20 @@ jobs:
           python3 tools/verify_q88.py --self-test
           python3 -m tools.verify_q88 --self-test
 
+      # Hamming-on-holdout is a measurement, not a pass/fail gate (#39 / #20).
+      # The default command scores the in-repo method fixture (known Hamming);
+      # --self-test proves the harness can fail. Neither path downloads the
+      # v3 JSONL or the exp-023 scratch weights.
+      - name: Measure float-vs-Q8.8 Hamming (method fixture)
+        run: |
+          python3 tools/measure_hamming.py
+          python3 -m tools.measure_hamming
+
+      - name: Prove the Hamming harness can fail
+        run: |
+          python3 tools/measure_hamming.py --self-test
+          python3 -m tools.measure_hamming --self-test
+
       # Only the repository's own copy is checked here. The Hugging Face card
       # is not in this checkout and fetching it would put a network call in a
       # job whose whole point is that it needs nothing installed and nothing

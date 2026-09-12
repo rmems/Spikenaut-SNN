@@ -1,0 +1,105 @@
+"""Shared Hamming constants (script vs ``-m``).
+
+Kept small and import-cycle-free so encode / LIF / measure can all
+depend on it. ``SelfTestFailure`` is not imported here -- only the CLI
+and self-test raise or catch it.
+"""
+
+from __future__ import annotations
+
+import math
+import struct
+from pathlib import Path
+
+try:  # package import: `python3 -m tools.measure_hamming`
+    from .q88_core import N_INPUTS, N_NEURONS, ParseError
+except ImportError:  # direct script: `python3 tools/measure_hamming.py`
+    from q88_core import N_INPUTS, N_NEURONS, ParseError
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+FIXTURE_DIR = REPO_ROOT / "tools" / "fixtures" / "hamming_method"
+SHIPPED_DIR = REPO_ROOT / "dataset" / "merged_v2"
+
+# Legal 5-ch train-scaled encoder (exp-008 / exp-024). Order is the contract.
+LIVE_COLUMNS: tuple[str, ...] = (
+    "mem_util_pct",
+    "power_w",
+    "gpu_temp_c",
+    "sm_clock_mhz",
+    "mem_clock_mhz",
+)
+N_LIVE_AXONS = len(LIVE_COLUMNS)
+# Unused encoder width: axons 5-15 stay 0. Ties the live-column count
+# to the 16-wide bank so N_INPUTS is not a re-export-only import.
+UNUSED_AXONS = tuple(range(N_LIVE_AXONS, N_INPUTS))
+
+# Frozen minmax from v3 state_telemetry train, sha lineage 74acdd0f.
+# Do not refit on val/test. Copied from SynapticDistill.jl FROZEN_MINMAX.
+FROZEN_MINMAX: dict[str, tuple[float, float]] = {
+    "mem_util_pct": (0.0, 75.0),
+    "power_w": (8.527000427246094, 302.8450012207031),
+    "gpu_temp_c": (0.0, 69.0),
+    "sm_clock_mhz": (180.0, 2910.0),
+    "mem_clock_mhz": (405.0, 14801.0),
+}
+FROZEN_LINEAGE = "74acdd0f"
+
+# Episode holdout. Session key is episode_id (ts_utc is 100% null on v3).
+TRAIN_EP_LO, TRAIN_EP_HI = 0, 138
+VAL_EP_LO, VAL_EP_HI = 140, 168
+TEST_EP_LO, TEST_EP_HI = 170, 198
+EMBARGO_EPS = frozenset((139, 169))
+EXP024_TEST_N_TICKS = 117653
+
+# Distill Dale / K-WTA / I-drive. 0-based: excitatory 0..11, inhibitory 12..15.
+N_EXC = 12
+INHIB_ROWS = tuple(range(N_EXC, N_NEURONS))
+I_DRIVE_EXP024 = 0.05
+I_WTA_MAX = 2
+E_WTA_MIN = 2
+
+CONDITION_METHOD_FIXTURE = "method-fixture"
+CONDITION_EXP024 = "exp-024"
+CONDITION_SHIPPED = "shipped-merged-v2"
+
+_FORBIDDEN_EXTRAS = (
+    "hashrate_mh_derived",
+    "reward_hint_derived",
+    "tick_rate",
+    "fan_speed_pct",
+    "vddcr_gfx_v",
+    "vram_temp_c",
+    "step_idx",
+)
+FORBIDDEN_SENSORS = tuple(f"{column}_derived" for column in LIVE_COLUMNS) + _FORBIDDEN_EXTRAS
+
+
+def under_dir(path: Path, root: Path) -> bool:
+    """True when ``path`` is ``root`` or any descendant of ``root``."""
+    resolved = path.resolve()
+    root = root.resolve()
+    return resolved == root or root in resolved.parents
+
+
+def f32(value: float) -> float:
+    """Snap ``value`` onto IEEE-754 binary32, matching Julia ``Float32``.
+
+    The Distill sidecar does every LIF update in Float32. Python's default
+    float is binary64; leaving the extra bits in would invent a third
+    arithmetic that neither bank used. Non-finite values are refused so a
+    NaN cannot travel a silent Hamming path through public ``measure()``.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ParseError(
+            f"value {value!r} is not representable as binary32 ({exc})"
+        ) from exc
+    if not math.isfinite(number):
+        raise ParseError(f"value {value!r} is not a finite binary32")
+    try:
+        return struct.unpack("=f", struct.pack("=f", number))[0]
+    except (OverflowError, struct.error) as exc:
+        raise ParseError(
+            f"value {value!r} is not representable as binary32 ({exc})"
+        ) from exc
