@@ -38,7 +38,8 @@ Exit codes match the rest of ``tools/``: ``0`` verified, ``1`` a claim failed,
 ``EXPECTED_CLAIMS`` is a hard failure, never a pass -- reporting a clean card
 having checked the wrong set is worse than crashing, because it gets believed.
 
-``--self-test`` proves each claim can actually fail.
+``--self-test`` proves each claim can actually fail, including a reversed
+Tier A board that still names every signal.
 """
 
 from __future__ import annotations
@@ -200,18 +201,25 @@ CLAIMS: tuple[Claim, ...] = (
         why=(
             "Issue #20's 2026-09-13 mill records stream-READY axons 6/7/8 "
             "after gaming-telemetry#27, and DENY inventing axons 5/9. A copy "
-            "that drops that board, or that treats encoder/decoder util as "
-            "gpu_util_pct, would fill unused width the live bank still holds "
-            "at zero."
+            "that drops that board, reverses a verdict, or that treats "
+            "encoder/decoder util as gpu_util_pct, would fill unused width "
+            "the live bank still holds at zero. Required phrases bind each "
+            "signal to its READY/BLOCKED verdict on the board, not merely "
+            "the signal name somewhere in the card."
         ),
+        # Phrases, not bare names: a reversed board (memory_used_mb BLOCKED,
+        # gpu_util_pct READY) must fail even when every signal is still named.
         required=(
-            "memory_used_mb",
-            "pcie_tx_kbps",
-            "pcie_rx_kbps",
-            "fan_speed_perc",
-            "gpu_util_pct",
-            "cpu_util_pct",
+            "`memory_used_mb` | **READY**",
+            "Each of `pcie_tx_kbps` and `pcie_rx_kbps` is independently **READY**",
+            "`fan_speed_perc` | **CONDITIONAL READY**",
+            "`gpu_util_pct` | **BLOCKED**",
+            "`cpu_util_pct` | **BLOCKED**",
             "Do not substitute encoder/decoder util",
+            "stream-candidate / projection TBD",
+            "axon 7 stays unused (0)",
+            "unused 5-15 stay 0",
+            "Live bank remains exp-025 axons 0-4",
         ),
     ),
 )
@@ -314,6 +322,10 @@ def _strip_required(text: str, claim: Claim) -> str:
     broken = text
     for needle in claim.required:
         broken = broken.replace(needle, "")
+        # check() folds en-dashes; isolation must strip the README form too.
+        unfolded = needle.replace("-", "\u2013")
+        if unfolded != needle:
+            broken = broken.replace(unfolded, "")
     return broken
 
 
@@ -335,6 +347,64 @@ def _isolation_variants(good: str, claim: Claim) -> list[str]:
     if claim.forbidden or claim.forbidden_unless_same_line:
         variants.append(_inject_forbidden(good, claim))
     return variants
+
+
+# Signal names the reversed-board case must keep, so the self-test proves
+# verdict binding rather than a missing-name failure.
+_TIER_A_SIGNAL_NAMES: tuple[str, ...] = (
+    "memory_used_mb",
+    "pcie_tx_kbps",
+    "pcie_rx_kbps",
+    "fan_speed_perc",
+    "gpu_util_pct",
+    "cpu_util_pct",
+)
+
+_TIER_A_CLAIM = "tier-a-stream-ready-not-axon-fill"
+
+# Unfolded README spellings (en-dashes). check() folds dashes before matching.
+_REVERSED_TIER_A_BOARD: tuple[tuple[str, str], ...] = (
+    ("`memory_used_mb` | **READY**", "`memory_used_mb` | **BLOCKED**"),
+    (
+        "Each of `pcie_tx_kbps` and `pcie_rx_kbps` is independently **READY**",
+        "Each of `pcie_tx_kbps` and `pcie_rx_kbps` is independently **BLOCKED**",
+    ),
+    ("`fan_speed_perc` | **CONDITIONAL READY**", "`fan_speed_perc` | **BLOCKED**"),
+    ("`gpu_util_pct` | **BLOCKED**", "`gpu_util_pct` | **READY**"),
+    ("`cpu_util_pct` | **BLOCKED**", "`cpu_util_pct` | **READY**"),
+    ("stay **BLOCKED**", "stay **READY**"),
+    ("unused 5–15 stay 0", "unused 5–15 are filled"),
+    ("Live bank remains exp-025 axons 0–4", "Live bank remains exp-025 axons 0–9"),
+)
+
+
+def _reversed_tier_a_board(good: str) -> str:
+    """Keep every signal name; invert READY/BLOCKED so the board fails."""
+    text = good
+    for old, new in _REVERSED_TIER_A_BOARD:
+        text = text.replace(old, new)
+    return text
+
+
+def _reversed_board_fails(good: str) -> bool:
+    """True when a swapped READY/BLOCKED board fails this claim."""
+    reversed_board = _reversed_tier_a_board(good)
+    missing = [name for name in _TIER_A_SIGNAL_NAMES if name not in reversed_board]
+    if missing:
+        print(
+            f"self-test: reversed board dropped {missing!r} -- cannot prove "
+            "verdict binding",
+            file=sys.stderr,
+        )
+        return False
+    names = {failure.claim for failure in check(reversed_board)}
+    if _TIER_A_CLAIM not in names:
+        print(
+            f"self-test: reversed Tier A board still passed {_TIER_A_CLAIM}",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def _exercise_claim(good: str, claim: Claim) -> bool:
@@ -387,6 +457,9 @@ def self_test() -> bool:
         print("self-test: did not exercise every claim", file=sys.stderr)
         return False
 
+    if not _reversed_board_fails(good):
+        return False
+
     # Wrong counts must refuse rather than pass. Their complaint is the
     # expected result here, so keep it off the console -- a self-test that
     # prints FAIL while succeeding trains readers to ignore the word.
@@ -401,7 +474,7 @@ def self_test() -> bool:
 
     print(
         f"self-test: {checked} claims each fail when broken; "
-        "exact manifest count enforced."
+        "reversed Tier A board fails; exact manifest count enforced."
     )
     return True
 
