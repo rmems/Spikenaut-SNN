@@ -104,7 +104,11 @@ This is the mapping the live exp-025 `merged_v2` bank was trained on. Sidecar me
 
 Public `TelemetryEncoder` / `CHANNEL_MAP` is **not** this adapter. It is a deprecated 16-column coin proposal (DNX/Quai/Qubic/Kaspa/Monero/Ocean/Verus/Thermal). Pairing that encoder with the shipped weights is wrong: training held axons 5–15 at zero, while that encoder maps unrelated blockchain sources across all 16 channels and still emits its nonzero base rate on the unused axons. `TelemetryEncoder::for_shipped_merged_v2` refuses construction as a live adapter.
 
-Rust names the live sensors as `encode::LIVE_COLUMNS`. This crate does not ship a replacement 5-column encoder; documenting the live map and failing loud on the wrong one is the contract.
+Rust names the live sensors as `encode::LIVE_COLUMNS` and now ships the encoder that matches them. `encode::LiveTelemetryEncoder` is a real, non-deprecated 5-column rate encoder: it takes a `[f32; 5]`, so a 16-wide coin-shaped frame is a compile error, and it drives axons 0–4 only — axons 5–15 are never written and stay at zero, exactly as they were in train. `LiveTelemetryEncoder::for_shipped_merged_v2` constructs; `TelemetryEncoder::for_shipped_merged_v2` still refuses.
+
+A live 5-column **kinetic** encode path exists on top of that: `kinetic::LiveKineticFrontEnd` runs one causal `kinetic-signals` pipeline per live sensor and encodes through `LiveTelemetryEncoder`, targeting axons 0–4 with axons 5–15 held at zero. Its projection is the identity — each sensor's own raw value, normalised against the `frozen_minmax` span the sidecar records for it, lands on its own axon. The eleven kinetic features come back alongside the frame as audit data and **do not** reach an axon: which of them (if any) earns one is the RAW / KINETIC / HYBRID ablation, which remains open — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14). The encode path is host-side only and does not block FPGA parity.
+
+Non-finite samples are rejected whole and never substituted, by both encoders and by the kinetic front end: a single `NaN` sensor rejects the five-wide reading before any estimator or accumulator moves. Dropout **sentinels** are a different problem and neither encoder solves it — `gpu_temp_c == 0` is a finite number and passes straight through. Masking it is the caller's job under the state contract in [#20](https://github.com/rmems/Spikenaut-SNN/issues/20).
 
 Every figure quoted across [#2](https://github.com/rmems/Spikenaut-SNN/issues/2), [#3](https://github.com/rmems/Spikenaut-SNN/issues/3), [#4](https://github.com/rmems/Spikenaut-SNN/issues/4) and closed [#13](https://github.com/rmems/Spikenaut-SNN/issues/13) was measured on these five GPU sensors. A cofire or Hamming figure is unreadable without knowing it was five channels rather than sixteen.
 
@@ -241,13 +245,17 @@ src/                               # Rust, `spikenaut-snn`
 ├── lib.rs                         # Crate root: what the library exposes
 ├── model.rs                       # Decodes snn_model.json, validated
 ├── graph.rs                       # Builds the NIR graph
-├── encode.rs                      # LIVE_COLUMNS (exp-025 5-col, PRIMARY);
+├── encode.rs                      # LIVE_COLUMNS + LiveTelemetryEncoder
+                                   # (exp-025 5-col, PRIMARY, axons 0-4);
                                    # deprecated coin CHANNEL_MAP encoder that
                                    # must not pair with the shipped bank;
                                    # not a runtime
 ├── kinetic.rs                     # Host-side kinetic-signals front end
-                                   # upstream of encode.rs; does not
-                                   # replace axon-encoder
+                                   # upstream of encode.rs; encodes against
+                                   # the live 5-col contract (axons 0-4,
+                                   # 5-15 at zero); host-side only, FPGA
+                                   # parity not blocked; does not replace
+                                   # axon-encoder
 ├── neuromod_host.rs               # Host-side neuromod 0.5 LifNeuron
                                    # adapter; does not rewrite weights
 └── json.rs                        # Strict reader, so the dependency list
@@ -358,7 +366,7 @@ Spikenaut-SNN is a weights and model repository that now also carries a thin Rus
 | Component | Role | Relationship |
 |---|---|---|
 | [`nir-rs`](https://crates.io/crates/nir-rs) 0.4.3 | NIR graph interchange | **Declared** in `Cargo.toml`, resolved from crates.io — [#8](https://github.com/rmems/Spikenaut-SNN/issues/8) |
-| [`kinetic-signals`](https://crates.io/crates/kinetic-signals) 0.4.0 | Causal temporal features (Hurst / Hawkes / surprise / volatility / entropy / EMA-SMA / Z-score / moments) | **Declared** in `Cargo.toml`, resolved from crates.io — host-side preprocessing **upstream of** `axon-encoder`; does not replace it. FPGA parity is not blocked: software and FPGA should see the same encoded sequence. RAW / KINETIC / HYBRID ablation remains open — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14) |
+| [`kinetic-signals`](https://crates.io/crates/kinetic-signals) 0.4.0 | Causal temporal features (Hurst / Hawkes / surprise / volatility / entropy / EMA-SMA / Z-score / moments) | **Declared** in `Cargo.toml`, resolved from crates.io — host-side preprocessing **upstream of** `axon-encoder`; does not replace it. The kinetic path now encodes against the live 5-col contract (`LiveKineticFrontEnd` → `LiveTelemetryEncoder`, axons 0–4, axons 5–15 at zero), host-side only. FPGA parity is not blocked: software and FPGA should see the same encoded sequence. RAW / KINETIC / HYBRID ablation remains open — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14) |
 | [`axon-encoder`](https://crates.io/crates/axon-encoder) 0.4.0 | Telemetry → spike encoding | **Declared** in `Cargo.toml`, resolved from crates.io — downstream of `kinetic-signals` — [#9](https://github.com/rmems/Spikenaut-SNN/issues/9) |
 | [`neuromod`](https://crates.io/crates/neuromod) 0.5.2 | LIF engine, learning rules, neuromodulators | **Declared** from crates.io — host-side `LifNeuron` adapter only; does not rewrite weights, Distill, FPGA, or training — [#5](https://github.com/rmems/Spikenaut-SNN/issues/5) |
 | `silicon-bridge` | Q8.8 `.mem` export | Dependency once published — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
