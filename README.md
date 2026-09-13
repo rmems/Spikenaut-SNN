@@ -150,6 +150,31 @@ raw state → state adapter (optional kinetic-signals) → encoder → fixed-wid
 
 The adapter accepts a variable number of legitimate source signals, so the raw feature count can change without the input contract breaking. Every signal must declare its unit, source of truth, timestamp and sampling semantics, valid range, normalization, missing-value and staleness behavior, and provenance. Missing signals are masked, never silently zeroed. Axons 5–15 at zero on this bank are unused width, not a license to invent filler channels.
 
+### Tier A stream-READY candidates (not shipped)
+
+This is a **stream-readiness board**, not a new Inputs map and not an axon fill. The live bank is still axons 0–4 (`LIVE_COLUMNS`). Unused axons stay **0**. No Stage-1 EXP, no retrain, no bank rewrite.
+
+Re-scored 2026-09-13 on [#20](https://github.com/rmems/Spikenaut-SNN/issues/20) after producer [gaming-telemetry#27](https://github.com/rmems/gaming-telemetry/pull/27) @ `07b19f3` (null-on-miss on `main`) and ETL fail-loud [spikenaut-telemetry-etl#21](https://github.com/rmems/spikenaut-telemetry-etl/pull/21) + [#23](https://github.com/rmems/spikenaut-telemetry-etl/pull/23) on `main`.
+
+**READY** (stream / candidate for a future named Stage-1 slot, one-by-one):
+
+| Axon | Signal | Verdict |
+|---|---|---|
+| 6 | `memory_used_mb` | **READY**. Distinct from live axon 0 `mem_util_pct`. `mem_bw_util` is **BLOCKED** (not collected — do not invent it). |
+| 7 | `pcie_tx_kbps` / `pcie_rx_kbps` | **READY**. Null = miss; 0 = observed idle is OK. |
+| 8 | `fan_speed_perc` | **CONDITIONAL READY**. Stream OK with nulls; axon fill still needs train/val/test variance (Hub mining fans were near-constant). |
+
+**BLOCKED** (collector schema absent — **DENY inventing** these axons):
+
+| Axon | Signal | Why |
+|---|---|---|
+| 5 | `gpu_util_pct` | Schema gap. Producer has only `encoder_util_perc` / `decoder_util_perc`. Do not substitute encoder/decoder util. |
+| 9 | `cpu_util_pct` | Schema gap. Host thermal/power (`cpu_tctl_c`, CCD, `cpu_package_power_w`) are Tier B-ish, not util%. |
+
+Implementation order stays: (1) this contract, (2) ETL availability, (3) named Stage-1 EXP adding READY slots one-by-one — **no silent bank overwrite**. Work metrics stay labels / Stage-4, not axons.
+
+Context only (live 0–4 path, not this board): bank pin [#47](https://github.com/rmems/Spikenaut-SNN/pull/47) @ `6965e12a`; Inputs honesty [#49](https://github.com/rmems/Spikenaut-SNN/pull/49); analog front end [#52](https://github.com/rmems/Spikenaut-SNN/issues/52) / [#54](https://github.com/rmems/Spikenaut-SNN/pull/54) (`LiveStimAdapter` still writes axons 0–4 only).
+
 ### Historical / non-live proposal — coin CHANNEL_MAP
 
 The table below is the proposed v2 layout implemented by public `TelemetryEncoder` / `CHANNEL_MAP`. It is **not live**. It disagrees with the deleted training-time encoder in every column, and neither historical map is the exp-025 train mapping.
@@ -363,6 +388,7 @@ A replacement corpus, `qubic_ticks_snn.jsonl` (~27,430 records), and a data adap
 - **Float-vs-Q8.8 Hamming is published as a measurement, not a gate.** `tools/measure_hamming.py` reports per-tick Hamming (%) and mean bits for `k=none` and `k=4` with the full protocol (weights, encoder, episodes, seed). exp-025 scratch (this bank): k=none **14.960%**, k=4 **49.095%**, json↔mem hidden **0/256**. exp-024 claimed `k=none` 13.187% / 0.1608 bits and `k=4` 56.188% / 1.697 bits on the exp-023 PASS Distill knobs scratch (seed 123 / 5 ep), legal 5-ch train-scaled encoder, frozen minmax lineage `74acdd0f`, v3 test `gpu-000170..198` (n=117653). The in-repo harness run is a method fixture, not a reproduction of either scratch. A pass threshold is deferred to [#20](https://github.com/rmems/Spikenaut-SNN/issues/20). [#39](https://github.com/rmems/Spikenaut-SNN/issues/39), [#4](https://github.com/rmems/Spikenaut-SNN/issues/4)
 - **Unsigned `.mem` export still zero-clamps negatives.** `silicon-bridge`'s `encode_q88` / `encode_q88_unsigned` on the `$readmemh` `.mem` parameter-export path still clamp negatives to 0 (`u16`). Using that path blindly would destroy signed inhibitory weights (hidden and `parameters_output_weights.mem`). A separate `encode_q88_signed` (`i16`) exists for UART/host stimuli; it is not a substitute for signed weight `.mem` export. [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) is still the crates.io pin and signed-export ticket.
 - **The output layer has a JSON source and still has no decision contract.** The 48 signed values in `parameters_output_weights.mem` match per-neuron `output_weights` in `snn_model.json` (neuron-major). `tools/verify_q88.py` still pins the `.mem` by canonical sha256 and gold hex. Nothing here defines what the three rows mean. [#4](https://github.com/rmems/Spikenaut-SNN/issues/4), [#20](https://github.com/rmems/Spikenaut-SNN/issues/20)
+- **Tier A stream-READY is not axon fill.** After [gaming-telemetry#27](https://github.com/rmems/gaming-telemetry/pull/27), axons **6** (`memory_used_mb`), **7** (`pcie_tx_kbps` / `pcie_rx_kbps`), and **8** (`fan_speed_perc`, variance-gated) may stream fail-loud. Axons **5** (`gpu_util_pct`) and **9** (`cpu_util_pct`) stay **BLOCKED** (collector schema absent — do not invent them, and do not substitute encoder/decoder util). Live bank remains exp-025 axons 0–4; unused 5–15 stay 0 until a named Stage-1 EXP. Schema / acceptance on [#20](https://github.com/rmems/Spikenaut-SNN/issues/20) stay open.
 - **Upstream dataset hygiene.** Sibling telemetry datasets still carry dead columns, schema drift, mixed timestamp formats, synthetic tail records, and stuck values. [#2](https://github.com/rmems/Spikenaut-SNN/issues/2), [#3](https://github.com/rmems/Spikenaut-SNN/issues/3)
 
 ## Hardware baseline

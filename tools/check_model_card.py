@@ -55,7 +55,7 @@ README = REPO_ROOT / "README.md"
 
 # Guards against a manifest silently emptied or padded by a bad edit. Bump
 # deliberately when a claim is added or retired.
-EXPECTED_CLAIMS = 8
+EXPECTED_CLAIMS = 9
 
 # Historical 1.6 KB is allowed only on a line that also carries this
 # annotation. The spec-table row is forbidden even when annotated.
@@ -193,6 +193,25 @@ CLAIMS: tuple[Claim, ...] = (
         ),
         forbidden=(
             "Nothing here runs the network.",
+        ),
+    ),
+    Claim(
+        name="tier-a-stream-ready-not-axon-fill",
+        why=(
+            "Issue #20's 2026-09-13 mill records stream-READY axons 6/7/8 "
+            "after gaming-telemetry#27, and DENY inventing axons 5/9. A copy "
+            "that drops that board, or that treats encoder/decoder util as "
+            "gpu_util_pct, would fill unused width the live bank still holds "
+            "at zero."
+        ),
+        required=(
+            "memory_used_mb",
+            "pcie_tx_kbps",
+            "pcie_rx_kbps",
+            "fan_speed_perc",
+            "gpu_util_pct",
+            "cpu_util_pct",
+            "Do not substitute encoder/decoder util",
         ),
     ),
 )
