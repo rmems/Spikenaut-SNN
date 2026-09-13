@@ -16,8 +16,9 @@ use axon_encoder::encoders::RateEncoder;
 use axon_encoder::error::EncoderError;
 use axon_encoder::types::EncodedOutput;
 use spikenaut_snn::encode::{
-    BASE_RATE_HZ, CHANNEL_COUNT, CHANNEL_MAP, DT_SECONDS, INPUT_RANGE, LIVE_COLUMNS, MAX_RATE_HZ,
-    NonFiniteFrame, TelemetryEncoder, TelemetrySource,
+    BASE_RATE_HZ, CHANNEL_COUNT, CHANNEL_MAP, DT_SECONDS, INPUT_RANGE, LIVE_COLUMNS,
+    LIVE_LEGAL_COLUMNS, LiveTelemetryEncoder, MAX_RATE_HZ, NonFiniteFrame, TelemetryEncoder,
+    TelemetrySource,
 };
 use spikenaut_snn::model::NEURON_COUNT;
 
@@ -114,6 +115,149 @@ fn live_columns_are_primary_and_the_coin_encoder_refuses_the_shipped_bank() {
     assert_eq!(
         TelemetryEncoder::for_shipped_merged_v2(),
         Err(spikenaut_snn::LiveMapMismatch)
+    );
+}
+
+/// Neither encoder is the shipped bank's front end, and they fail differently.
+///
+/// The coin encoder has the wrong columns. The live encoder has the right
+/// columns and the wrong modality: `merged_v2` was trained and evaluated on
+/// analog current (`input = W @ stim`, Poisson unused), so a spike train is a
+/// different input distribution wearing the bank's name. Two mistakes, two
+/// errors — a single shared one would hide which is which.
+#[test]
+fn both_shipped_bank_pairings_are_refused_for_different_reasons() {
+    assert_eq!(
+        TelemetryEncoder::for_shipped_merged_v2(),
+        Err(spikenaut_snn::LiveMapMismatch),
+    );
+    assert_eq!(
+        LiveTelemetryEncoder::for_shipped_merged_v2(),
+        Err(spikenaut_snn::SpikeModalityMismatch),
+    );
+
+    let modality = spikenaut_snn::SpikeModalityMismatch.to_string();
+    assert!(modality.contains("analog current"), "{modality}");
+    assert_ne!(modality, spikenaut_snn::LiveMapMismatch.to_string());
+
+    // The refusal is specific, not a blanket ban: the encoder still builds for
+    // a consumer that actually eats spikes.
+    assert!(LiveTelemetryEncoder::new().is_ok());
+}
+
+/// The concrete consequence: this encoder cannot represent "no stimulus".
+///
+/// A normalised zero still fires at `BASE_RATE_HZ`, so an idle sensor does not
+/// read as idle. That is the measurable reason the rate path is not compatible
+/// with weights trained on analog current.
+#[test]
+fn a_normalised_zero_still_fires_on_the_live_rate_encoder() {
+    let mut encoder = LiveTelemetryEncoder::new().expect("the live configuration is valid");
+    let idle = [INPUT_RANGE.0; LIVE_LEGAL_COLUMNS];
+
+    let mut totals = [0_usize; CHANNEL_COUNT];
+    for _ in 0..TICKS_PER_SECOND {
+        for spike in &encoder.encode_step(&idle).expect("finite").spikes {
+            totals[usize::from(spike.channel)] += 1;
+        }
+    }
+
+    for (axon, &count) in totals.iter().take(LIVE_LEGAL_COLUMNS).enumerate() {
+        let expected = expected_rate_hz(INPUT_RANGE.0);
+        assert!(
+            (count as f32 - expected).abs() <= 1.0,
+            "axon {axon} ({}) fired {count} times at the bottom of the range, \
+             expected ~{expected} Hz -- zero stimulus is not representable",
+            LIVE_COLUMNS[axon],
+        );
+    }
+    assert!(
+        totals[LIVE_LEGAL_COLUMNS..].iter().all(|&c| c == 0),
+        "axons 5-15 are unwritten even at the base rate",
+    );
+}
+
+/// The live 5-column encoder gets the columns right and stays off axons 5-15.
+///
+/// It is still not the shipped bank's front end — see
+/// `both_shipped_bank_pairings_are_refused_for_different_reasons` — but the
+/// column contract it does implement has to hold: five wide, and a whole second
+/// of saturated ticks never reaching axons 5-15.
+#[test]
+fn the_live_encoder_drives_five_columns_and_leaves_axons_five_to_fifteen_at_zero() {
+    let mut encoder = LiveTelemetryEncoder::new().expect("the live configuration is valid");
+    assert_eq!(encoder.dt_seconds(), DT_SECONDS);
+    assert_eq!(LIVE_COLUMNS.len(), LIVE_LEGAL_COLUMNS);
+    const {
+        assert!(
+            LIVE_LEGAL_COLUMNS < CHANNEL_COUNT,
+            "5 of 16 axons are legal"
+        )
+    };
+
+    let frame = [INPUT_RANGE.1; LIVE_LEGAL_COLUMNS];
+    let mut totals = [0_usize; CHANNEL_COUNT];
+    for _ in 0..TICKS_PER_SECOND {
+        let output = encoder.encode_step(&frame).expect("a finite frame encodes");
+        for spike in &output.spikes {
+            assert!(spike.polarity, "rate encoding emits positive spikes only");
+            totals[usize::from(spike.channel)] += 1;
+        }
+    }
+
+    let expected = expected_rate_hz(INPUT_RANGE.1);
+    for (axon, &count) in totals.iter().enumerate() {
+        if axon < LIVE_LEGAL_COLUMNS {
+            assert!(
+                (count as f32 - expected).abs() <= 1.0,
+                "axon {axon} ({}) fired {count} times, expected ~{expected} Hz",
+                LIVE_COLUMNS[axon],
+            );
+        } else {
+            assert_eq!(
+                count, 0,
+                "axon {axon} is unused width on this bank and must stay at zero",
+            );
+        }
+    }
+}
+
+/// A non-finite live frame is refused by sensor name and costs no state.
+#[test]
+fn a_non_finite_live_frame_is_refused_without_mutating_the_encoder() {
+    let mut victim = LiveTelemetryEncoder::new().expect("the live configuration is valid");
+    let mut control = LiveTelemetryEncoder::new().expect("the live configuration is valid");
+    let frame = [INPUT_RANGE.1; LIVE_LEGAL_COLUMNS];
+
+    // Land mid-cycle so a leaked accumulator advance would change the phase.
+    for _ in 0..(TICKS_PER_SPIKE - 1) {
+        victim.encode_step(&frame).expect("finite");
+        control.encode_step(&frame).expect("finite");
+    }
+
+    let mut faulty = frame;
+    faulty[0] = f32::NAN;
+    faulty[4] = f32::INFINITY;
+    let rejected = victim.encode_step(&faulty).unwrap_err();
+    assert_eq!(rejected.channels().collect::<Vec<_>>(), [0, 4]);
+    assert_eq!(
+        rejected.sensors().collect::<Vec<_>>(),
+        ["mem_util_pct", "mem_clock_mhz"],
+    );
+    assert_eq!(
+        rejected.to_string(),
+        "non-finite live telemetry on axons 0 (mem_util_pct), 4 (mem_clock_mhz)",
+    );
+    assert_eq!(
+        victim, control,
+        "a rejected frame must leave every accumulator exactly as it was",
+    );
+
+    // The batch path refuses on the same terms, and the cycle resumes on time.
+    assert_eq!(victim.encode(&faulty).unwrap_err(), rejected);
+    assert_eq!(
+        victim.encode_step(&frame).expect("finite").spikes.len(),
+        LIVE_LEGAL_COLUMNS,
     );
 }
 

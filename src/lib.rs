@@ -7,10 +7,14 @@
 //! into the [Neuromorphic Intermediate Representation][nir], so the graph can
 //! leave the repository in the standard interchange form.
 //!
-//! [`encode`] names the live exp-025 input map ([`LIVE_COLUMNS`]) and still
-//! contains a deprecated historical rate encoder. The population eats spikes
-//! and telemetry is not one, but public [`TelemetryEncoder`] is **not** this
-//! model's front end.
+//! [`encode`] names the live exp-025 input map ([`LIVE_COLUMNS`]) and ships the
+//! encoder that matches its columns, [`LiveTelemetryEncoder`]: five legal
+//! columns on axons 0–4, axons 5–15 never written. Neither that encoder nor the
+//! deprecated [`TelemetryEncoder`] is this model's front end, and both say so
+//! out loud — the coin encoder has the wrong columns
+//! ([`LiveMapMismatch`]), and the live rate encoder has the right columns but
+//! the wrong modality ([`SpikeModalityMismatch`]): the shipped bank was trained
+//! on analog current, not on spikes.
 //!
 //! The live bank was trained on five legal columns (`mem_util_pct`,
 //! `power_w`, `gpu_temp_c`, `sm_clock_mhz`, `mem_clock_mhz`) with axons 5–15
@@ -32,10 +36,13 @@
 //! build-dependencies are outside that set by design, and bounded by review
 //! rather than by CI.
 //!
-//! [`kinetic`] is host-side preprocessing *upstream* of the historical
-//! [`TelemetryEncoder`]: raw telemetry → kinetic-signals features → that
-//! deprecated coin-map encoder. It is not the live exp-025 adapter and does
-//! not replace axon-encoder.
+//! [`kinetic`] is host-side preprocessing *upstream* of that live encoder: raw
+//! telemetry → kinetic-signals features → [`LiveKineticFrontEnd`] →
+//! [`LiveTelemetryEncoder`]. It targets the live 5-column contract, holds axons
+//! 5–15 at zero, and does not replace `axon-encoder`. It is a spike path, so it
+//! is likewise not the shipped bank's front end. The eleven kinetic
+//! features come back as audit data; which of them — if any — earns an axon is
+//! the RAW / KINETIC / HYBRID ablation, which stays open.
 //!
 //! [`neuromod_host`] is a thin host-side adapter over published `neuromod`
 //! 0.5.x `LifNeuron`. It constructs and steps a real crates.io type so the
@@ -76,9 +83,10 @@
 //!
 //! # Scope
 //!
-//! [`encode`] names [`LIVE_COLUMNS`] and still contains a deprecated historical
-//! 16-wide rate encoder; feeding that spike train through the graph is its own
-//! ticket. That encoder is not the live adapter.
+//! [`encode`] names [`LIVE_COLUMNS`], ships the live 5-column encoder for it,
+//! and still contains a deprecated historical 16-wide rate encoder; feeding
+//! either spike train through the graph is its own ticket. Only the live one is
+//! a valid stimulus for the shipped weights.
 //!
 //! [`graph`] builds the `Input → Linear → LIF → Output` layer graph and nothing
 //! else: the learned 16×16 weights ride the `Linear` node, and the LIF
@@ -103,7 +111,8 @@ pub mod model;
 pub mod neuromod_host;
 
 pub use encode::{
-    CHANNEL_COUNT, LIVE_COLUMNS, LIVE_LEGAL_COLUMNS, LiveMapMismatch, NonFiniteFrame,
+    CHANNEL_COUNT, LIVE_COLUMNS, LIVE_LEGAL_COLUMNS, LiveMapMismatch, LiveTelemetryEncoder,
+    NonFiniteFrame, NonFiniteLiveFrame, SpikeModalityMismatch,
 };
 #[allow(deprecated)]
 pub use encode::{CHANNEL_MAP, TelemetryEncoder, TelemetrySource};
@@ -111,6 +120,9 @@ pub use graph::{
     Provenance, build_lif_graph, build_lif_graph_with_provenance, load_default_lif_graph,
     resistance_from_decay,
 };
-pub use kinetic::{KINETIC_SIGNALS_CRATE_VERSION, KineticError, KineticFeatures, KineticPipeline};
+pub use kinetic::{
+    ClockMismatch, KINETIC_DT_SECONDS, KINETIC_SIGNALS_CRATE_VERSION, KineticError,
+    KineticFeatures, KineticPipeline, LiveKineticFrontEnd,
+};
 pub use model::{MERGED_V2_PROVENANCE, ModelError, Neuron, SnnModel, is_q8_8, quantize_q8_8};
 pub use neuromod_host::HostLif;

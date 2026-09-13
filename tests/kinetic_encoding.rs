@@ -2,17 +2,21 @@
 
 //! Smoke test for the `kinetic-signals` integration (issue #14): a fixed raw
 //! fixture must produce a finite, deterministic kinetic feature sequence that
-//! then rate-encodes through the *historical* `TelemetryEncoder` path. The crate
-//! must resolve from crates.io; it does not replace that encoder and is not
-//! the live exp-025 adapter.
-
-#![allow(deprecated)]
+//! then rate-encodes through the **live** exp-025 5-column path — five legal
+//! sensors on axons 0–4, axons 5–15 never written. The crate must resolve from
+//! crates.io, and it does not replace `axon-encoder`.
+//!
+//! The deprecated coin `TelemetryEncoder` is not on this path; its own
+//! acceptance lives in `tests/telemetry_encoding.rs`.
 
 use std::path::Path;
 
-use spikenaut_snn::encode::{CHANNEL_COUNT, INPUT_RANGE, TelemetryEncoder};
+use spikenaut_snn::encode::{
+    CHANNEL_COUNT, INPUT_RANGE, LIVE_COLUMNS, LIVE_LEGAL_COLUMNS, LiveTelemetryEncoder,
+};
 use spikenaut_snn::kinetic::{
     FEATURE_COUNT, FEATURE_NAMES, HISTORY_WINDOW, KINETIC_SIGNALS_CRATE_VERSION, KineticPipeline,
+    LiveKineticFrontEnd,
 };
 
 /// A 64-sample power-like fixture: slow climb, one jump, then a settle.
@@ -92,79 +96,240 @@ fn features_at_t_depend_only_on_samples_up_to_t() {
     }
 }
 
-/// The kinetic vector feeds the #9 encoder path: finite, in range, 16 wide.
-#[test]
-fn kinetic_features_encode_through_axon_encoder() {
-    let mut pipeline = KineticPipeline::new();
-    let mut encoder = TelemetryEncoder::new().expect("historical coin-map encoder");
-    let fixture = power_fixture();
+/// A five-sensor live reading fixture, in `LIVE_COLUMNS` order.
+///
+/// Axon 1 (`power_w`) replays [`power_fixture`]; the other four are shaped like
+/// the same episode (a climb, a jump at tick 32, then a settle) in their own
+/// physical units, so every sensor exercises a different part of its frozen
+/// span rather than tracking one shared curve.
+fn live_fixture() -> [[f64; LIVE_LEGAL_COLUMNS]; HISTORY_WINDOW] {
+    let power = power_fixture();
+    std::array::from_fn(|tick| {
+        let unit = (power[tick] - 180.0) / 100.0;
+        [
+            20.0 + unit * 50.0,       // mem_util_pct
+            power[tick],              // power_w
+            45.0 + unit * 20.0,       // gpu_temp_c
+            1_400.0 + unit * 1_200.0, // sm_clock_mhz
+            7_000.0 + unit * 6_000.0, // mem_clock_mhz
+        ]
+    })
+}
 
-    for (tick, &raw) in fixture.iter().enumerate() {
-        let (features, output) = pipeline
-            .encode_step(raw, &mut encoder)
-            .unwrap_or_else(|err| panic!("tick {tick}: {err}"));
-        assert!(
-            features.is_finite(),
-            "tick {tick}: kinetic vector not finite"
+/// The live front end replays deterministically and never leaves samples `<= t`.
+///
+/// Same two properties the single pipeline is held to, asserted on all five
+/// sensors at once: a fresh front end fed the prefix `[0..=t]` must match the
+/// features recorded at `t` on the full replay.
+#[test]
+fn live_features_at_t_depend_only_on_samples_up_to_t() {
+    let fixture = live_fixture();
+    let full = replay_live(&fixture);
+    assert_eq!(full, replay_live(&fixture), "replay must be bit-for-bit");
+
+    for t in 0..fixture.len() {
+        let prefix = replay_live(&fixture[..=t]);
+        assert_eq!(
+            prefix.last(),
+            Some(&full[t]),
+            "tick {t}: prefix replay drifted from the full-run snapshot",
         );
-        let frame = features.to_encoder_frame();
-        assert_eq!(frame.len(), CHANNEL_COUNT);
-        let (lo, hi) = INPUT_RANGE;
-        for (channel, &value) in frame.iter().enumerate() {
-            assert!(
-                value.is_finite() && (lo..=hi).contains(&value),
-                "tick {tick} channel {channel} = {value}"
-            );
-        }
-        for (channel, &value) in frame.iter().enumerate().skip(FEATURE_COUNT) {
-            assert_eq!(
-                value, lo,
-                "unused width stays at the floor (channel {channel})"
-            );
-        }
-        for spike in &output.spikes {
-            assert!(
-                usize::from(spike.channel) < CHANNEL_COUNT,
-                "tick {tick}: spike on channel {}",
-                spike.channel
-            );
-        }
     }
 }
 
-/// A rejected raw sample is a no-op for both the pipeline and the encoder.
+/// Drive the whole live fixture through a fresh front end and encoder.
+///
+/// Asserts the per-tick invariants — five-wide frame, every feature and every
+/// axon value finite and inside [`INPUT_RANGE`] — and returns the per-axon
+/// spike counts so callers can assert on the train as a whole. Taking a fresh
+/// pair each call is what makes it a replay: no state survives between runs.
+fn encode_live_fixture() -> [usize; CHANNEL_COUNT] {
+    let mut front_end = LiveKineticFrontEnd::new();
+    let mut encoder = LiveTelemetryEncoder::new().expect("the live configuration is valid");
+    let (lo, hi) = INPUT_RANGE;
+    let mut fired = [0_usize; CHANNEL_COUNT];
+
+    for (tick, &reading) in live_fixture().iter().enumerate() {
+        let (features, output) = front_end
+            .encode_step(reading, &mut encoder)
+            .unwrap_or_else(|err| panic!("tick {tick}: {err}"));
+
+        assert_eq!(features.len(), LIVE_LEGAL_COLUMNS);
+        let frame = LiveKineticFrontEnd::to_live_frame(&features);
+        assert_eq!(
+            frame.len(),
+            LIVE_LEGAL_COLUMNS,
+            "the live frame is five wide, not sixteen",
+        );
+
+        for (axon, sensor) in features.iter().enumerate() {
+            assert!(
+                sensor.is_finite(),
+                "tick {tick} axon {axon} ({}): NaN/Inf in {:?}",
+                LIVE_COLUMNS[axon],
+                sensor.as_array(),
+            );
+            let value = frame[axon];
+            assert!(
+                value.is_finite() && (lo..=hi).contains(&value),
+                "tick {tick} axon {axon} ({}) = {value}",
+                LIVE_COLUMNS[axon],
+            );
+        }
+
+        for spike in &output.spikes {
+            fired[usize::from(spike.channel)] += 1;
+        }
+    }
+    fired
+}
+
+/// The live path: a 5-wide frame, finite throughout, and nothing on axons 5-15.
+#[test]
+fn kinetic_features_encode_through_the_live_five_column_encoder() {
+    let fired = encode_live_fixture();
+    assert!(
+        fired[..LIVE_LEGAL_COLUMNS].iter().all(|&count| count > 0),
+        "every live axon fired over the fixture: {fired:?}",
+    );
+    assert!(
+        fired[LIVE_LEGAL_COLUMNS..].iter().all(|&count| count == 0),
+        "axons 5-15 are unused width on this bank and must stay at zero: {fired:?}",
+    );
+}
+
+/// The same fixture through a fresh front end and encoder yields the same train.
+///
+/// `encode_step` is the streaming path, so the spike train is a deterministic
+/// function of the readings and the configuration — nothing here may depend on
+/// a random draw.
+#[test]
+fn the_live_encode_path_replays_deterministically() {
+    assert_eq!(
+        encode_live_fixture(),
+        encode_live_fixture(),
+        "replay must reproduce the same per-axon spike counts",
+    );
+}
+
+/// A rejected raw reading is a no-op for every pipeline and for the encoder.
 #[test]
 fn a_non_finite_raw_sample_does_not_touch_the_encoder() {
-    let mut victim_pipeline = KineticPipeline::new();
-    let mut control_pipeline = KineticPipeline::new();
-    let mut victim_encoder = TelemetryEncoder::new().expect("historical coin-map encoder");
-    let mut control_encoder = TelemetryEncoder::new().expect("historical coin-map encoder");
+    let mut victim_front_end = LiveKineticFrontEnd::new();
+    let mut control_front_end = LiveKineticFrontEnd::new();
+    let mut victim_encoder = LiveTelemetryEncoder::new().expect("live constants");
+    let mut control_encoder = LiveTelemetryEncoder::new().expect("live constants");
 
-    for &raw in &power_fixture()[..8] {
-        let (expected_features, expected_output) = control_pipeline
-            .encode_step(raw, &mut control_encoder)
+    for &reading in &live_fixture()[..8] {
+        let (expected_features, expected_output) = control_front_end
+            .encode_step(reading, &mut control_encoder)
             .expect("finite");
-        let (actual_features, actual_output) = victim_pipeline
-            .encode_step(raw, &mut victim_encoder)
+        let (actual_features, actual_output) = victim_front_end
+            .encode_step(reading, &mut victim_encoder)
             .expect("finite");
         assert_eq!(actual_features, expected_features);
         assert_eq!(actual_output, expected_output);
     }
 
-    let err = victim_pipeline
-        .encode_step(f64::NAN, &mut victim_encoder)
+    // A single bad sensor rejects the whole reading; the other four stay put.
+    let mut faulty = live_fixture()[8];
+    faulty[2] = f64::NAN;
+    let err = victim_front_end
+        .encode_step(faulty, &mut victim_encoder)
         .expect_err("NaN must be rejected");
     assert!(err.to_string().contains("non-finite raw"));
-    assert_eq!(victim_pipeline.ticks(), control_pipeline.ticks());
+    assert_eq!(victim_front_end.ticks(), control_front_end.ticks());
+    assert_eq!(
+        victim_encoder, control_encoder,
+        "the encoder must not have advanced on a rejected reading",
+    );
 
-    let (expected_features, expected_output) = control_pipeline
-        .encode_step(200.0, &mut control_encoder)
+    let next = live_fixture()[8];
+    let (expected_features, expected_output) = control_front_end
+        .encode_step(next, &mut control_encoder)
         .expect("finite");
-    let (actual_features, actual_output) = victim_pipeline
-        .encode_step(200.0, &mut victim_encoder)
+    let (actual_features, actual_output) = victim_front_end
+        .encode_step(next, &mut victim_encoder)
         .expect("finite");
     assert_eq!(actual_features, expected_features);
     assert_eq!(actual_output, expected_output);
+}
+
+/// A finite reading can still yield non-finite *audit* features — and that
+/// never reaches the frame or the spike train.
+///
+/// Regression pin for a real boundary, not a hypothetical: `compute_signal_stats`
+/// accumulates third and fourth moments, so a series far out in `f64` overflows
+/// to a `NaN` skewness/kurtosis while every raw sample stays finite. The
+/// estimators own that behaviour — a bare `KineticPipeline` does the same — so
+/// this test records where the line actually is and proves the encode path is
+/// insulated from it, rather than asserting a guarantee the crate does not make.
+#[test]
+fn extreme_but_finite_readings_never_reach_the_encoder_non_finite() {
+    let mut front_end = LiveKineticFrontEnd::new();
+    let mut encoder = LiveTelemetryEncoder::new().expect("live constants");
+
+    // Far outside any physical GPU span, but finite, so the reading is accepted.
+    front_end.step([1e200; LIVE_LEGAL_COLUMNS]).expect("finite");
+    let (features, output) = front_end
+        .encode_step([3e200; LIVE_LEGAL_COLUMNS], &mut encoder)
+        .expect("a finite reading is accepted");
+
+    // The audit features may be poisoned. That is the documented contract:
+    // `Ok` means the raw samples were finite, not that the moments survived.
+    assert!(
+        features.iter().any(|sensor| !sensor.is_finite()),
+        "1e200 is expected to overflow the moment estimators; if this now holds, \
+         the module docs on derived-feature finiteness need revisiting",
+    );
+
+    // The frame does not care: `to_live_frame` reads only `raw`, which was
+    // validated on the way in, and clamps it into INPUT_RANGE.
+    let (lo, hi) = INPUT_RANGE;
+    let frame = LiveKineticFrontEnd::to_live_frame(&features);
+    for (axon, &value) in frame.iter().enumerate() {
+        assert!(
+            value.is_finite() && (lo..=hi).contains(&value),
+            "axon {axon} ({}) = {value} escaped the range",
+            LIVE_COLUMNS[axon],
+        );
+    }
+    for spike in &output.spikes {
+        assert!(
+            usize::from(spike.channel) < LIVE_LEGAL_COLUMNS,
+            "axons 5-15 stay at zero even on a poisoned reading",
+        );
+    }
+}
+
+/// Across the full declared spans, every derived feature stays finite.
+///
+/// The other half of the boundary above: the overflow is unreachable at any
+/// value `LIVE_RAW_RANGES` admits, so the encode path never meets it in
+/// practice.
+#[test]
+fn readings_across_the_frozen_spans_keep_every_feature_finite() {
+    let mut front_end = LiveKineticFrontEnd::new();
+    for tick in 0..HISTORY_WINDOW {
+        // Sweep each sensor across its own frozen span, and overshoot it.
+        let unit = 1.0 + (tick as f64) * 0.37;
+        let reading = [
+            unit * 75.0,
+            unit * 302.845,
+            unit * 69.0,
+            unit * 2_910.0,
+            unit * 14_801.0,
+        ];
+        let features = front_end.step(reading).expect("finite");
+        for (axon, sensor) in features.iter().enumerate() {
+            assert!(
+                sensor.is_finite(),
+                "tick {tick} axon {axon} ({}) went non-finite inside the declared span: {:?}",
+                LIVE_COLUMNS[axon],
+                sensor.as_array(),
+            );
+        }
+    }
 }
 
 /// Acceptance from issue #14: `kinetic-signals` resolves to 0.4.x from
@@ -200,6 +365,22 @@ fn kinetic_signals_resolves_from_crates_io() {
         !lock.contains("name = \"silicon-bridge\""),
         "silicon-bridge must stay out of the dependency tree",
     );
+}
+
+fn replay_live(
+    readings: &[[f64; LIVE_LEGAL_COLUMNS]],
+) -> Vec<[[f64; FEATURE_COUNT]; LIVE_LEGAL_COLUMNS]> {
+    let mut front_end = LiveKineticFrontEnd::new();
+    readings
+        .iter()
+        .enumerate()
+        .map(|(tick, &reading)| {
+            let features = front_end
+                .step(reading)
+                .unwrap_or_else(|err| panic!("tick {tick}: {err}"));
+            std::array::from_fn(|axon| features[axon].as_array())
+        })
+        .collect()
 }
 
 fn replay(samples: &[f64]) -> Vec<[f64; FEATURE_COUNT]> {

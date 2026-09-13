@@ -9,8 +9,18 @@
 //!
 //! The population is still 16-wide (`n_channels` in `config.json`) and still
 //! runs on a 1 kHz clock, so a stimulus has to be a spike train, not a float
-//! vector. This crate does **not** ship a 5-column encoder for [`LIVE_COLUMNS`].
-//! Documenting the live map and refusing the wrong adapter is the contract.
+//! vector — for a consumer that eats spikes. [`LiveTelemetryEncoder`] is that
+//! encoder: 5-column, targeting axons 0–4 and never writing axons 5–15.
+//!
+//! It is **not** the shipped bank's front end, and does not claim to be. That
+//! bank was trained and evaluated on *analog current* (`input = W @ stim`,
+//! Poisson explicitly unused — see `tools/HAMMING_PROTOCOL.md`), so
+//! [`LiveTelemetryEncoder::for_shipped_merged_v2`] refuses with
+//! [`SpikeModalityMismatch`] just as the coin encoder refuses with
+//! [`LiveMapMismatch`] — two different mistakes, two different diagnoses. An
+//! analog `stim` adapter is a separate ticket. Naming the live map, shipping
+//! the encoder that matches its *columns*, and refusing every wrong pairing out
+//! loud is the contract.
 //!
 //! # Live map (PRIMARY)
 //!
@@ -59,7 +69,8 @@
 //! # Non-finite samples
 //!
 //! A sensor that emits `NaN` or an infinity gets its frame rejected whole, by
-//! every entry point, before any encoder state moves. See [`NonFiniteFrame`].
+//! every entry point, before any encoder state moves. See [`NonFiniteLiveFrame`]
+//! on the live path and [`NonFiniteFrame`] on the historical one.
 //!
 //! Nothing is substituted, because there is no honest substitute. Zero is the
 //! worst of them: on channels 14–15 it reads as a cool, idle GPU, which is
@@ -78,14 +89,14 @@
 //!
 //! # Batch and streaming
 //!
-//! [`RateEncoder`] has two modes and they are not interchangeable:
+//! [`RateEncoder`] has two modes and they are not interchangeable. Both
+//! encoders here expose both, on the same terms:
 //!
-//! - [`TelemetryEncoder::encode`] draws one independent Poisson-like sample per
-//!   channel, so a channel emits at most one spike per call and the result is
-//!   random.
-//! - [`TelemetryEncoder::encode_step`] accumulates `rate_hz * dt_seconds` per
-//!   channel and fires when the accumulator crosses 1.0. It is deterministic,
-//!   and it is the mode that matches a fixed 1 ms hardware tick.
+//! - `encode` draws one independent Poisson-like sample per channel, so a
+//!   channel emits at most one spike per call and the result is random.
+//! - `encode_step` accumulates `rate_hz * dt_seconds` per channel and fires
+//!   when the accumulator crosses 1.0. It is deterministic, and it is the mode
+//!   that matches a fixed 1 ms hardware tick.
 //!
 //! # Scope
 //!
@@ -427,6 +438,403 @@ impl fmt::Display for LiveMapMismatch {
 
 impl std::error::Error for LiveMapMismatch {}
 
+/// Returned when a caller asks to pair the live 5-column *rate* encoder with
+/// the shipped exp-025 bank.
+///
+/// [`LiveTelemetryEncoder::for_shipped_merged_v2`] always yields this error.
+///
+/// The columns are right — [`LIVE_COLUMNS`] on axons 0–4, axons 5–15 unwritten
+/// — so this is not [`LiveMapMismatch`]. The *modality* is wrong. The shipped
+/// bank consumes an analog current vector, not a spike train:
+/// `tools/hamming_core.py` steps it as `input = W @ stim` and labels that line
+/// "analog current, not Poisson", and `tools/HAMMING_PROTOCOL.md` records the
+/// exp-024 condition as "analog current, Poisson unused when `learn=false`".
+///
+/// Rate-coding the same five sensors changes both the magnitude and the
+/// temporal distribution of every input. The sharpest case is the one the
+/// unused-axon contract already cares about: a normalised `0.0` encodes at
+/// [`BASE_RATE_HZ`], so an *idle* sensor stops looking idle — the encoder has
+/// no way to express zero stimulus at all. Feeding that to weights trained on
+/// analog current is a different experiment wearing the bank's name.
+///
+/// [`LiveTelemetryEncoder`] is still the correct 5-column rate encoder, and
+/// the map it targets is the live one. It is a front end for a spike-consuming
+/// consumer — the FPGA path — not for `merged_v2`. An analog `stim` adapter for
+/// the shipped bank is a separate ticket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SpikeModalityMismatch;
+
+impl fmt::Display for SpikeModalityMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(
+            "LiveTelemetryEncoder targets the live exp-025 columns but emits a spike train; \
+             the shipped merged_v2 bank was trained and evaluated on analog current \
+             (`input = W @ stim`, Poisson unused), and a normalised zero would encode at the \
+             non-zero base rate rather than as no stimulus. Pairing this encoder with the bank \
+             is refused; an analog stim adapter is a separate ticket.",
+        )
+    }
+}
+
+impl std::error::Error for SpikeModalityMismatch {}
+
+/// A live 5-column frame rejected for carrying a value that is not finite.
+///
+/// Returned by [`LiveTelemetryEncoder::encode_step`] and
+/// [`LiveTelemetryEncoder::encode`] when any of the five legal columns holds a
+/// `NaN`, a `+inf` or a `-inf`. The rejection is all-or-nothing on the same
+/// terms as [`NonFiniteFrame`]: no column's accumulator advanced and no spike
+/// was emitted, so the encoder is left in exactly the state it was in before
+/// the call and the next finite frame encodes normally.
+///
+/// It names every offending column rather than just the first, and names it by
+/// its [`LIVE_COLUMNS`] sensor rather than by index alone -- a caller escalates
+/// a missing `gpu_temp_c` differently from a missing `mem_clock_mhz`. There is
+/// deliberately no `touches_pain_receptor` counterpart: that hook belongs to
+/// the historical coin map's channels 14-15, and this layout has no such pair.
+///
+/// # Example
+///
+/// ```
+/// use spikenaut_snn::encode::{LIVE_LEGAL_COLUMNS, LiveTelemetryEncoder};
+///
+/// let mut encoder = LiveTelemetryEncoder::new()?;
+/// let mut frame = [0.5_f32; LIVE_LEGAL_COLUMNS];
+/// frame[2] = f32::NAN;
+///
+/// let rejected = encoder.encode_step(&frame).unwrap_err();
+/// assert_eq!(rejected.channels().collect::<Vec<_>>(), [2]);
+/// assert_eq!(rejected.sensors().collect::<Vec<_>>(), ["gpu_temp_c"]);
+/// assert_eq!(
+///     rejected.to_string(),
+///     "non-finite live telemetry on axon 2 (gpu_temp_c)",
+/// );
+/// # Ok::<(), axon_encoder::EncoderError>(())
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NonFiniteLiveFrame {
+    /// Which legal columns were not finite, indexed in axon order. At least
+    /// one entry is always `true`.
+    offenders: [bool; LIVE_LEGAL_COLUMNS],
+}
+
+impl NonFiniteLiveFrame {
+    /// The rejection for `frame`, or `None` if every legal column is finite.
+    ///
+    /// Scans the whole frame up front, which is what makes rejection atomic:
+    /// [`RateEncoder`] walks channels in order and mutates each accumulator as
+    /// it goes, so bailing out part-way through a delegated call would leave
+    /// the earlier axons advanced by a frame that was never accepted.
+    fn from_frame(frame: &[f32; LIVE_LEGAL_COLUMNS]) -> Option<Self> {
+        let mut offenders = [false; LIVE_LEGAL_COLUMNS];
+        let mut rejected = false;
+        for (axon, &value) in frame.iter().enumerate() {
+            if !value.is_finite() {
+                offenders[axon] = true;
+                rejected = true;
+            }
+        }
+        rejected.then_some(Self { offenders })
+    }
+
+    /// The offending axon indices, ascending. Never empty, always `< 5`.
+    pub fn channels(self) -> impl Iterator<Item = usize> {
+        self.offenders
+            .into_iter()
+            .enumerate()
+            .filter_map(|(axon, offending)| offending.then_some(axon))
+    }
+
+    /// The offending sensors by [`LIVE_COLUMNS`] name, in axon order.
+    pub fn sensors(self) -> impl Iterator<Item = &'static str> {
+        self.channels().map(|axon| LIVE_COLUMNS[axon])
+    }
+
+    /// The lowest offending axon index.
+    #[must_use]
+    pub fn first_channel(self) -> usize {
+        self.channels()
+            .next()
+            .expect("a rejection always names at least one axon")
+    }
+
+    /// How many legal columns were not finite. Always at least one.
+    #[must_use]
+    pub fn count(self) -> usize {
+        self.offenders
+            .iter()
+            .filter(|offending| **offending)
+            .count()
+    }
+
+    /// Whether `channel` was one of the offenders.
+    ///
+    /// An axon in `5..16` is unused width on this bank, never written by the
+    /// live encoder, and so never an offender.
+    #[must_use]
+    pub fn contains(self, channel: usize) -> bool {
+        self.offenders.get(channel).copied().unwrap_or(false)
+    }
+
+    /// Render the affected axons as ` 2 (gpu_temp_c), 4 (mem_clock_mhz)`.
+    ///
+    /// Split out of [`fmt::Display::fmt`] for the same reason as
+    /// [`NonFiniteFrame::write_channel_list`]: the list needs a loop and a
+    /// first-element case, the message around it needs a plural.
+    fn write_axon_list(self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (position, axon) in self.channels().enumerate() {
+            let separator = if position == 0 { " " } else { ", " };
+            write!(f, "{separator}{axon} ({})", LIVE_COLUMNS[axon])?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for NonFiniteLiveFrame {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("non-finite live telemetry on axon")?;
+        if self.count() > 1 {
+            f.write_str("s")?;
+        }
+        self.write_axon_list(f)
+    }
+}
+
+impl std::error::Error for NonFiniteLiveFrame {}
+
+/// A rate encoder fixed to the live [`LIVE_COLUMNS`] map and the model's 1 kHz
+/// clock.
+///
+/// This gets right the half [`TelemetryEncoder`] gets wrong: the columns. Every
+/// method takes a `&[f32; LIVE_LEGAL_COLUMNS]`, so a 16-wide coin-shaped frame
+/// is a compile error rather than a quietly wrong stimulus, and the wrapped
+/// [`RateEncoder`] is driven with that 5-wide slice. `axon-encoder` emits one
+/// channel index per slot it is handed, so spikes only ever land on axons 0-4:
+/// axons 5-15 are never written, matching the bank's `unused_axons` of `5:15`.
+///
+/// # Not the `merged_v2` front end
+///
+/// Right columns is not the same as right *input*. The shipped bank was
+/// trained and evaluated on **analog current** — `input = W @ stim`, with
+/// Poisson explicitly unused — so a spike train is the wrong modality for it,
+/// and [`Self::for_shipped_merged_v2`] refuses with [`SpikeModalityMismatch`]
+/// rather than constructing. Note in particular that this encoder cannot
+/// express zero stimulus: a normalised `0.0` still fires at [`BASE_RATE_HZ`],
+/// so an idle sensor does not read as idle.
+///
+/// What it *is* good for is a consumer that actually eats spikes — the FPGA
+/// path — on the live five-sensor map. Build it with [`new`](Self::new) for
+/// that, and see [`SpikeModalityMismatch`] for the evidence behind the refusal.
+///
+/// Normalising raw sensor values into [`INPUT_RANGE`] stays the caller's job;
+/// this module only clamps, and only finite values. [`crate::kinetic`] is one
+/// such caller.
+///
+/// # Example
+///
+/// ```
+/// use spikenaut_snn::encode::{DT_SECONDS, LIVE_LEGAL_COLUMNS, LiveTelemetryEncoder};
+///
+/// let mut encoder = LiveTelemetryEncoder::new()?;
+/// assert_eq!(encoder.dt_seconds(), DT_SECONDS);
+///
+/// // Not the shipped bank's front end: that pairing is refused by name.
+/// assert!(LiveTelemetryEncoder::for_shipped_merged_v2().is_err());
+///
+/// // Every legal column saturated: 200 Hz at a 1 ms step is one spike every
+/// // fifth tick, and only the five live axons ever fire.
+/// let frame = [1.0_f32; LIVE_LEGAL_COLUMNS];
+/// for tick in 0..4 {
+///     assert!(encoder.encode_step(&frame)?.spikes.is_empty(), "tick {tick}");
+/// }
+/// let output = encoder.encode_step(&frame)?;
+/// assert_eq!(output.spikes.len(), LIVE_LEGAL_COLUMNS);
+/// assert!(
+///     output
+///         .spikes
+///         .iter()
+///         .all(|spike| usize::from(spike.channel) < LIVE_LEGAL_COLUMNS),
+///     "axons 5-15 are unused width and must stay silent",
+/// );
+///
+/// // A non-finite sensor is rejected by name, and costs nothing: the
+/// // accumulators never moved, so the cycle picks up where it left off.
+/// let mut faulty = frame;
+/// faulty[1] = f32::NAN;
+/// let rejected = encoder.encode_step(&faulty).unwrap_err();
+/// assert_eq!(rejected.first_channel(), 1);
+///
+/// for tick in 0..4 {
+///     assert!(encoder.encode_step(&frame)?.spikes.is_empty(), "tick {tick}");
+/// }
+/// assert_eq!(encoder.encode_step(&frame)?.spikes.len(), LIVE_LEGAL_COLUMNS);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveTelemetryEncoder {
+    inner: RateEncoder,
+}
+
+impl LiveTelemetryEncoder {
+    /// Always fail: a spike train is not what the shipped bank eats.
+    ///
+    /// This encoder targets the right columns — that is the half
+    /// [`TelemetryEncoder`] gets wrong — but `merged_v2` was trained and
+    /// evaluated on *analog current*, not on Poisson spikes. The two refusals
+    /// are therefore different diagnoses of different mistakes:
+    ///
+    /// | Constructor | Columns | Modality | Error |
+    /// | --- | --- | --- | --- |
+    /// | [`TelemetryEncoder::for_shipped_merged_v2`] | wrong (coin, 16-wide) | spikes | [`LiveMapMismatch`] |
+    /// | `LiveTelemetryEncoder::for_shipped_merged_v2` | right ([`LIVE_COLUMNS`]) | wrong (spikes) | [`SpikeModalityMismatch`] |
+    ///
+    /// Use [`new`](Self::new) to build the encoder for a spike-consuming
+    /// consumer, where it is exactly right. See [`SpikeModalityMismatch`] for
+    /// the evidence.
+    ///
+    /// # Errors
+    ///
+    /// Always [`SpikeModalityMismatch`].
+    pub fn for_shipped_merged_v2() -> Result<Self, SpikeModalityMismatch> {
+        Err(SpikeModalityMismatch)
+    }
+
+    /// Build this crate's default live encoder.
+    ///
+    /// [`BASE_RATE_HZ`] to [`MAX_RATE_HZ`] over [`INPUT_RANGE`], stepped at
+    /// [`DT_SECONDS`].
+    ///
+    /// The step is derived from the model's clock, which `config.json`
+    /// records, and the width is [`LIVE_LEGAL_COLUMNS`], which the shipped
+    /// sidecar records. The rates and range are still this crate's choices:
+    /// the exp-025 export names the columns and the unused axons, not a
+    /// firing-rate curve.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EncoderError`] if the default constants ever stop being a
+    /// valid [`RateEncoder`] configuration. They are checked by the test
+    /// suite, so in practice this is infallible.
+    pub fn new() -> Result<Self, EncoderError> {
+        Self::try_new(BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, DT_SECONDS)
+    }
+
+    /// Build the live encoder with an explicit configuration.
+    ///
+    /// Same parameter shape and same finite checks as
+    /// [`TelemetryEncoder::try_new`], including the product check on
+    /// `max_rate_hz * dt_seconds`: both factors can be finite while the
+    /// product is not, and an infinite per-step demand poisons the streaming
+    /// accumulator permanently.
+    ///
+    /// `dt_seconds` is always explicit here: [`RateEncoder::new`] would
+    /// silently substitute its 100 ms compatibility step, which is a hundred
+    /// ticks of this model's clock.
+    ///
+    /// The 1024-spikes-per-channel-per-step streaming drain ceiling documented
+    /// on [`TelemetryEncoder::try_new`] applies here unchanged; it belongs to
+    /// `axon-encoder`, not to this crate, and is pinned by test rather than
+    /// validated here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EncoderError`] if the rates are not finite and non-negative
+    /// with `base_rate_hz <= max_rate_hz`, if `range` is not a finite
+    /// increasing span, if `dt_seconds` is not finite and strictly positive,
+    /// or if `max_rate_hz * dt_seconds` is not finite.
+    pub fn try_new(
+        base_rate_hz: f32,
+        max_rate_hz: f32,
+        range: (f32, f32),
+        dt_seconds: f32,
+    ) -> Result<Self, EncoderError> {
+        let inner = RateEncoder::try_new(base_rate_hz, max_rate_hz, range, dt_seconds)?;
+        if !(max_rate_hz * dt_seconds).is_finite() {
+            return Err(EncoderError::NonFiniteRate {
+                parameter: "max_rate_hz * dt_seconds",
+            });
+        }
+        Ok(Self { inner })
+    }
+
+    /// The configured step duration, in seconds.
+    #[must_use]
+    pub fn dt_seconds(&self) -> f32 {
+        self.inner.dt_seconds()
+    }
+
+    /// Encode one live frame as a single configured step (streaming,
+    /// deterministic).
+    ///
+    /// One call advances [`dt_seconds`](Self::dt_seconds), which is 1 ms for
+    /// [`new`](Self::new) and the shipped clock. Each legal column accumulates
+    /// `rate_hz * dt_seconds` and emits a spike when the accumulator crosses
+    /// 1.0, so consecutive calls form a spike train at the sensor's mapped
+    /// rate. This is the mode that matches the hardware tick; see the
+    /// [module docs](self#batch-and-streaming).
+    ///
+    /// Axons 5-15 are not part of the frame and receive nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NonFiniteLiveFrame`] if any legal column holds a `NaN` or an
+    /// infinity. The whole frame is checked before the first accumulator is
+    /// touched, so a rejected frame is a no-op. See the
+    /// [module docs](self#non-finite-samples) for why nothing is substituted.
+    pub fn encode_step(
+        &mut self,
+        frame: &[f32; LIVE_LEGAL_COLUMNS],
+    ) -> Result<EncodedOutput, NonFiniteLiveFrame> {
+        match NonFiniteLiveFrame::from_frame(frame) {
+            Some(rejected) => Err(rejected),
+            None => Ok(self.inner.encode_step(frame)),
+        }
+    }
+
+    /// Encode one live frame as an independent Poisson draw (batch,
+    /// stochastic).
+    ///
+    /// Emits at most one spike per legal column, with probability
+    /// `1 - exp(-rate_hz * dt_seconds)`. Carries no state between calls, so the
+    /// spike count is random; use [`encode_step`](Self::encode_step) when the
+    /// train has to follow the clock.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NonFiniteLiveFrame`] on the same terms as
+    /// [`encode_step`](Self::encode_step).
+    pub fn encode(
+        &mut self,
+        frame: &[f32; LIVE_LEGAL_COLUMNS],
+    ) -> Result<EncodedOutput, NonFiniteLiveFrame> {
+        match NonFiniteLiveFrame::from_frame(frame) {
+            Some(rejected) => Err(rejected),
+            None => Ok(self.inner.encode(frame)),
+        }
+    }
+
+    /// Clear the per-axon accumulators, returning the encoder to a cold start.
+    ///
+    /// Only affects [`encode_step`](Self::encode_step); the batch path is
+    /// stateless. This is *not* the recovery path for a bad sample: a frame
+    /// rejected as [`NonFiniteLiveFrame`] never reached the accumulators.
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    /// Shared access to the wrapped `axon-encoder` encoder, for inspection.
+    ///
+    /// Read-only, for the same reason as
+    /// [`TelemetryEncoder::as_rate_encoder`]: every encoding entry point on
+    /// [`RateEncoder`] takes `&mut self`, so a mutable borrow would let a
+    /// caller skip the atomic non-finite check this wrapper exists to add --
+    /// and drive the inner encoder with a slice of the wrong width.
+    #[must_use]
+    pub fn as_rate_encoder(&self) -> &RateEncoder {
+        &self.inner
+    }
+}
+
 /// A rate encoder fixed to the historical coin [`CHANNEL_MAP`] and the model's
 /// 1 kHz clock.
 ///
@@ -682,6 +1090,10 @@ impl TelemetryEncoder {
 mod tests {
     use super::*;
 
+    /// Ticks between spikes on a saturated channel: `MAX_RATE_HZ * DT_SECONDS`
+    /// is `0.2`, so the accumulator crosses 1.0 on every fifth tick.
+    const TICKS_PER_SPIKE: usize = 5;
+
     #[test]
     fn live_columns_are_the_exp025_sensors_and_not_the_coin_map() {
         assert_eq!(
@@ -839,6 +1251,229 @@ mod tests {
         .collect::<Vec<_>>();
         let frame: [f32; CHANNEL_COUNT] = frame.try_into().expect("sixteen values");
         assert_eq!(NonFiniteFrame::from_frame(&frame), None);
+    }
+
+    #[test]
+    fn both_encoders_refuse_the_shipped_bank_for_different_reasons() {
+        // Wrong columns: the coin map is not LIVE_COLUMNS.
+        assert_eq!(
+            TelemetryEncoder::for_shipped_merged_v2(),
+            Err(LiveMapMismatch),
+        );
+        assert!(
+            LiveMapMismatch
+                .to_string()
+                .contains("not the live exp-025 adapter")
+        );
+
+        // Right columns, wrong modality: the bank eats analog current, not
+        // spikes, so the live *rate* encoder is refused too -- by a different
+        // error, because it is a different mistake.
+        assert_eq!(
+            LiveTelemetryEncoder::for_shipped_merged_v2(),
+            Err(SpikeModalityMismatch),
+        );
+        let message = SpikeModalityMismatch.to_string();
+        assert!(message.contains("analog current"), "{message}");
+        assert!(message.contains("Poisson unused"), "{message}");
+        assert_ne!(
+            LiveMapMismatch.to_string(),
+            message,
+            "the two refusals must not read as the same diagnosis",
+        );
+
+        // The encoder itself is still constructible for a spike consumer.
+        let encoder = LiveTelemetryEncoder::new().expect("live constants are a valid encoder");
+        assert_eq!(encoder.dt_seconds(), DT_SECONDS);
+    }
+
+    #[test]
+    fn the_live_rate_encoder_cannot_express_zero_stimulus() {
+        // The concrete reason the rate path is not the bank's front end: a
+        // normalised zero is a BASE_RATE_HZ tick, not silence. Over one second
+        // an "idle" sensor still fires.
+        let mut encoder = LiveTelemetryEncoder::new().expect("live constants are a valid encoder");
+        let idle = [INPUT_RANGE.0; LIVE_LEGAL_COLUMNS];
+        let mut fired = 0_usize;
+        for _ in 0..1000 {
+            fired += encoder.encode_step(&idle).expect("finite").spikes.len();
+        }
+        assert!(
+            fired > 0,
+            "a normalised zero encodes at the base rate, which is why this \
+             encoder is not the analog-current front end",
+        );
+    }
+
+    #[test]
+    fn the_live_encoder_only_ever_drives_axons_zero_to_four() {
+        let mut encoder = LiveTelemetryEncoder::new().expect("live constants are a valid encoder");
+        let frame = [INPUT_RANGE.1; LIVE_LEGAL_COLUMNS];
+
+        let mut fired = [0_usize; CHANNEL_COUNT];
+        for _ in 0..TICKS_PER_SPIKE {
+            for spike in &encoder.encode_step(&frame).expect("finite").spikes {
+                fired[usize::from(spike.channel)] += 1;
+            }
+        }
+
+        for (axon, &count) in fired.iter().enumerate() {
+            if axon < LIVE_LEGAL_COLUMNS {
+                assert_eq!(count, 1, "axon {axon} ({}) fires", LIVE_COLUMNS[axon]);
+            } else {
+                assert_eq!(count, 0, "axon {axon} is unused width and stays at zero");
+            }
+        }
+    }
+
+    #[test]
+    fn a_live_rejection_names_every_offending_sensor() {
+        let mut frame = [0.5_f32; LIVE_LEGAL_COLUMNS];
+        frame[0] = f32::NAN;
+        frame[2] = f32::INFINITY;
+        frame[4] = f32::NEG_INFINITY;
+
+        let rejected =
+            NonFiniteLiveFrame::from_frame(&frame).expect("three live columns are not finite");
+        assert_eq!(rejected.channels().collect::<Vec<_>>(), [0, 2, 4]);
+        assert_eq!(
+            rejected.sensors().collect::<Vec<_>>(),
+            ["mem_util_pct", "gpu_temp_c", "mem_clock_mhz"],
+        );
+        assert_eq!(rejected.count(), 3);
+        assert_eq!(rejected.first_channel(), 0);
+        assert!(rejected.contains(2));
+        assert!(!rejected.contains(1));
+        assert!(
+            !rejected.contains(LIVE_LEGAL_COLUMNS),
+            "axon 5 is unused width, never written, never an offender",
+        );
+        assert_eq!(
+            rejected.to_string(),
+            "non-finite live telemetry on axons 0 (mem_util_pct), 2 (gpu_temp_c), \
+             4 (mem_clock_mhz)",
+        );
+
+        let mut single = [0.5_f32; LIVE_LEGAL_COLUMNS];
+        single[3] = f32::NAN;
+        assert_eq!(
+            NonFiniteLiveFrame::from_frame(&single)
+                .expect("one live column is not finite")
+                .to_string(),
+            "non-finite live telemetry on axon 3 (sm_clock_mhz)",
+        );
+        assert_eq!(
+            NonFiniteLiveFrame::from_frame(&[0.5_f32; LIVE_LEGAL_COLUMNS]),
+            None,
+        );
+    }
+
+    #[test]
+    fn a_rejected_live_frame_leaves_the_accumulators_alone() {
+        let mut victim = LiveTelemetryEncoder::new().expect("live constants are a valid encoder");
+        let mut control = LiveTelemetryEncoder::new().expect("live constants are a valid encoder");
+        let frame = [INPUT_RANGE.1; LIVE_LEGAL_COLUMNS];
+
+        for _ in 0..(TICKS_PER_SPIKE - 1) {
+            victim.encode_step(&frame).expect("finite");
+            control.encode_step(&frame).expect("finite");
+        }
+
+        let mut faulty = frame;
+        faulty[1] = f32::NAN;
+        assert_eq!(victim.encode_step(&faulty).unwrap_err().first_channel(), 1,);
+        assert_eq!(
+            victim, control,
+            "a rejected frame must not advance any accumulator",
+        );
+
+        assert_eq!(
+            victim.encode_step(&frame).expect("finite").spikes.len(),
+            LIVE_LEGAL_COLUMNS,
+            "the fifth tick still fires, on schedule",
+        );
+    }
+
+    #[test]
+    fn the_live_batch_path_also_refuses_a_non_finite_frame() {
+        let mut encoder = LiveTelemetryEncoder::new().expect("live constants are a valid encoder");
+        let mut faulty = [0.5_f32; LIVE_LEGAL_COLUMNS];
+        faulty[4] = f32::NAN;
+        assert_eq!(
+            encoder
+                .encode(&faulty)
+                .unwrap_err()
+                .sensors()
+                .collect::<Vec<_>>(),
+            ["mem_clock_mhz"],
+        );
+
+        let output = encoder
+            .encode(&[INPUT_RANGE.1; LIVE_LEGAL_COLUMNS])
+            .expect("finite");
+        assert!(output.spikes.len() <= LIVE_LEGAL_COLUMNS);
+        for spike in &output.spikes {
+            assert!(usize::from(spike.channel) < LIVE_LEGAL_COLUMNS);
+        }
+    }
+
+    #[test]
+    fn resetting_the_live_encoder_returns_it_to_a_cold_start() {
+        let mut encoder = LiveTelemetryEncoder::new().expect("live constants are a valid encoder");
+        let frame = [INPUT_RANGE.1; LIVE_LEGAL_COLUMNS];
+
+        // Land mid-cycle: two of the five ticks that make one spike are spent.
+        for _ in 0..2 {
+            assert!(
+                encoder
+                    .encode_step(&frame)
+                    .expect("finite")
+                    .spikes
+                    .is_empty()
+            );
+        }
+        encoder.reset();
+
+        // Cold start again, so the whole five-tick cycle has to run afresh.
+        // Compared behaviourally rather than by `PartialEq`: `reset` zeroes the
+        // per-axon accumulators but keeps them allocated, so a reset encoder is
+        // not structurally equal to a never-stepped one.
+        for tick in 0..(TICKS_PER_SPIKE - 1) {
+            assert!(
+                encoder
+                    .encode_step(&frame)
+                    .expect("finite")
+                    .spikes
+                    .is_empty(),
+                "tick {tick} after reset",
+            );
+        }
+        assert_eq!(
+            encoder.encode_step(&frame).expect("finite").spikes.len(),
+            LIVE_LEGAL_COLUMNS,
+        );
+        assert_eq!(encoder.as_rate_encoder().dt_seconds(), DT_SECONDS);
+    }
+
+    #[test]
+    fn a_non_positive_live_step_is_an_error_not_a_panic() {
+        let error = LiveTelemetryEncoder::try_new(BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, 0.0)
+            .expect_err("dt_seconds must be strictly positive");
+        assert_eq!(
+            error,
+            EncoderError::NonPositiveOrNonFinite {
+                parameter: "dt_seconds",
+            },
+        );
+
+        let error = LiveTelemetryEncoder::try_new(BASE_RATE_HZ, f32::MAX, INPUT_RANGE, 2.0)
+            .expect_err("a finite-factor, infinite-product per-step demand is refused");
+        assert_eq!(
+            error,
+            EncoderError::NonFiniteRate {
+                parameter: "max_rate_hz * dt_seconds",
+            },
+        );
     }
 
     #[test]
