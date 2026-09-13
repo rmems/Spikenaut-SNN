@@ -362,7 +362,11 @@ _TIER_A_SIGNAL_NAMES: tuple[str, ...] = (
 
 _TIER_A_CLAIM = "tier-a-stream-ready-not-axon-fill"
 
-# Unfolded README spellings (en-dashes). check() folds dashes before matching.
+# README range spellings use U+2013; check() folds them to ASCII before
+# matching. Reverse-board replace has to hit the unfolded card, so the
+# en-dash is built at runtime -- the source file must stay ASCII or
+# verify_q88.py --self-test rejects the module.
+_EN_DASH = "\u2013"
 _REVERSED_TIER_A_BOARD: tuple[tuple[str, str], ...] = (
     ("`memory_used_mb` | **READY**", "`memory_used_mb` | **BLOCKED**"),
     (
@@ -373,8 +377,11 @@ _REVERSED_TIER_A_BOARD: tuple[tuple[str, str], ...] = (
     ("`gpu_util_pct` | **BLOCKED**", "`gpu_util_pct` | **READY**"),
     ("`cpu_util_pct` | **BLOCKED**", "`cpu_util_pct` | **READY**"),
     ("stay **BLOCKED**", "stay **READY**"),
-    ("unused 5–15 stay 0", "unused 5–15 are filled"),
-    ("Live bank remains exp-025 axons 0–4", "Live bank remains exp-025 axons 0–9"),
+    (f"unused 5{_EN_DASH}15 stay 0", f"unused 5{_EN_DASH}15 are filled"),
+    (
+        f"Live bank remains exp-025 axons 0{_EN_DASH}4",
+        f"Live bank remains exp-025 axons 0{_EN_DASH}9",
+    ),
 )
 
 
