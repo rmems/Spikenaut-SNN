@@ -1,8 +1,10 @@
 """Float-vs-Q8.8 Hamming holdout core: encoder, keep-LIF, K-WTA, report data.
 
 Shared by ``measure_hamming`` and ``hamming_selftest``. This module is the
-only place in this repository that *advances* a LIF membrane. That is a
-deliberate, documented exception for issue #39:
+only place in this repository that advances a LIF membrane **with the
+shipped weights in it** -- ``src/neuromod_host.rs`` steps a default published
+``neuromod::LifNeuron``, which never sees them. That is a deliberate,
+documented exception for issue #39:
 
 * the stepper lives in this standard-library Python harness
 * it is **not** a claim that the Rust crate runs spikes

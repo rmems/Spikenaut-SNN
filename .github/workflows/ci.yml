@@ -120,6 +120,25 @@ jobs:
           python3 tools/measure_hamming.py --self-test
           python3 -m tools.measure_hamming --self-test
 
+      # The analog stim contract (#52) has two implementations -- the Python
+      # reference encoder here and `stim::LiveStimAdapter` in the crate -- and
+      # they drift silently unless something compares them. This pins the
+      # Python half against tools/fixtures/live_stim/; `cargo test` asserts the
+      # Rust half against the same two files, so a change to either side fails
+      # one of the two jobs. It also holds hamming_const.FROZEN_MINMAX against
+      # the shipped sidecar -- the Python mirror of the Rust
+      # `shipped_bank_frozen_minmax_matches_live_raw_ranges` -- so the two
+      # encoders cannot agree on spans the bank never froze.
+      - name: Pin the analog stim vector both front ends must agree on
+        run: |
+          python3 tools/live_stim_parity.py
+          python3 -m tools.live_stim_parity
+
+      - name: Prove the stim parity pin can fail
+        run: |
+          python3 tools/live_stim_parity.py --self-test
+          python3 -m tools.live_stim_parity --self-test
+
       # Only the repository's own copy is checked here. The Hugging Face card
       # is not in this checkout and fetching it would put a network call in a
       # job whose whole point is that it needs nothing installed and nothing

@@ -670,7 +670,12 @@ fn push_capped(buf: &mut VecDeque<f64>, value: f64, cap: usize) {
 /// A degenerate span (`max <= min`) would be a corrupt sidecar; it maps to the
 /// bottom of the range rather than producing an infinity or a `NaN`. The
 /// shipped spans are all strictly increasing and the test suite pins them.
-fn normalize_live(value: f64, span: (f64, f64)) -> f32 {
+///
+/// `pub(crate)` because [`crate::stim`] normalises against the same spans and
+/// must not restate the map. It passes a value already snapped onto the
+/// binary32 grid; this projection does not, and says why in
+/// [`crate::stim`]'s module docs.
+pub(crate) fn normalize_live(value: f64, span: (f64, f64)) -> f32 {
     let (min, max) = span;
     let (lo, hi) = INPUT_RANGE;
     let width = max - min;

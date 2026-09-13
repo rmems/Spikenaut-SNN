@@ -81,7 +81,7 @@ No learned SNN, LLM, FPGA controller, or online-training loop may disable or rai
 |------|-------|
 | Neuron model | Leaky-Integrate-and-Fire (LIF) |
 | Neurons | 16 |
-| Input channels | 16 wide; **live** exp-025 map is five legal sensors on axons 0–4 with axons 5–15 held at zero (game-blind). Public `TelemetryEncoder` / `CHANNEL_MAP` is a deprecated historical coin proposal and **must not** be paired with this bank — see [Inputs](#inputs--live-exp-025-map-primary) |
+| Input channels | 16 wide; **live** exp-025 map is five legal sensors on axons 0–4 with axons 5–15 held at zero (game-blind). Front end is `stim::LiveStimAdapter` (analog current). Public `TelemetryEncoder` / `CHANNEL_MAP` is a deprecated historical coin proposal and **must not** be paired with this bank — see [Inputs](#inputs--live-exp-025-map-primary) |
 | Weight format | Q8.8 fixed-point |
 | Learning rules | E-prop, OTTT, reward-modulated STDP — externally reported, see [Training provenance](#training-provenance) |
 | Clock | 1 kHz (1 ms resolution) |
@@ -108,22 +108,39 @@ Rust names the live sensors as `encode::LIVE_COLUMNS` and now ships an encoder t
 
 **It is still not this bank's front end, and it says so.** `merged_v2` was trained and evaluated on *analog current*, not on spikes: `tools/hamming_core.py` steps it as `input = W @ stim` and labels that line "analog current, not Poisson", and `tools/HAMMING_PROTOCOL.md` records the exp-024 condition as "analog current, Poisson unused when `learn=false`". Rate-coding the same five sensors changes the magnitude and temporal distribution of every input — most concretely, a normalized `0.0` encodes at the non-zero `BASE_RATE_HZ`, so an idle sensor stops reading as idle and zero stimulus is not representable at all.
 
-So the crate now refuses **two** wrong pairings, with two different diagnoses:
+So the crate refuses **two** wrong pairings, with two different diagnoses, and accepts exactly one:
 
 | Constructor | Columns | Modality | Result |
 |---|---|---|---|
 | `TelemetryEncoder::for_shipped_merged_v2` | wrong (coin, 16-wide) | spikes | `Err(LiveMapMismatch)` |
 | `LiveTelemetryEncoder::for_shipped_merged_v2` | right (`LIVE_COLUMNS`) | wrong (spikes) | `Err(SpikeModalityMismatch)` |
+| **`LiveStimAdapter::for_shipped_merged_v2`** | right (`LIVE_COLUMNS`) | right (analog) | **`Ok`** |
 
-`LiveTelemetryEncoder::new` still builds, because the encoder is correct for a consumer that actually eats spikes — the FPGA path — on the live five-sensor map. An analog `stim` adapter for the shipped bank is a separate ticket.
+`LiveTelemetryEncoder::new` still builds, because the encoder is correct for a consumer that actually eats spikes — the FPGA path — on the live five-sensor map.
 
-A live 5-column **kinetic** encode path exists on top of that: `kinetic::LiveKineticFrontEnd` runs one causal `kinetic-signals` pipeline per live sensor and encodes through `LiveTelemetryEncoder`, targeting axons 0–4 with axons 5–15 held at zero. Being a spike path, it inherits the modality caveat above — it is not the shipped bank's front end either. Its projection is the identity — each sensor's own raw value, normalised against the `frozen_minmax` span the sidecar records for it, lands on its own axon. The eleven kinetic features come back alongside the frame as audit data and **do not** reach an axon: which of them (if any) earns one is the RAW / KINETIC / HYBRID ablation, which remains open — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14). The encode path is host-side only and does not block FPGA parity.
+### The bank's front end: `stim::LiveStimAdapter`
 
-Non-finite samples are rejected whole and never substituted, by both encoders and by the kinetic front end: a single `NaN` sensor rejects the five-wide reading before any estimator or accumulator moves. Dropout **sentinels** are a different problem and neither encoder solves it — `gpu_temp_c == 0` is a finite number and passes straight through. Masking it is the caller's job under the state contract in [#20](https://github.com/rmems/Spikenaut-SNN/issues/20).
+`stim::LiveStimAdapter` is the analog adapter for these weights. It takes the five raw sensors above — percent, watts, degrees Celsius, megahertz — and returns the 16-wide `[f32; 16]` **analog** `stim` vector that `v = decay * v + W @ stim` consumes. It is stateless: analog current is not a spike train, so there is no clock, no accumulator, and no `reset`.
+
+- **Normalization** is per sensor, through the `frozen_minmax` spans the shipped sidecar records (`kinetic::LIVE_RAW_RANGES`, pinned to `dataset/merged_v2/snn_model.json`), clamped into `[0, 1]`. A GPU hotter than anything in training is a saturated axon, not a fault.
+- **Raw samples are snapped to binary32 before the affine map**, because the bank's arithmetic is `f32` and the reference encoder snaps (`hamming_const.f32`). Skipping that snap lands the result on a different `f32` for 27–36% of uniform in-span readings, depending on the sensor — a one-ulp error, about `3e-8` at mid-span, which any tolerance looser than that absorbs silently. The parity tests compare exact bit patterns for this reason.
+- **Axons 5–15 are exactly `0.0`**, matching the sidecar's `unused_axons: "5:15"`. The adapter only ever writes axons 0–4, so an `UNUSED-AXON LEAK` is unrepresentable rather than merely detectable. A missing or null sensor, and a reading at or below its frozen minimum, encode to the same literal zero — which is the value the contract is written in terms of, and the one value the rate encoder cannot express at all.
+- **Non-finite readings are refused whole**, naming every offending sensor (`NonFiniteLiveFrame`), along with a finite `f64` too large for the `f32` grid. Nothing is substituted.
+- **`Input → Linear` is the node that consumes it.** The graph's `Linear` node carries the learned 16×16 matrix and computes `I = W @ stim`; because axons 5–15 are exactly zero, the five live axons account for every bit of that current. `tests/live_stim.rs` asserts the round trip. On this bank the unused axons are inert twice over: the `snn_model.json` weights on columns 5–15 are training residue far below the Q8.8 grid — none is exactly zero, the largest is ≈ `8e-15` against a grid step of `1/256` — so the decode snaps every one to zero, and the `Linear` node could not be moved by those axons even if something wrote to them.
+
+Parity with the reference is pinned across both languages: `tools/live_stim_parity.py` runs `tools/hamming_encode.py` over `tools/fixtures/live_stim/reading.jsonl` and writes `expected_stim.json`; `tests/live_stim.rs` reads the same two files and asserts the Rust adapter reproduces every value exactly — bit pattern for bit pattern, not within a tolerance. CI runs both halves, so for every input class the fixtures cover, neither implementation can move without the other failing.
+
+Readings JSON cannot express — `NaN`, the infinities, an `f64` past the binary32 ceiling, negative zero, subnormals — travel in the pin as raw IEEE-754 bits, each recording whether the reference *refused* it. Without them the refusal contract would have no cross-language coverage at all, since a JSONL row carrying one would make the pin generator reject the whole file. The same tool also pins Python's `FROZEN_MINMAX` against `dataset/merged_v2/snn_model.json`, mirroring what `shipped_bank_frozen_minmax_matches_live_raw_ranges` already did for Rust. One divergence is known and uncovered: a degenerate span (`max <= min`) short-circuits in Rust and divides by a negative width in Python. It is unreachable on this bank — the shipped spans are strictly increasing and now pinned on both sides — and is documented rather than papered over.
+
+This is the input side only. It is not a claim that this crate runs the shipped bank — `tools/hamming_lif.py` remains the only place in this repository that steps *these weights* through a membrane, and `src/neuromod_host.rs`, which does step a LIF, steps a default published `neuromod::LifNeuron` that never sees them — and it does not change FPGA parity ([#6](https://github.com/rmems/Spikenaut-SNN/issues/6)), where `LiveTelemetryEncoder` stays the right front end for a spike-consuming consumer.
+
+A live 5-column **kinetic** encode path exists on top of `LiveTelemetryEncoder`: `kinetic::LiveKineticFrontEnd` runs one causal `kinetic-signals` pipeline per live sensor and encodes through `LiveTelemetryEncoder`, targeting axons 0–4 with axons 5–15 held at zero. Being a spike path, it inherits the modality caveat above — it is not the shipped bank's front end either. Its projection is the identity — each sensor's own raw value, normalised against the `frozen_minmax` span the sidecar records for it, lands on its own axon. The eleven kinetic features come back alongside the frame as audit data and **do not** reach an axon: which of them (if any) earns one is the RAW / KINETIC / HYBRID ablation, which remains open — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14). The encode path is host-side only and does not block FPGA parity.
+
+Non-finite samples are rejected whole and never substituted, by the analog adapter, by both rate encoders, and by the kinetic front end: a single `NaN` sensor rejects the five-wide reading before any estimator or accumulator moves. Dropout **sentinels** are a different problem and none of the three front ends solves it — `gpu_temp_c == 0` is a finite number and passes straight through. Masking it is the caller's job under the state contract in [#20](https://github.com/rmems/Spikenaut-SNN/issues/20).
 
 Every figure quoted across [#2](https://github.com/rmems/Spikenaut-SNN/issues/2), [#3](https://github.com/rmems/Spikenaut-SNN/issues/3), [#4](https://github.com/rmems/Spikenaut-SNN/issues/4) and closed [#13](https://github.com/rmems/Spikenaut-SNN/issues/13) was measured on these five GPU sensors. A cofire or Hamming figure is unreadable without knowing it was five channels rather than sixteen.
 
-Two consequences worth being explicit about. `vram_temp_c` is excluded because it is exactly `gpu_temp_c + 8` on every non-dropout row, so admitting it would leak the thermal signal into itself. And `gpu_temp_c == 0` is a dropout sentinel, not a cold GPU — it must be masked, which is the same rule the adapter below states.
+Two consequences worth being explicit about. `vram_temp_c` is excluded because it is exactly `gpu_temp_c + 8` on every non-dropout row, so admitting it would leak the thermal signal into itself. And `gpu_temp_c == 0` is a dropout sentinel, not a cold GPU — it must be masked, which is the same rule the state adapter below states.
 
 **The live map is not a claim that 16 axons must be filled.** The replacement state contract is being defined in [#20](https://github.com/rmems/Spikenaut-SNN/issues/20), under one governing rule: logical state variables are *not* equivalent to physical SNN axons. Signals are never invented or duplicated just to fill 16 slots. Instead an explicit adapter sits between them:
 
@@ -247,10 +264,18 @@ dataset/merged_v2/
 
 tools/                             # Python package, standard library only
 ├── verify_q88.py                  # Q8.8 encoding verifier (#4)
-└── measure_hamming.py             # float-vs-Q8.8 Hamming holdout (#39):
+├── measure_hamming.py             # float-vs-Q8.8 Hamming holdout (#39):
                                    # CLI; keep-LIF stepper is hamming_core.py;
                                    # --self-test proves it can fail.
                                    # Measurement, not a pass/fail gate.
+├── live_stim_parity.py            # Cross-language pin for the analog stim
+                                   # contract (#52): reference encoder vs
+                                   # src/stim.rs, on a shared fixture. CLI;
+                                   # the pin itself is live_stim_pin.py and
+                                   # --self-test is live_stim_selftest.py.
+└── fixtures/live_stim/            # reading.jsonl + expected_stim.json, read
+                                   # by both live_stim_parity.py and
+                                   # tests/live_stim.rs
 
 src/                               # Rust, `spikenaut-snn`
 ├── lib.rs                         # Crate root: what the library exposes
@@ -261,6 +286,11 @@ src/                               # Rust, `spikenaut-snn`
                                    # refuses the shipped bank twice over --
                                    # wrong columns (coin) and wrong modality
                                    # (spikes vs analog current); not a runtime
+├── stim.rs                        # LiveStimAdapter: the shipped bank's
+                                   # front end. Raw 5 sensors -> the 16-wide
+                                   # analog stim vector `W @ stim` consumes,
+                                   # axons 5-15 exactly 0.0; pinned against
+                                   # the Python reference encoder (#52)
 ├── kinetic.rs                     # Host-side kinetic-signals front end
                                    # upstream of encode.rs; encodes against
                                    # the live 5-col contract (axons 0-4,
@@ -276,6 +306,8 @@ src/                               # Rust, `spikenaut-snn`
 The artifacts are the product; the code exists to check them and to hand them
 to consumers in a standard form. The Rust crate still does not run the
 network — `Neuron::membrane_potential` is decoded and never advanced.
+`stim::LiveStimAdapter` builds the input the network would eat; it does not
+step it.
 `tools/measure_hamming.py` is the documented exception: it publishes
 float-vs-Q8.8 Hamming on a holdout via a standard-library **keep-LIF**
 stepper in `tools/hamming_core.py`

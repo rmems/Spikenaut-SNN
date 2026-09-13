@@ -17,10 +17,14 @@
 //! Poisson explicitly unused — see `tools/HAMMING_PROTOCOL.md`), so
 //! [`LiveTelemetryEncoder::for_shipped_merged_v2`] refuses with
 //! [`SpikeModalityMismatch`] just as the coin encoder refuses with
-//! [`LiveMapMismatch`] — two different mistakes, two different diagnoses. An
-//! analog `stim` adapter is a separate ticket. Naming the live map, shipping
-//! the encoder that matches its *columns*, and refusing every wrong pairing out
-//! loud is the contract.
+//! [`LiveMapMismatch`] — two different mistakes, two different diagnoses.
+//!
+//! The front end that bank *does* have is
+//! [`crate::stim::LiveStimAdapter`]: same columns, analog modality, and the
+//! one constructor of the three that returns `Ok`. This module stays the
+//! spike side of the map — right for a consumer that eats spikes, refused for
+//! the bank — and naming the live map, shipping the encoder that matches its
+//! *columns*, and refusing every wrong pairing out loud is its contract.
 //!
 //! # Live map (PRIMARY)
 //!
@@ -459,8 +463,9 @@ impl std::error::Error for LiveMapMismatch {}
 ///
 /// [`LiveTelemetryEncoder`] is still the correct 5-column rate encoder, and
 /// the map it targets is the live one. It is a front end for a spike-consuming
-/// consumer — the FPGA path — not for `merged_v2`. An analog `stim` adapter for
-/// the shipped bank is a separate ticket.
+/// consumer — the FPGA path — not for `merged_v2`. The analog front end for
+/// the shipped bank is [`crate::stim::LiveStimAdapter`], which takes the same
+/// five sensors and produces the `stim` vector `W @ stim` consumes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SpikeModalityMismatch;
 
@@ -471,7 +476,7 @@ impl fmt::Display for SpikeModalityMismatch {
              the shipped merged_v2 bank was trained and evaluated on analog current \
              (`input = W @ stim`, Poisson unused), and a normalised zero would encode at the \
              non-zero base rate rather than as no stimulus. Pairing this encoder with the bank \
-             is refused; an analog stim adapter is a separate ticket.",
+             is refused; stim::LiveStimAdapter is the analog front end for it.",
         )
     }
 }
@@ -525,7 +530,11 @@ impl NonFiniteLiveFrame {
     /// [`RateEncoder`] walks channels in order and mutates each accumulator as
     /// it goes, so bailing out part-way through a delegated call would leave
     /// the earlier axons advanced by a frame that was never accepted.
-    fn from_frame(frame: &[f32; LIVE_LEGAL_COLUMNS]) -> Option<Self> {
+    ///
+    /// `pub(crate)` because [`crate::stim`] performs the same all-or-nothing
+    /// scan for the same reason, on a reading it has already snapped onto the
+    /// binary32 grid.
+    pub(crate) fn from_frame(frame: &[f32; LIVE_LEGAL_COLUMNS]) -> Option<Self> {
         let mut offenders = [false; LIVE_LEGAL_COLUMNS];
         let mut rejected = false;
         for (axon, &value) in frame.iter().enumerate() {
@@ -625,6 +634,7 @@ impl std::error::Error for NonFiniteLiveFrame {}
 /// What it *is* good for is a consumer that actually eats spikes — the FPGA
 /// path — on the live five-sensor map. Build it with [`new`](Self::new) for
 /// that, and see [`SpikeModalityMismatch`] for the evidence behind the refusal.
+/// For the bank itself, the front end is [`crate::stim::LiveStimAdapter`].
 ///
 /// Normalising raw sensor values into [`INPUT_RANGE`] stays the caller's job;
 /// this module only clamps, and only finite values. [`crate::kinetic`] is one
@@ -683,14 +693,17 @@ impl LiveTelemetryEncoder {
     /// evaluated on *analog current*, not on Poisson spikes. The two refusals
     /// are therefore different diagnoses of different mistakes:
     ///
-    /// | Constructor | Columns | Modality | Error |
+    /// | Constructor | Columns | Modality | Result |
     /// | --- | --- | --- | --- |
     /// | [`TelemetryEncoder::for_shipped_merged_v2`] | wrong (coin, 16-wide) | spikes | [`LiveMapMismatch`] |
     /// | `LiveTelemetryEncoder::for_shipped_merged_v2` | right ([`LIVE_COLUMNS`]) | wrong (spikes) | [`SpikeModalityMismatch`] |
+    /// | [`LiveStimAdapter::for_shipped_merged_v2`] | right ([`LIVE_COLUMNS`]) | right (analog) | `Ok` |
     ///
     /// Use [`new`](Self::new) to build the encoder for a spike-consuming
     /// consumer, where it is exactly right. See [`SpikeModalityMismatch`] for
-    /// the evidence.
+    /// the evidence, and [`crate::stim`] for the pairing that is correct.
+    ///
+    /// [`LiveStimAdapter::for_shipped_merged_v2`]: crate::stim::LiveStimAdapter::for_shipped_merged_v2
     ///
     /// # Errors
     ///

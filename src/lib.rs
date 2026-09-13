@@ -16,6 +16,14 @@
 //! the wrong modality ([`SpikeModalityMismatch`]): the shipped bank was trained
 //! on analog current, not on spikes.
 //!
+//! [`stim`] is that front end. [`LiveStimAdapter`] takes the same five raw
+//! sensors and produces the 16-wide **analog** `stim` vector the bank's
+//! reference stepper consumes as `v = decay * v + W @ stim`, normalised
+//! through the sidecar's own frozen spans, with axons 5–15 exactly `0.0`. It
+//! is the one `for_shipped_merged_v2` of the three that returns `Ok`, and its
+//! output is pinned value-for-value against the Python reference encoder in
+//! `tools/hamming_encode.py`.
+//!
 //! The live bank was trained on five legal columns (`mem_util_pct`,
 //! `power_w`, `gpu_temp_c`, `sm_clock_mhz`, `mem_clock_mhz`) with axons 5–15
 //! held at zero — game-blind, no game-id / title channels. [`CHANNEL_MAP`] is a
@@ -36,9 +44,9 @@
 //! build-dependencies are outside that set by design, and bounded by review
 //! rather than by CI.
 //!
-//! [`kinetic`] is host-side preprocessing *upstream* of that live encoder: raw
-//! telemetry → kinetic-signals features → [`LiveKineticFrontEnd`] →
-//! [`LiveTelemetryEncoder`]. It targets the live 5-column contract, holds axons
+//! [`kinetic`] is host-side preprocessing *upstream* of that live rate
+//! encoder: raw telemetry → kinetic-signals features →
+//! [`LiveKineticFrontEnd`] → [`LiveTelemetryEncoder`]. It targets the live 5-column contract, holds axons
 //! 5–15 at zero, and does not replace `axon-encoder`. It is a spike path, so it
 //! is likewise not the shipped bank's front end. The eleven kinetic
 //! features come back as audit data; which of them — if any — earns an axon is
@@ -83,10 +91,11 @@
 //!
 //! # Scope
 //!
-//! [`encode`] names [`LIVE_COLUMNS`], ships the live 5-column encoder for it,
-//! and still contains a deprecated historical 16-wide rate encoder; feeding
-//! either spike train through the graph is its own ticket. Only the live one is
-//! a valid stimulus for the shipped weights.
+//! [`encode`] names [`LIVE_COLUMNS`], ships the live 5-column rate encoder for
+//! it, and still contains a deprecated historical 16-wide one; feeding either
+//! spike train through the graph is its own ticket. [`stim`] is the analog
+//! side: it produces a stimulus for the shipped weights, and nothing more —
+//! advancing a membrane is still out of scope for this crate.
 //!
 //! [`graph`] builds the `Input → Linear → LIF → Output` layer graph and nothing
 //! else: the learned 16×16 weights ride the `Linear` node, and the LIF
@@ -109,6 +118,7 @@ pub mod json;
 pub mod kinetic;
 pub mod model;
 pub mod neuromod_host;
+pub mod stim;
 
 pub use encode::{
     CHANNEL_COUNT, LIVE_COLUMNS, LIVE_LEGAL_COLUMNS, LiveMapMismatch, LiveTelemetryEncoder,
@@ -126,3 +136,4 @@ pub use kinetic::{
 };
 pub use model::{MERGED_V2_PROVENANCE, ModelError, Neuron, SnnModel, is_q8_8, quantize_q8_8};
 pub use neuromod_host::HostLif;
+pub use stim::{LiveStimAdapter, NO_STIMULUS, UNUSED_AXONS};
