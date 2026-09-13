@@ -661,8 +661,8 @@ def _check_gold_hex(
 ) -> CheckOutcome:
     """Compare every word against the exact gold hex pin.
 
-    This is what catches well-formed corruption: an FFF9->FFF8 swap decodes and
-    re-encodes cleanly, so only a value-by-value pin sees it.
+    This is what catches well-formed corruption: a word-0 0060->FFF8 swap
+    decodes and re-encodes cleanly, so only a value-by-value pin sees it.
     """
     if expected_hex is None:
         return [], [], False

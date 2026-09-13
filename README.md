@@ -81,7 +81,7 @@ No learned SNN, LLM, FPGA controller, or online-training loop may disable or rai
 |------|-------|
 | Neuron model | Leaky-Integrate-and-Fire (LIF) |
 | Neurons | 16 |
-| Input channels | 16 wide — see [Inputs](#inputs--current-v2-layout); which signals occupy them is not established |
+| Input channels | 16 wide; live exp-025 train mapping is five legal columns with axons 5–15 held at zero. Public `TelemetryEncoder` / `CHANNEL_MAP` is a different 16-col proposal and is **incompatible** with this bank — see [Inputs](#inputs--current-v2-layout) |
 | Weight format | Q8.8 fixed-point |
 | Learning rules | E-prop, OTTT, reward-modulated STDP — externally reported, see [Training provenance](#training-provenance) |
 | Clock | 1 kHz (1 ms resolution) |
@@ -104,9 +104,9 @@ No learned SNN, LLM, FPGA controller, or online-training loop may disable or rai
 
 Channels 14-15 are *intended* as the network's pain receptors. **This is design intent, not shipped behaviour.** The repository now carries code, but none of it is a runtime. `tools/` verifies the Q8.8 export, `src/` lifts the model into a NIR graph, and `src/encode.rs` does read channels 14-15 — it turns them into spikes and can report that a rejected frame touched them. That is routing and diagnostics, not a response: there is still no reward signal, no online weight update, and nothing that acts on a temperature reading. The 85 °C threshold also belongs to `thalamic-relay`, a peer process listed below, not to the SNN. Wiring a thermal penalty into training is future work.
 
-### Which map the shipped weights use is unknown
+### The live map is the 5-column train layout — `TelemetryEncoder` is incompatible
 
-**The table above is the proposed v2 layout. A second, different layout is recorded in this repository's history, and the two disagree in every column — so at most one of them can describe the shipped weights, and nothing here establishes which, or whether either does.** The historical encoder — `dataset/generate_spike_data.py`, deleted in `50a2627` but recoverable from history — declares:
+**The table above is the proposed v2 layout implemented by public `TelemetryEncoder` / `CHANNEL_MAP`. It is not the mapping the live exp-025 bank was trained on.** Pairing that encoder with the shipped weights is wrong: training held axons 5–15 at zero on five legal columns (`mem_util_pct`, `power_w`, `gpu_temp_c`, `sm_clock_mhz`, `mem_clock_mhz`), while this encoder maps unrelated blockchain sources across all 16 channels and still emits its nonzero base rate on the unused axons. A second, different layout is recorded in this repository's history, and the two historical maps disagree in every column — neither is the live mapping. The historical encoder — `dataset/generate_spike_data.py`, deleted in `50a2627` but recoverable from history — declares:
 
 | Channels | Training-time signal | v2 layout says |
 |---|---|---|
@@ -115,7 +115,7 @@ Channels 14-15 are *intended* as the network's pain receptors. **This is design 
 | 8-11 | `qubic_hashrate`, `qubic_power`, `qubic_temp`, `qubic_qubic` | XMR, Ocean |
 | 12-15 | `thermal_stress`, `power_efficiency`, `network_health`, `composite_reward` | Verus, Thermal |
 
-Every column is assigned differently. But be careful how much this settles: it records what **this encoder** produced, and — as the provenance section below sets out — no training run in this repository links that encoder or `fresh_sync_data.jsonl` to the shipped matrix, which was imported from an external path. So this is the layout the historical encoder wrote, **not a verified statement of what the shipped weights expect**. Treat it as the best available hypothesis about the columns and the only one with code behind it; a traceable training artifact would be needed to promote it to fact. What can be said without qualification is that the two maps disagree in every column, so the v2 table above is not a safe guide either.
+Every column is assigned differently. That disagreement is history about two non-live maps. No training run in this repository links that deleted encoder or `fresh_sync_data.jsonl` to the live matrix; the live mapping is the five-column Distill layout below, not this table and not `TelemetryEncoder`. The v2 table above is not a safe guide to the shipped weights.
 
 Running that encoder end to end over the eight records — including `create_spike_train`, which allocates `np.zeros(16)` per record and overwrites only the channels that event touches — gives its **`normalized_values` matrix**. This is the rate the encoder assigns each channel, not the spikes it emits; the distinction matters and is taken up below the table.
 
@@ -168,7 +168,7 @@ Neither map above is what the experiments cited across [#2](https://github.com/r
 | 4 | `mem_clock_mhz` | MHz |
 | 5-15 | *unused* — held at zero, unused width rather than fake channels | — |
 
-This is a **third** layout. The live exp-025 sidecar metadata names exactly these five `legal_columns` and holds axons 5–15 at zero (`unused_axons`). Historical measurements on #2/#3/#4/#13 that predate this bank used the same five sensors; a cofire or Hamming figure is unreadable without knowing it was five channels rather than sixteen.
+This is the **live** layout, not a third hypothesis. The exp-025 sidecar metadata names exactly these five `legal_columns` and holds axons 5–15 at zero (`unused_axons`). Public `TelemetryEncoder` is not this adapter and must not be paired with the bank. Historical measurements on #2/#3/#4/#13 that predate this bank used the same five sensors; a cofire or Hamming figure is unreadable without knowing it was five channels rather than sixteen.
 
 Two consequences worth being explicit about. `vram_temp_c` is excluded because it is exactly `gpu_temp_c + 8` on every non-dropout row, so admitting it would leak the thermal signal into itself. And `gpu_temp_c == 0` is a dropout sentinel, not a cold GPU — it must be masked, which is the same rule the adapter above states.
 
@@ -178,7 +178,8 @@ Two consequences worth being explicit about. `vram_temp_c` is excluded because i
 |-----------|--------|--------|
 | Thresholds (16) | Distill sidecar (exp-025) | Twelve cells ≈1.60 (`019A`/`0199`); four cells 0.45 (`0073`, neurons 6–9) |
 | Decay rates (16) | Distill keep=0.85 | All `00DA` = 0.8515625 |
-| Hidden weights (256) | Distill sidecar — **mixed-sign, not a ramp** | Range −1.0 to +1.5999; 116 negative / 140 positive |
+| Hidden weights (256) — JSON float census | Distill sidecar — **mixed-sign, not a ramp** | Unquantized JSON: range −1.0 to +1.5999; 116 negative / 140 positive |
+| Hidden weights (256) — shipped Q8.8 census | `parameters_weights.mem` (FPGA / Rust graph) | 19 negative / 50 positive / **187 zero**. Do not treat the float census as FPGA sparsity. |
 | Output weights (48) | Distill sidecar readout (also in JSON) | Signed; neurons 12–15 inhibitory (`0000`/`FFF7`/`FFE9` family) |
 
 The hidden matrix is no longer the #2 linear ramp. The *previous* bank increased each neuron's 16 weights by exactly one Q8.8 step (`0x0001`, 0.0039):
@@ -232,9 +233,9 @@ src/                               # Rust, `spikenaut-snn`
 ├── lib.rs                         # Crate root: what the library exposes
 ├── model.rs                       # Decodes snn_model.json, validated
 ├── graph.rs                       # Builds the NIR graph
-├── encode.rs                      # Telemetry -> spikes, on the proposed
-                                   # channel map; not a runtime, and not
-                                   # the shipped weights' input contract
+├── encode.rs                      # Telemetry -> spikes on proposed 16-col
+                                   # CHANNEL_MAP; incompatible with the
+                                   # exp-025 5-col train mapping; not a runtime
 ├── kinetic.rs                     # Host-side kinetic-signals front end
                                    # upstream of encode.rs; does not
                                    # replace axon-encoder

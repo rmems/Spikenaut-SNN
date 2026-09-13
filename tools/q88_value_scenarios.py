@@ -340,8 +340,8 @@ def _shipped_file_matches_its_pins(gold, real) -> int:
         f"shipped file has {len(gold)} words, expected {N_OUTPUT_WEIGHTS}",
     )
     _require(
-        gold[0] == OUTPUT_WEIGHTS_HEX[0],
-        f"self-test expects shipped word 0 to be {OUTPUT_WEIGHTS_HEX[0]}, "
+        gold[0] == "0060",
+        f"self-test expects shipped word 0 to be 0060 (exp-025 pin), "
         f"got {gold[0]}",
     )
     checks += 4
