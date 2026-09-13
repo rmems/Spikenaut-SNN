@@ -74,6 +74,17 @@ fn raw_rows() -> Vec<(usize, Json)> {
         .map(|(index, line)| {
             let parsed = json::parse(line)
                 .unwrap_or_else(|err| panic!("{READING_REL}:{}: {err}", index + 1));
+            // A bare scalar or array is valid JSON and would sail through:
+            // `Json::get` returns `None` for every column on a non-object, so
+            // `reading_of` would read it as five absent sensors and encode an
+            // all-zero vector. A corrupt fixture would then quietly agree with
+            // any pin whose rows are zero.
+            assert!(
+                parsed.as_object().is_some(),
+                "{READING_REL}:{}: expected a JSON object, got {}",
+                index + 1,
+                parsed.type_name(),
+            );
             (index + 1, parsed)
         })
         .collect()

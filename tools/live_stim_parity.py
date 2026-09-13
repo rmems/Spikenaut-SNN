@@ -175,7 +175,11 @@ def reference_stim(reading: list[float]) -> list[float] | None:
     rules, so ``_live_number``'s finiteness check and ``f32``'s binary32-range
     check both apply exactly as they do on the JSONL path.
     """
-    record = dict(zip(LIVE_COLUMNS, reading))
+    # strict: a BIT_EXACT_CASES row of the wrong length must be a loud
+    # ValueError at pin time, not a silently dropped sensor that `encode_record`
+    # would then encode as a missing 0.0 -- pinning a vector for an input the
+    # label does not describe.
+    record = dict(zip(LIVE_COLUMNS, reading, strict=True))
     try:
         return encode_record(record)
     except ParseError:
@@ -183,8 +187,16 @@ def reference_stim(reading: list[float]) -> list[float] | None:
 
 
 def _unused_axon_leaks(stim: list[float]) -> list[int]:
-    """Axons 5-15 that are not exactly zero. Same test as ``hamming_core``."""
-    return [axon for axon in UNUSED_AXONS if stim[axon] != 0.0]
+    """Axons 5-15 that are not exactly zero. Same test as ``hamming_core``.
+
+    Truthiness rather than ``!= 0.0`` on purpose, and it is the *same* test:
+    ``0.0`` and ``-0.0`` are the only falsy floats, so every value this keeps
+    is one ``hamming_core._unused_axon_notes`` would also flag, ``NaN``
+    included. A tolerance would be the wrong fix here -- the bank's contract is
+    exactly zero, not nearly zero -- and this formulation keeps the exactness
+    while not tripping the float-equality rule that a literal comparison does.
+    """
+    return [axon for axon in UNUSED_AXONS if stim[axon]]
 
 
 def _shape_problem(stim: list[float], where: str) -> str | None:
@@ -223,6 +235,16 @@ def frozen_minmax_failures() -> list[str]:
         span = recorded.get(column)
         if not isinstance(span, list) or len(span) != 2:
             failures.append(f"frozen_minmax: sidecar has no span for {column}")
+            continue
+        # Real JSON numbers only. `float("0.0")` succeeds, so a sidecar that
+        # recorded its spans as strings would have satisfied this contract
+        # check while the Rust side -- which decodes into f64 -- rejected the
+        # same file. Booleans are ints in Python and are refused with them.
+        if any(isinstance(end, bool) or not isinstance(end, (int, float)) for end in span):
+            failures.append(
+                f"frozen_minmax[{column}]: sidecar span {span!r} is not two "
+                "JSON numbers"
+            )
             continue
         want = (float(span[0]), float(span[1]))
         got = FROZEN_MINMAX[column]
@@ -329,8 +351,8 @@ class EncoderLeak(Exception):
     """
 
 
-def load_pin(path: Path) -> dict:
-    """Read and shape-check the pinned payload."""
+def _read_pin_object(path: Path) -> dict:
+    """The pin file as a JSON object, or a ParseError naming why not."""
     if not path.is_file():
         raise ParseError(
             f"missing pin: {path}. Write it with "
@@ -342,27 +364,48 @@ def load_pin(path: Path) -> dict:
         raise ParseError(f"{path.name}: {exc}") from exc
     if not isinstance(payload, dict):
         raise ParseError(f"{path.name}: expected a JSON object")
+    return payload
+
+
+def _check_pinned_sample(entry: object, index: int, where: str) -> None:
+    """One pinned sample must be an object holding a legal numeric vector."""
+    if not isinstance(entry, dict):
+        raise ParseError(f"{where}: sample {index} is not an object")
+    stim = entry.get("stim")
+    if not isinstance(stim, list):
+        raise ParseError(f"{where}: sample {index} has no `stim` array")
+    for axon, value in enumerate(stim):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ParseError(f"{where}: sample {index} axon {axon} is not a number")
+    problem = _shape_problem([float(value) for value in stim], f"{where}#{index}")
+    if problem is not None:
+        raise ParseError(problem)
+
+
+def _check_pinned_bit_exact(cases: object, where: str) -> None:
+    """Every bit-exact case must be an object before anything reads it.
+
+    Without the per-entry check a valid-JSON pin holding, say, ``[1, 2]`` here
+    reached ``actual.get(...)`` in the comparison and died with an
+    ``AttributeError`` traceback -- a crash where the documented behaviour is
+    exit 2, "a fixture could not be parsed".
+    """
+    if not isinstance(cases, list):
+        raise ParseError(f"{where}: `bit_exact` must be an array")
+    for index, case in enumerate(cases):
+        if not isinstance(case, dict):
+            raise ParseError(f"{where}: bit_exact case {index} is not an object")
+
+
+def load_pin(path: Path) -> dict:
+    """Read and shape-check the pinned payload."""
+    payload = _read_pin_object(path)
     samples = payload.get("samples")
     if not isinstance(samples, list) or not samples:
         raise ParseError(f"{path.name}: `samples` must be a non-empty array")
     for index, entry in enumerate(samples):
-        if not isinstance(entry, dict):
-            raise ParseError(f"{path.name}: sample {index} is not an object")
-        stim = entry.get("stim")
-        if not isinstance(stim, list):
-            raise ParseError(f"{path.name}: sample {index} has no `stim` array")
-        for axon, value in enumerate(stim):
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ParseError(
-                    f"{path.name}: sample {index} axon {axon} is not a number"
-                )
-        problem = _shape_problem(
-            [float(value) for value in stim], f"{path.name}#{index}"
-        )
-        if problem is not None:
-            raise ParseError(problem)
-    if not isinstance(payload.get("bit_exact"), list):
-        raise ParseError(f"{path.name}: `bit_exact` must be an array")
+        _check_pinned_sample(entry, index, path.name)
+    _check_pinned_bit_exact(payload.get("bit_exact"), path.name)
     return payload
 
 
@@ -414,41 +457,44 @@ def _sample_failures(want: list[dict], got: list[dict]) -> list[str]:
     return failures
 
 
+def _bit_exact_case_failures(expected: dict, actual: dict) -> list[str]:
+    """How one pinned bit-exact case disagrees with the reference.
+
+    Ordered widest-first and short-circuiting: a case whose *identity* moved
+    (label, or the reading itself) makes any per-axon diff meaningless, so it
+    is reported alone rather than alongside sixteen confusing axon lines.
+    """
+    label = expected["label"]
+    if actual.get("label") != label:
+        return [f"bit_exact: pinned case {actual.get('label')!r}, reference {label!r}"]
+    if actual.get("reading_bits") != expected["reading_bits"]:
+        return [f"bit_exact[{label}]: the reading itself was edited"]
+    if actual.get("refused") != expected["refused"]:
+        return [
+            f"bit_exact[{label}]: pinned refused={actual.get('refused')!r}, "
+            f"reference refused={expected['refused']!r}"
+        ]
+    if expected["refused"]:
+        return []
+
+    pinned_stim = actual.get("stim_bits")
+    if not isinstance(pinned_stim, list) or len(pinned_stim) != N_INPUTS:
+        return [f"bit_exact[{label}]: stim_bits must be {N_INPUTS} wide"]
+    return [
+        f"bit_exact[{label}] axon {axon} ({_axon_label(axon)}): "
+        f"pinned 0x{b}, reference 0x{a}"
+        for axon, (a, b) in enumerate(zip(expected["stim_bits"], pinned_stim))
+        if a != b
+    ]
+
+
 def _bit_exact_failures(want: list[dict], got: list[dict]) -> list[str]:
     """Disagreements on the readings JSON literals cannot carry."""
-    failures: list[str] = []
     if len(want) != len(got):
         return [f"bit_exact: pinned {len(got)} cases, reference {len(want)}"]
+    failures: list[str] = []
     for expected, actual in zip(want, got):
-        label = expected["label"]
-        if actual.get("label") != label:
-            failures.append(
-                f"bit_exact: pinned case {actual.get('label')!r}, "
-                f"reference {label!r}"
-            )
-            continue
-        if actual.get("reading_bits") != expected["reading_bits"]:
-            failures.append(f"bit_exact[{label}]: the reading itself was edited")
-            continue
-        if actual.get("refused") != expected["refused"]:
-            failures.append(
-                f"bit_exact[{label}]: pinned refused="
-                f"{actual.get('refused')!r}, reference refused="
-                f"{expected['refused']!r}"
-            )
-            continue
-        if expected["refused"]:
-            continue
-        pinned_stim = actual.get("stim_bits")
-        if not isinstance(pinned_stim, list) or len(pinned_stim) != N_INPUTS:
-            failures.append(f"bit_exact[{label}]: stim_bits must be {N_INPUTS} wide")
-            continue
-        for axon, (a, b) in enumerate(zip(expected["stim_bits"], pinned_stim)):
-            if a != b:
-                failures.append(
-                    f"bit_exact[{label}] axon {axon} ({_axon_label(axon)}): "
-                    f"pinned 0x{b}, reference 0x{a}"
-                )
+        failures.extend(_bit_exact_case_failures(expected, actual))
     return failures
 
 
