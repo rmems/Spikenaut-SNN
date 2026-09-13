@@ -1,33 +1,45 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Telemetry → spikes, a proposed front end for a 16-LIF population.
+//! Live exp-025 inputs, and a historical coin-map encoder that is not that adapter.
 //!
-//! [`crate::graph`] describes what the network *is*; this module describes what
-//! it *eats*. The shipped model takes 16 continuous telemetry channels
-//! (`n_channels` in `config.json`) and runs on a 1 kHz clock, so the input has
-//! to be a spike train, not a float vector. `axon-encoder`'s [`RateEncoder`]
-//! does that conversion, and [`TelemetryEncoder`] pins it to the layout below
-//! and to that clock.
+//! [`crate::graph`] describes what the network *is*; this module names what it
+//! *eats*. The live `merged_v2` bank is the exp-025 Distill export: five legal
+//! GPU sensors on axons 0–4, axons 5–15 held at zero. That map is
+//! [`LIVE_COLUMNS`]. It is game-blind: no game-id or title channels.
 //!
-//! # This map is incompatible with the shipped exp-025 bank
+//! The population is still 16-wide (`n_channels` in `config.json`) and still
+//! runs on a 1 kHz clock, so a stimulus has to be a spike train, not a float
+//! vector. This crate does **not** ship a 5-column encoder for [`LIVE_COLUMNS`].
+//! Documenting the live map and refusing the wrong adapter is the contract.
 //!
-//! [`CHANNEL_MAP`] is a *proposed* 16-column blockchain layout. The live
-//! `merged_v2` artifact is the exp-025 bank, trained on five legal columns
-//! (`mem_util_pct`, `power_w`, `gpu_temp_c`, `sm_clock_mhz`, `mem_clock_mhz`)
-//! with axons 5–15 held at zero. This encoder still maps unrelated sources
-//! across all 16 channels and emits a nonzero [`BASE_RATE_HZ`] even on those
-//! unused axons.
+//! # Live map (PRIMARY)
 //!
-//! Pairing [`TelemetryEncoder`] with the shipped weights is therefore wrong,
-//! not merely unproven. It also disagrees with the deleted
-//! `dataset/generate_spike_data.py` training-time encoder, which routed on a
-//! record's top-level `blockchain` field (Kaspa channels 0-3, Monero 4-7,
-//! Qubic 8-11; this map puts Kaspa at 6-7). Those two historical maps still
-//! disagree with each other; neither is the live train mapping.
+//! | Axon | Signal |
+//! | ---- | ------ |
+//! | 0    | `mem_util_pct` |
+//! | 1    | `power_w` |
+//! | 2    | `gpu_temp_c` |
+//! | 3    | `sm_clock_mhz` |
+//! | 4    | `mem_clock_mhz` |
+//! | 5–15 | unused / held at zero in train |
 //!
-//! # Channel map
+//! # Historical / non-live proposal
 //!
-//! Two channels per source:
+//! [`TelemetryEncoder`] / [`CHANNEL_MAP`] is a *deprecated* 16-column
+//! blockchain layout (DNX/Quai/Qubic/Kaspa/Monero/Ocean/Verus/Thermal). It
+//! still rate-encodes a `[f32; 16]` via `axon-encoder`'s [`RateEncoder`] for
+//! historical tests, but pairing it with the shipped weights is wrong: it
+//! maps unrelated sources onto all 16 axons and emits a nonzero
+//! [`BASE_RATE_HZ`] on the unused ones. [`TelemetryEncoder::for_shipped_merged_v2`]
+//! is the fail-loud path: it always returns [`LiveMapMismatch`].
+//!
+//! It also disagrees with the deleted `dataset/generate_spike_data.py`
+//! training-time encoder, which routed on a record's top-level `blockchain`
+//! field (Kaspa channels 0-3, Monero 4-7, Qubic 8-11; this map puts Kaspa at
+//! 6-7). Those two historical maps still disagree with each other; neither is
+//! the live train mapping.
+//!
+//! Two channels per source on the coin proposal:
 //!
 //! | Channels | Source                    | Function                                    |
 //! | -------- | ------------------------- | ------------------------------------------- |
@@ -40,9 +52,9 @@
 //! | 12–13    | [`TelemetrySource::Verus`] | CPU-heavy validator tracking                |
 //! | 14–15    | [`TelemetrySource::Thermal`] | Pain receptors: power and temperature     |
 //!
-//! A frame is a `[f32; 16]` in [`INPUT_RANGE`] order-matched to that table.
-//! Normalising raw telemetry into that range is the caller's job; this module
-//! only clamps, and it only clamps *finite* values.
+//! A historical frame is a `[f32; 16]` in [`INPUT_RANGE`] order-matched to
+//! that coin table. Normalising raw telemetry into that range is the caller's
+//! job; this module only clamps, and it only clamps *finite* values.
 //!
 //! # Non-finite samples
 //!
@@ -92,10 +104,32 @@ use crate::model::{CLOCK_HZ, NEURON_COUNT};
 
 /// Width of one telemetry frame (`n_channels` in `config.json`).
 ///
-/// The map is one input channel per unit, so this equals [`NEURON_COUNT`].
+/// The bank is one input axon per unit, so this equals [`NEURON_COUNT`]. Live
+/// exp-025 training occupies only [`LIVE_LEGAL_COLUMNS`] of them.
 pub const CHANNEL_COUNT: usize = NEURON_COUNT;
 
-/// Number of input channels each telemetry source drives.
+/// Legal live columns on the exp-025 bank (axons 0–4).
+///
+/// Axons `[LIVE_LEGAL_COLUMNS]..CHANNEL_COUNT` are unused width, held at zero
+/// in train. Not fake channels and not game-id / title fillers.
+pub const LIVE_LEGAL_COLUMNS: usize = 5;
+
+/// Live exp-025 axon assignment, sensors only, in axon order.
+///
+/// This is the mapping `dataset/merged_v2/snn_model.json` records as
+/// `legal_columns`. It is **not** [`CHANNEL_MAP`].
+pub const LIVE_COLUMNS: [&str; LIVE_LEGAL_COLUMNS] = [
+    "mem_util_pct",
+    "power_w",
+    "gpu_temp_c",
+    "sm_clock_mhz",
+    "mem_clock_mhz",
+];
+
+/// Number of input channels each historical [`TelemetrySource`] drives.
+#[deprecated(
+    note = "coin CHANNEL_MAP pairing (2 channels per blockchain source); not the live exp-025 5-col sensor map (`LIVE_COLUMNS`)"
+)]
 pub const CHANNELS_PER_SOURCE: usize = 2;
 
 /// Firing rate, in hertz, of a channel sitting at the bottom of [`INPUT_RANGE`].
@@ -129,9 +163,13 @@ pub const INPUT_RANGE: (f32, f32) = (0.0, 1.0);
 /// decay rates, so the encoder and the LIF population share a time base.
 pub const DT_SECONDS: f32 = 1.0 / CLOCK_HZ as f32;
 
-/// A telemetry feed backing one pair of input channels.
+/// A telemetry feed backing one pair of input channels on the historical coin map.
 ///
-/// See the [module docs](self#channel-map) for the full table.
+/// See the [module docs](self#historical--non-live-proposal) for the full table.
+/// This is **not** [`LIVE_COLUMNS`].
+#[deprecated(
+    note = "historical coin CHANNEL_MAP (DNX/Quai/Qubic/Kaspa/Monero/Ocean/Verus/Thermal); live exp-025 map is encode::LIVE_COLUMNS"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TelemetrySource {
     /// Dynex: PoUW solver health and neural baselines (channels 0–1).
@@ -152,6 +190,7 @@ pub enum TelemetrySource {
     Thermal,
 }
 
+#[allow(deprecated)]
 impl TelemetrySource {
     /// Every source, in channel order.
     pub const ALL: [Self; CHANNEL_COUNT / CHANNELS_PER_SOURCE] = [
@@ -204,7 +243,13 @@ impl TelemetrySource {
     }
 }
 
-/// The source driving each of the 16 input channels, in channel order.
+/// The source driving each of the 16 input channels on the historical coin map.
+///
+/// Deprecated: this is not the live exp-025 train mapping. See [`LIVE_COLUMNS`].
+#[deprecated(
+    note = "historical coin CHANNEL_MAP (DNX/Quai/Qubic/Kaspa/Monero/Ocean/Verus/Thermal); not the live exp-025 adapter. Live map is encode::LIVE_COLUMNS (axons 0-4); axons 5-15 held at zero. TelemetryEncoder::for_shipped_merged_v2 always returns Err."
+)]
+#[allow(deprecated)]
 pub const CHANNEL_MAP: [TelemetrySource; CHANNEL_COUNT] = [
     TelemetrySource::Dnx,
     TelemetrySource::Dnx,
@@ -241,6 +286,7 @@ pub const CHANNEL_MAP: [TelemetrySource; CHANNEL_COUNT] = [
 /// # Example
 ///
 /// ```
+/// # #![allow(deprecated)]
 /// use spikenaut_snn::encode::{CHANNEL_COUNT, TelemetryEncoder};
 ///
 /// let mut encoder = TelemetryEncoder::new()?;
@@ -316,10 +362,12 @@ impl NonFiniteFrame {
 
     /// Whether the rejection touches a thermal pain receptor (channels 14–15).
     ///
-    /// The escalation hook. Losing a market feed for a tick is a dropped
-    /// sample; losing a temperature reading is the hardware-protection input
-    /// going dark, and a caller should treat the two differently.
+    /// The escalation hook on the **historical** coin map. Losing a market feed
+    /// for a tick is a dropped sample; losing a temperature reading is the
+    /// hardware-protection input going dark, and a caller should treat the two
+    /// differently. This is not the live exp-025 layout ([`LIVE_COLUMNS`]).
     #[must_use]
+    #[allow(deprecated)]
     pub fn touches_pain_receptor(self) -> bool {
         self.channels()
             .any(|channel| CHANNEL_MAP[channel].is_pain_receptor())
@@ -332,6 +380,7 @@ impl NonFiniteFrame {
     /// Split out of [`fmt::Display::fmt`] so neither half carries the whole
     /// message's branching: the list needs a loop and a first-element case,
     /// the message around it needs a plural and an escalation clause.
+    #[allow(deprecated)]
     fn write_channel_list(self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (position, channel) in self.channels().enumerate() {
             let separator = if position == 0 { " " } else { ", " };
@@ -357,20 +406,45 @@ impl fmt::Display for NonFiniteFrame {
 
 impl std::error::Error for NonFiniteFrame {}
 
-/// A rate encoder fixed to [`CHANNEL_MAP`] and the model's 1 kHz clock.
+/// Returned when a caller asks to pair the historical coin [`CHANNEL_MAP`]
+/// encoder with the shipped exp-025 bank.
 ///
-/// [`CHANNEL_MAP`] is incompatible with the exp-025 5-column train mapping
-/// (axons 5–15 were held at zero). Pairing this encoder with the shipped
-/// weights is wrong -- see the [module docs](self).
+/// [`TelemetryEncoder::for_shipped_merged_v2`] always yields this error. The
+/// live map is [`LIVE_COLUMNS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LiveMapMismatch;
+
+impl fmt::Display for LiveMapMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(
+            "TelemetryEncoder / CHANNEL_MAP is a historical coin layout, not the live exp-025 adapter; \
+             the shipped merged_v2 bank was trained on mem_util_pct, power_w, gpu_temp_c, \
+             sm_clock_mhz, mem_clock_mhz (axons 0-4) with axons 5-15 held at zero. \
+             Pairing this encoder with the bank is refused.",
+        )
+    }
+}
+
+impl std::error::Error for LiveMapMismatch {}
+
+/// A rate encoder fixed to the historical coin [`CHANNEL_MAP`] and the model's
+/// 1 kHz clock.
+///
+/// Deprecated: [`CHANNEL_MAP`] is incompatible with the exp-025 5-column train
+/// mapping (axons 5–15 were held at zero). Pairing this encoder with the shipped
+/// weights is wrong -- see the [module docs](self). Call
+/// [`Self::for_shipped_merged_v2`] for a hard refuse.
 ///
 /// A thin wrapper over `axon-encoder`'s [`RateEncoder`]. The wrapper exists for
 /// the frame type: [`Encoder::encode`] takes any-width slice, while every method
 /// here takes `&[f32; CHANNEL_COUNT]`, so a frame that does not match the
-/// documented map is a compile error rather than a quietly short spike train.
+/// documented coin map is a compile error rather than a quietly short spike
+/// train.
 ///
 /// # Example
 ///
 /// ```
+/// # #![allow(deprecated)]
 /// use spikenaut_snn::encode::{CHANNEL_COUNT, DT_SECONDS, TelemetryEncoder};
 ///
 /// let mut encoder = TelemetryEncoder::new()?;
@@ -397,13 +471,30 @@ impl std::error::Error for NonFiniteFrame {}
 /// assert_eq!(encoder.encode_step(&frame)?.spikes.len(), CHANNEL_COUNT);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
+#[deprecated(
+    note = "historical coin CHANNEL_MAP encoder; not the live exp-025 adapter. Live map is encode::LIVE_COLUMNS. for_shipped_merged_v2 always returns Err."
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct TelemetryEncoder {
     inner: RateEncoder,
 }
 
+#[allow(deprecated)]
 impl TelemetryEncoder {
-    /// Build this crate's default telemetry encoder.
+    /// Always fail: this type is not the live adapter for `merged_v2`.
+    ///
+    /// The coin [`CHANNEL_MAP`] is not [`LIVE_COLUMNS`]. Use this when a caller
+    /// would otherwise construct [`TelemetryEncoder::new`] as the front end
+    /// for the shipped bank.
+    ///
+    /// # Errors
+    ///
+    /// Always [`LiveMapMismatch`].
+    pub fn for_shipped_merged_v2() -> Result<Self, LiveMapMismatch> {
+        Err(LiveMapMismatch)
+    }
+
+    /// Build this crate's default *historical* telemetry encoder.
     ///
     /// [`BASE_RATE_HZ`] to [`MAX_RATE_HZ`] over [`INPUT_RANGE`], stepped at
     /// [`DT_SECONDS`].
@@ -413,13 +504,14 @@ impl TelemetryEncoder {
     /// choices, and the layout is the [`CHANNEL_MAP`] proposal, which is
     /// incompatible with the exp-025 5-column train mapping -- see the
     /// [module docs](self). A frame encoded here is not a valid stimulus for
-    /// the shipped weights.
+    /// the shipped weights. Call [`Self::for_shipped_merged_v2`] if that is
+    /// the pairing you wanted; it refuses.
     ///
     /// # Errors
     ///
     /// Returns [`EncoderError`] if the default constants ever stop being a valid
     /// [`RateEncoder`] configuration. They are checked by the test suite, so in
-    /// practice this is infallible.
+    /// practice this is infallible for the historical encoder itself.
     pub fn new() -> Result<Self, EncoderError> {
         Self::try_new(BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, DT_SECONDS)
     }
@@ -586,11 +678,63 @@ impl TelemetryEncoder {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
     #[test]
-    fn channel_map_covers_every_channel_once() {
+    fn live_columns_are_the_exp025_sensors_and_not_the_coin_map() {
+        assert_eq!(
+            LIVE_COLUMNS,
+            [
+                "mem_util_pct",
+                "power_w",
+                "gpu_temp_c",
+                "sm_clock_mhz",
+                "mem_clock_mhz",
+            ]
+        );
+        assert_eq!(LIVE_COLUMNS.len(), LIVE_LEGAL_COLUMNS);
+        assert_eq!(LIVE_LEGAL_COLUMNS, 5);
+        const { assert!(LIVE_LEGAL_COLUMNS < CHANNEL_COUNT) };
+        assert_ne!(CHANNEL_MAP[0].label(), LIVE_COLUMNS[0]);
+        assert_eq!(
+            TelemetryEncoder::for_shipped_merged_v2(),
+            Err(LiveMapMismatch)
+        );
+        assert!(
+            LiveMapMismatch
+                .to_string()
+                .contains("not the live exp-025 adapter")
+        );
+    }
+
+    #[test]
+    fn shipped_bank_legal_columns_match_live_columns() {
+        let parsed = crate::json::parse(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/dataset/merged_v2/snn_model.json"
+        )))
+        .expect("shipped snn_model.json");
+        let legal = parsed
+            .get("legal_columns")
+            .and_then(crate::json::Json::as_array)
+            .expect("legal_columns array");
+        let names: Vec<&str> = legal
+            .iter()
+            .map(|value| value.as_str().expect("sensor name"))
+            .collect();
+        assert_eq!(names, LIVE_COLUMNS);
+        assert_eq!(
+            parsed
+                .get("unused_axons")
+                .and_then(crate::json::Json::as_str),
+            Some("5:15"),
+        );
+    }
+
+    #[test]
+    fn historical_channel_map_covers_every_channel_once() {
         assert_eq!(CHANNEL_MAP.len(), CHANNEL_COUNT);
         assert_eq!(
             TelemetrySource::ALL.len() * CHANNELS_PER_SOURCE,
@@ -632,7 +776,8 @@ mod tests {
 
     #[test]
     fn default_configuration_is_valid() {
-        let encoder = TelemetryEncoder::new().expect("default constants are a valid encoder");
+        let encoder =
+            TelemetryEncoder::new().expect("historical coin-map constants are a valid encoder");
         assert_eq!(encoder.dt_seconds(), DT_SECONDS);
     }
 

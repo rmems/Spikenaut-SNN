@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Smoke test for the `axon-encoder` integration (issue #9): a 16-wide frame
-//! shaped like the documented channel map must rate-encode into a defined spike
-//! count at the model's 1 kHz clock, and `axon-encoder` must resolve from
-//! crates.io.
+//! shaped like the *historical* coin [`CHANNEL_MAP`] must rate-encode into a
+//! defined spike count at the model's 1 kHz clock, and `axon-encoder` must
+//! resolve from crates.io.
+//!
+//! That map is **not** the live exp-025 adapter ([`spikenaut_snn::LIVE_COLUMNS`]).
+
+#![allow(deprecated)]
 
 use std::path::Path;
 
@@ -12,8 +16,8 @@ use axon_encoder::encoders::RateEncoder;
 use axon_encoder::error::EncoderError;
 use axon_encoder::types::EncodedOutput;
 use spikenaut_snn::encode::{
-    BASE_RATE_HZ, CHANNEL_COUNT, CHANNEL_MAP, DT_SECONDS, INPUT_RANGE, MAX_RATE_HZ, NonFiniteFrame,
-    TelemetryEncoder, TelemetrySource,
+    BASE_RATE_HZ, CHANNEL_COUNT, CHANNEL_MAP, DT_SECONDS, INPUT_RANGE, LIVE_COLUMNS, MAX_RATE_HZ,
+    NonFiniteFrame, TelemetryEncoder, TelemetrySource,
 };
 use spikenaut_snn::model::NEURON_COUNT;
 
@@ -28,9 +32,10 @@ const TICKS_PER_SPIKE: usize = 5;
 /// twin, so `PAIN_CHANNEL + 1` is the other half of the pair.
 const PAIN_CHANNEL: usize = 14;
 
-/// A 16-wide frame shaped like the documented channel map: each telemetry
-/// source drives its own channel pair at its own intensity, spanning the whole
-/// of [`INPUT_RANGE`] from an idle DNX feed to a saturated thermal reading.
+/// A 16-wide frame shaped like the historical coin channel map: each
+/// telemetry source drives its own channel pair at its own intensity,
+/// spanning the whole of [`INPUT_RANGE`] from an idle DNX feed to a saturated
+/// thermal reading. Not [`spikenaut_snn::LIVE_COLUMNS`].
 fn telemetry_frame() -> [f32; CHANNEL_COUNT] {
     let sources = TelemetrySource::ALL.len();
     let mut frame = [0.0_f32; CHANNEL_COUNT];
@@ -60,8 +65,8 @@ fn counts_per_channel(output: &EncodedOutput) -> [usize; CHANNEL_COUNT] {
 }
 
 /// Acceptance criterion from issue #9: `RateEncoder::try_new` with an explicit
-/// `dt_seconds` accepts the shipped configuration and encodes a 16-wide frame
-/// without panicking.
+/// `dt_seconds` accepts the historical coin-map configuration and encodes a
+/// 16-wide frame without panicking. This is not [`LIVE_COLUMNS`].
 #[test]
 fn a_sixteen_wide_frame_encodes_without_panicking() {
     let mut encoder = RateEncoder::try_new(BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, DT_SECONDS)
@@ -91,12 +96,33 @@ fn a_sixteen_wide_frame_encodes_without_panicking() {
     }
 }
 
+/// The crate-root live map is the exp-025 sensors, and the coin encoder
+/// refuses to pose as that adapter.
+#[test]
+fn live_columns_are_primary_and_the_coin_encoder_refuses_the_shipped_bank() {
+    assert_eq!(
+        LIVE_COLUMNS,
+        [
+            "mem_util_pct",
+            "power_w",
+            "gpu_temp_c",
+            "sm_clock_mhz",
+            "mem_clock_mhz",
+        ]
+    );
+    assert_eq!(LIVE_COLUMNS, spikenaut_snn::LIVE_COLUMNS);
+    assert_eq!(
+        TelemetryEncoder::for_shipped_merged_v2(),
+        Err(spikenaut_snn::LiveMapMismatch)
+    );
+}
+
 /// Streaming mode is deterministic: over one second of 1 ms ticks every channel
 /// emits its mapped firing rate, so the spike count is defined rather than
 /// merely non-panicking.
 #[test]
 fn one_second_of_ticks_reproduces_the_mapped_rates() {
-    let mut encoder = TelemetryEncoder::new().expect("shipped encoder");
+    let mut encoder = TelemetryEncoder::new().expect("historical coin-map encoder");
     let frame = telemetry_frame();
 
     let mut totals = [0_usize; CHANNEL_COUNT];
@@ -135,7 +161,7 @@ fn one_second_of_ticks_reproduces_the_mapped_rates() {
 /// channels: 200 Hz at a 1 ms step is exactly one spike per five ticks.
 #[test]
 fn a_saturated_frame_fires_every_fifth_tick() {
-    let mut encoder = TelemetryEncoder::new().expect("shipped encoder");
+    let mut encoder = TelemetryEncoder::new().expect("historical coin-map encoder");
     let frame = [INPUT_RANGE.1; CHANNEL_COUNT];
 
     let per_tick = MAX_RATE_HZ * DT_SECONDS;
@@ -213,7 +239,7 @@ fn an_invalid_configuration_is_an_error() {
 /// a local stand-in.
 #[test]
 fn the_wrapper_matches_a_bare_rate_encoder() {
-    let mut wrapped = TelemetryEncoder::new().expect("shipped encoder");
+    let mut wrapped = TelemetryEncoder::new().expect("historical coin-map encoder");
     let mut bare = RateEncoder::try_new(BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, DT_SECONDS)
         .expect("shipped configuration");
     let frame = telemetry_frame();
@@ -324,8 +350,8 @@ fn a_rejected_frame_leaves_the_channel_working() {
         (f32::INFINITY, "+inf"),
         (f32::NEG_INFINITY, "-inf"),
     ] {
-        let mut victim = TelemetryEncoder::new().expect("shipped encoder");
-        let mut control = TelemetryEncoder::new().expect("shipped encoder");
+        let mut victim = TelemetryEncoder::new().expect("historical coin-map encoder");
+        let mut control = TelemetryEncoder::new().expect("historical coin-map encoder");
         let frame = telemetry_frame();
 
         // Warm both to a mid-cycle, non-zero accumulator state, so "unchanged"
@@ -400,7 +426,7 @@ fn an_overflowing_per_step_demand_is_rejected() {
 /// channel 15 and the population would split.
 #[test]
 fn a_rejected_frame_does_not_partially_advance_other_channels() {
-    let mut encoder = TelemetryEncoder::new().expect("shipped encoder");
+    let mut encoder = TelemetryEncoder::new().expect("historical coin-map encoder");
     let saturated = [INPUT_RANGE.1; CHANNEL_COUNT];
 
     for tick in 1..TICKS_PER_SPIKE {
@@ -443,7 +469,7 @@ fn a_rejected_frame_does_not_partially_advance_other_channels() {
 /// offending channel rather than stopping at the first.
 #[test]
 fn a_rejection_names_every_offending_channel() {
-    let mut encoder = TelemetryEncoder::new().expect("shipped encoder");
+    let mut encoder = TelemetryEncoder::new().expect("historical coin-map encoder");
     let mut frame = telemetry_frame();
     frame[0] = f32::NAN;
     frame[PAIN_CHANNEL] = f32::INFINITY;
@@ -474,7 +500,7 @@ fn a_rejection_names_every_offending_channel() {
 /// poison, but it would just as silently drop the channel from the draw.
 #[test]
 fn the_batch_path_rejects_non_finite_frames_too() {
-    let mut encoder = TelemetryEncoder::new().expect("shipped encoder");
+    let mut encoder = TelemetryEncoder::new().expect("historical coin-map encoder");
 
     for bad_value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let mut frame = telemetry_frame();

@@ -2,8 +2,11 @@
 
 //! Smoke test for the `kinetic-signals` integration (issue #14): a fixed raw
 //! fixture must produce a finite, deterministic kinetic feature sequence that
-//! then rate-encodes through the existing `axon-encoder` path. The crate must
-//! resolve from crates.io; it does not replace that encoder.
+//! then rate-encodes through the *historical* `TelemetryEncoder` path. The crate
+//! must resolve from crates.io; it does not replace that encoder and is not
+//! the live exp-025 adapter.
+
+#![allow(deprecated)]
 
 use std::path::Path;
 
@@ -93,7 +96,7 @@ fn features_at_t_depend_only_on_samples_up_to_t() {
 #[test]
 fn kinetic_features_encode_through_axon_encoder() {
     let mut pipeline = KineticPipeline::new();
-    let mut encoder = TelemetryEncoder::new().expect("shipped encoder");
+    let mut encoder = TelemetryEncoder::new().expect("historical coin-map encoder");
     let fixture = power_fixture();
 
     for (tick, &raw) in fixture.iter().enumerate() {
@@ -134,8 +137,8 @@ fn kinetic_features_encode_through_axon_encoder() {
 fn a_non_finite_raw_sample_does_not_touch_the_encoder() {
     let mut victim_pipeline = KineticPipeline::new();
     let mut control_pipeline = KineticPipeline::new();
-    let mut victim_encoder = TelemetryEncoder::new().expect("shipped encoder");
-    let mut control_encoder = TelemetryEncoder::new().expect("shipped encoder");
+    let mut victim_encoder = TelemetryEncoder::new().expect("historical coin-map encoder");
+    let mut control_encoder = TelemetryEncoder::new().expect("historical coin-map encoder");
 
     for &raw in &power_fixture()[..8] {
         let (expected_features, expected_output) = control_pipeline
