@@ -1,0 +1,22 @@
+tools/live_stim_parity.py
+  s_6a0b8e422c9329::t_6f168ac4ca961e 354-355,367-402,407-408,460-490,495,497
+  s_6a0b8e422c9329::t_749f25ba6dd5c7 178-182,190-199,239-247
+tests/live_stim.rs
+  s_6a0b8e422c9329::t_a2df113439b677 77-87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "006d06295294221d4d83dd6a562ba86460233402",
+  "prompts": {},
+  "sessions": {
+    "s_6a0b8e422c9329": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3a9d7876-5e05-49f3-a501-cb584e51809c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Raul Cardenas Montoya <montoyaraul34@gmail.com>"
+    }
+  }
+}
