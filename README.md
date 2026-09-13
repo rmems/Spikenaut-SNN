@@ -270,7 +270,9 @@ tools/                             # Python package, standard library only
                                    # Measurement, not a pass/fail gate.
 ├── live_stim_parity.py            # Cross-language pin for the analog stim
                                    # contract (#52): reference encoder vs
-                                   # src/stim.rs, on a shared fixture
+                                   # src/stim.rs, on a shared fixture. CLI;
+                                   # the pin itself is live_stim_pin.py and
+                                   # --self-test is live_stim_selftest.py.
 └── fixtures/live_stim/            # reading.jsonl + expected_stim.json, read
                                    # by both live_stim_parity.py and
                                    # tests/live_stim.rs
