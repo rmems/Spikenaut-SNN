@@ -137,23 +137,32 @@ fn live_features_at_t_depend_only_on_samples_up_to_t() {
     }
 }
 
-/// The live path: a 5-wide frame, finite throughout, and nothing on axons 5-15.
-#[test]
-fn kinetic_features_encode_through_the_live_five_column_encoder() {
+/// Drive the whole live fixture through a fresh front end and encoder.
+///
+/// Asserts the per-tick invariants — five-wide frame, every feature and every
+/// axon value finite and inside [`INPUT_RANGE`] — and returns the per-axon
+/// spike counts so callers can assert on the train as a whole. Taking a fresh
+/// pair each call is what makes it a replay: no state survives between runs.
+fn encode_live_fixture() -> [usize; CHANNEL_COUNT] {
     let mut front_end = LiveKineticFrontEnd::new();
     let mut encoder =
         LiveTelemetryEncoder::for_shipped_merged_v2().expect("the legitimate live pairing");
-    let fixture = live_fixture();
-
     let (lo, hi) = INPUT_RANGE;
     let mut fired = [0_usize; CHANNEL_COUNT];
 
-    for (tick, &reading) in fixture.iter().enumerate() {
+    for (tick, &reading) in live_fixture().iter().enumerate() {
         let (features, output) = front_end
             .encode_step(reading, &mut encoder)
             .unwrap_or_else(|err| panic!("tick {tick}: {err}"));
 
         assert_eq!(features.len(), LIVE_LEGAL_COLUMNS);
+        let frame = LiveKineticFrontEnd::to_live_frame(&features);
+        assert_eq!(
+            frame.len(),
+            LIVE_LEGAL_COLUMNS,
+            "the live frame is five wide, not sixteen",
+        );
+
         for (axon, sensor) in features.iter().enumerate() {
             assert!(
                 sensor.is_finite(),
@@ -161,15 +170,7 @@ fn kinetic_features_encode_through_the_live_five_column_encoder() {
                 LIVE_COLUMNS[axon],
                 sensor.as_array(),
             );
-        }
-
-        let frame = LiveKineticFrontEnd::to_live_frame(&features);
-        assert_eq!(
-            frame.len(),
-            LIVE_LEGAL_COLUMNS,
-            "the live frame is five wide, not sixteen",
-        );
-        for (axon, &value) in frame.iter().enumerate() {
+            let value = frame[axon];
             assert!(
                 value.is_finite() && (lo..=hi).contains(&value),
                 "tick {tick} axon {axon} ({}) = {value}",
@@ -181,7 +182,13 @@ fn kinetic_features_encode_through_the_live_five_column_encoder() {
             fired[usize::from(spike.channel)] += 1;
         }
     }
+    fired
+}
 
+/// The live path: a 5-wide frame, finite throughout, and nothing on axons 5-15.
+#[test]
+fn kinetic_features_encode_through_the_live_five_column_encoder() {
+    let fired = encode_live_fixture();
     assert!(
         fired[..LIVE_LEGAL_COLUMNS].iter().all(|&count| count > 0),
         "every live axon fired over the fixture: {fired:?}",
@@ -190,22 +197,19 @@ fn kinetic_features_encode_through_the_live_five_column_encoder() {
         fired[LIVE_LEGAL_COLUMNS..].iter().all(|&count| count == 0),
         "axons 5-15 are unused width on this bank and must stay at zero: {fired:?}",
     );
+}
 
-    // Deterministic replay: the same fixture through a fresh front end and a
-    // fresh encoder reproduces the same spike train.
-    let mut replayed_front_end = LiveKineticFrontEnd::new();
-    let mut replayed_encoder = LiveTelemetryEncoder::new().expect("live constants");
-    for (tick, &reading) in fixture.iter().enumerate() {
-        let (_, output) = replayed_front_end
-            .encode_step(reading, &mut replayed_encoder)
-            .unwrap_or_else(|err| panic!("replay tick {tick}: {err}"));
-        for spike in &output.spikes {
-            fired[usize::from(spike.channel)] -= 1;
-        }
-    }
-    assert!(
-        fired.iter().all(|&count| count == 0),
-        "replay must reproduce the same per-axon spike counts: {fired:?}",
+/// The same fixture through a fresh front end and encoder yields the same train.
+///
+/// `encode_step` is the streaming path, so the spike train is a deterministic
+/// function of the readings and the configuration — nothing here may depend on
+/// a random draw.
+#[test]
+fn the_live_encode_path_replays_deterministically() {
+    assert_eq!(
+        encode_live_fixture(),
+        encode_live_fixture(),
+        "replay must reproduce the same per-axon spike counts",
     );
 }
 
