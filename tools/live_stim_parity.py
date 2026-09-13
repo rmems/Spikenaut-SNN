@@ -230,30 +230,37 @@ def frozen_minmax_failures() -> list[str]:
     if not isinstance(recorded, dict):
         raise ParseError(f"{SHIPPED_MODEL.name}: no frozen_minmax object")
 
-    failures: list[str] = []
-    for column in LIVE_COLUMNS:
-        span = recorded.get(column)
-        if not isinstance(span, list) or len(span) != 2:
-            failures.append(f"frozen_minmax: sidecar has no span for {column}")
-            continue
-        # Real JSON numbers only. `float("0.0")` succeeds, so a sidecar that
-        # recorded its spans as strings would have satisfied this contract
-        # check while the Rust side -- which decodes into f64 -- rejected the
-        # same file. Booleans are ints in Python and are refused with them.
-        if any(isinstance(end, bool) or not isinstance(end, (int, float)) for end in span):
-            failures.append(
-                f"frozen_minmax[{column}]: sidecar span {span!r} is not two "
-                "JSON numbers"
-            )
-            continue
-        want = (float(span[0]), float(span[1]))
-        got = FROZEN_MINMAX[column]
-        if got != want:
-            failures.append(
-                f"frozen_minmax[{column}]: hamming_const has {got}, "
-                f"{SHIPPED_MODEL.name} records {want}"
-            )
-    return failures
+    return [
+        failure
+        for failure in (
+            _span_failure(column, recorded.get(column)) for column in LIVE_COLUMNS
+        )
+        if failure is not None
+    ]
+
+
+def _span_failure(column: str, span: object) -> str | None:
+    """How the sidecar's span for one column disagrees, or ``None``.
+
+    Real JSON numbers only. ``float("0.0")`` succeeds, so a sidecar that
+    recorded its spans as strings would have satisfied this contract check
+    while the Rust side -- which decodes into f64 -- rejected the same file.
+    Booleans are ints in Python and are refused alongside non-numbers.
+    """
+    if not isinstance(span, list) or len(span) != 2:
+        return f"frozen_minmax: sidecar has no span for {column}"
+    if any(isinstance(end, bool) or not isinstance(end, (int, float)) for end in span):
+        return (
+            f"frozen_minmax[{column}]: sidecar span {span!r} is not two JSON numbers"
+        )
+    want = (float(span[0]), float(span[1]))
+    got = FROZEN_MINMAX[column]
+    if got != want:
+        return (
+            f"frozen_minmax[{column}]: hamming_const has {got}, "
+            f"{SHIPPED_MODEL.name} records {want}"
+        )
+    return None
 
 
 def binary32_endpoint_failures() -> list[str]:
@@ -279,14 +286,16 @@ def binary32_endpoint_failures() -> list[str]:
     return failures
 
 
-def build_pin() -> dict:
-    """The pin payload for the current reference encoder."""
-    payload = {
+def _pin_metadata() -> dict:
+    """The protocol fields of the pin: what encoder, which spans, which file."""
+    return {
         "fixture": _READING_REL,
         "live_columns": list(LIVE_COLUMNS),
         "unused_axons": "5:15",
         "frozen_lineage": FROZEN_LINEAGE,
-        "frozen_minmax": {column: list(FROZEN_MINMAX[column]) for column in LIVE_COLUMNS},
+        "frozen_minmax": {
+            column: list(FROZEN_MINMAX[column]) for column in LIVE_COLUMNS
+        },
         "encoder": (
             "legal 5-ch train-scaled analog stim; frozen minmax lineage "
             f"{FROZEN_LINEAGE}; axons 0-4 = " + ", ".join(LIVE_COLUMNS) +
@@ -295,49 +304,68 @@ def build_pin() -> dict:
         ),
         "stepper": "v = decay * v + W @ stim (analog current, Poisson unused)",
         "note": _NOTE,
-        "samples": [],
-        "bit_exact": [],
     }
+
+
+def _pin_samples() -> list[dict]:
+    """The JSONL fixture, encoded. Raises rather than pinning an illegal row."""
+    samples = []
     for sample in reference_samples():
-        where = f"{_READING_REL}:{sample.source_line}"
-        problem = _shape_problem(sample.stim, where)
+        problem = _shape_problem(
+            sample.stim, f"{_READING_REL}:{sample.source_line}"
+        )
         if problem is not None:
             raise EncoderLeak(problem)
-        payload["samples"].append(
+        samples.append(
             {
                 "line": sample.source_line,
                 "episode_id": sample.episode_id,
                 "stim": list(sample.stim),
             }
         )
-    if not payload["samples"]:
+    if not samples:
         raise ParseError(
             f"NOTHING WAS COMPARED: {_READING_REL} encoded 0 rows. "
             "An empty pin would pass for both implementations at once."
         )
+    return samples
 
-    for label, reading in BIT_EXACT_CASES:
-        case = {
-            "label": label,
-            "reading_bits": [_f64_bits(value) for value in reading],
-        }
-        stim = reference_stim(reading)
-        if stim is None:
-            case["refused"] = True
-        else:
-            problem = _shape_problem(stim, f"bit_exact[{label}]")
-            if problem is not None:
-                raise EncoderLeak(problem)
-            case["refused"] = False
-            case["stim_bits"] = [_f32_bits(value) for value in stim]
-        payload["bit_exact"].append(case)
 
-    if not any(case["refused"] for case in payload["bit_exact"]):
+def _pin_bit_exact_case(label: str, reading: list[float]) -> dict:
+    """One bit-exact case: the reading, and what the reference did with it."""
+    case = {"label": label, "reading_bits": [_f64_bits(value) for value in reading]}
+    stim = reference_stim(reading)
+    if stim is None:
+        case["refused"] = True
+        return case
+    problem = _shape_problem(stim, f"bit_exact[{label}]")
+    if problem is not None:
+        raise EncoderLeak(problem)
+    case["refused"] = False
+    case["stim_bits"] = [_f32_bits(value) for value in stim]
+    return case
+
+
+def _pin_bit_exact() -> list[dict]:
+    """Every reading JSON literals cannot carry, and its verdict."""
+    cases = [
+        _pin_bit_exact_case(label, reading) for label, reading in BIT_EXACT_CASES
+    ]
+    if not any(case["refused"] for case in cases):
         raise ParseError(
             "no bit-exact case is refused, so the refusal path is unpinned "
             "again. That is the hole this section exists to close."
         )
-    return payload
+    return cases
+
+
+def build_pin() -> dict:
+    """The pin payload for the current reference encoder."""
+    return {
+        **_pin_metadata(),
+        "samples": _pin_samples(),
+        "bit_exact": _pin_bit_exact(),
+    }
 
 
 class EncoderLeak(Exception):
@@ -464,19 +492,13 @@ def _bit_exact_case_failures(expected: dict, actual: dict) -> list[str]:
     (label, or the reading itself) makes any per-axon diff meaningless, so it
     is reported alone rather than alongside sixteen confusing axon lines.
     """
-    label = expected["label"]
-    if actual.get("label") != label:
-        return [f"bit_exact: pinned case {actual.get('label')!r}, reference {label!r}"]
-    if actual.get("reading_bits") != expected["reading_bits"]:
-        return [f"bit_exact[{label}]: the reading itself was edited"]
-    if actual.get("refused") != expected["refused"]:
-        return [
-            f"bit_exact[{label}]: pinned refused={actual.get('refused')!r}, "
-            f"reference refused={expected['refused']!r}"
-        ]
+    identity = _bit_exact_identity_failure(expected, actual)
+    if identity is not None:
+        return [identity]
     if expected["refused"]:
         return []
 
+    label = expected["label"]
     pinned_stim = actual.get("stim_bits")
     if not isinstance(pinned_stim, list) or len(pinned_stim) != N_INPUTS:
         return [f"bit_exact[{label}]: stim_bits must be {N_INPUTS} wide"]
@@ -486,6 +508,21 @@ def _bit_exact_case_failures(expected: dict, actual: dict) -> list[str]:
         for axon, (a, b) in enumerate(zip(expected["stim_bits"], pinned_stim))
         if a != b
     ]
+
+
+def _bit_exact_identity_failure(expected: dict, actual: dict) -> str | None:
+    """Whether the pinned case is even the same case, and the same verdict."""
+    label = expected["label"]
+    if actual.get("label") != label:
+        return f"bit_exact: pinned case {actual.get('label')!r}, reference {label!r}"
+    if actual.get("reading_bits") != expected["reading_bits"]:
+        return f"bit_exact[{label}]: the reading itself was edited"
+    if actual.get("refused") != expected["refused"]:
+        return (
+            f"bit_exact[{label}]: pinned refused={actual.get('refused')!r}, "
+            f"reference refused={expected['refused']!r}"
+        )
+    return None
 
 
 def _bit_exact_failures(want: list[dict], got: list[dict]) -> list[str]:
@@ -630,23 +667,27 @@ def _self_test_samples(reference: dict) -> None:
     )
 
 
+def _first_case_index(reference: dict, *, refused: bool) -> int:
+    """Index of the first bit-exact case with the given verdict."""
+    for index, case in enumerate(reference["bit_exact"]):
+        if case["refused"] is refused:
+            return index
+    raise SelfTestFailure(
+        f"the pin must carry at least one {'refused' if refused else 'accepted'} "
+        "bit-exact case"
+    )
+
+
 def _self_test_bit_exact(reference: dict) -> None:
     """The refusal contract must be pinned, and must be able to fail."""
-    accepted = next(
-        (case for case in reference["bit_exact"] if not case["refused"]), None
-    )
-    refused = next((case for case in reference["bit_exact"] if case["refused"]), None)
-    _require(accepted is not None, "some bit-exact case must be accepted")
-    _require(refused is not None, "some bit-exact case must be refused")
+    refused_at = _first_case_index(reference, refused=True)
+    accepted_at = _first_case_index(reference, refused=False)
 
     # An encoder that started accepting what the reference refuses -- the
     # failure mode with no JSON-literal coverage at all.
     flipped = json.loads(json.dumps(reference))
-    for case in flipped["bit_exact"]:
-        if case["refused"]:
-            case["refused"] = False
-            case["stim_bits"] = ["00000000"] * N_INPUTS
-            break
+    flipped["bit_exact"][refused_at]["refused"] = False
+    flipped["bit_exact"][refused_at]["stim_bits"] = ["00000000"] * N_INPUTS
     _require(
         bool(pin_failures(reference, flipped)),
         "a refusal turned into an acceptance must be reported",
@@ -654,11 +695,8 @@ def _self_test_bit_exact(reference: dict) -> None:
 
     # One bit of one accepted vector.
     nudged = json.loads(json.dumps(reference))
-    for case in nudged["bit_exact"]:
-        if not case["refused"]:
-            bits = int(case["stim_bits"][0], 16) ^ 1
-            case["stim_bits"][0] = f"{bits:08x}"
-            break
+    bits = int(nudged["bit_exact"][accepted_at]["stim_bits"][0], 16) ^ 1
+    nudged["bit_exact"][accepted_at]["stim_bits"][0] = f"{bits:08x}"
     _require(
         bool(pin_failures(reference, nudged)),
         "a single flipped bit in an accepted vector must be reported",
@@ -728,29 +766,44 @@ def _check_constants() -> list[str]:
     return frozen_minmax_failures() + binary32_endpoint_failures()
 
 
+def _report_span_mismatch(failures: list[str]) -> int:
+    print("SPAN MISMATCH:", file=sys.stderr)
+    for failure in failures:
+        print(f"  - {failure}", file=sys.stderr)
+    return 1
+
+
+def _write_and_report() -> int:
+    payload = write_pin()
+    print(
+        f"wrote {EXPECTED_STIM.relative_to(REPO_ROOT)} "
+        f"({len(payload['samples'])} rows, "
+        f"{len(payload['bit_exact'])} bit-exact cases)"
+    )
+    return 0
+
+
+def _compare_against_pin() -> int:
+    reference = build_pin()
+    pinned = load_pin(EXPECTED_STIM)
+    return 0 if report(reference, pin_failures(reference, pinned)) else 1
+
+
+def _run(args: argparse.Namespace) -> int:
+    """The mode `args` selected. Exceptions are `main`'s to translate."""
+    if args.self_test:
+        self_test()
+        return 0
+    constants = _check_constants()
+    if constants:
+        return _report_span_mismatch(constants)
+    return _write_and_report() if args.write else _compare_against_pin()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        if args.self_test:
-            self_test()
-            return 0
-        constants = _check_constants()
-        if constants:
-            print("SPAN MISMATCH:", file=sys.stderr)
-            for failure in constants:
-                print(f"  - {failure}", file=sys.stderr)
-            return 1
-        if args.write:
-            payload = write_pin()
-            print(
-                f"wrote {EXPECTED_STIM.relative_to(REPO_ROOT)} "
-                f"({len(payload['samples'])} rows, "
-                f"{len(payload['bit_exact'])} bit-exact cases)"
-            )
-            return 0
-        reference = build_pin()
-        pinned = load_pin(EXPECTED_STIM)
-        return 0 if report(reference, pin_failures(reference, pinned)) else 1
+        return _run(args)
     except SelfTestFailure as exc:
         print(f"\nSELF-TEST FAILED: {exc}", file=sys.stderr)
         return 1

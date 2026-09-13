@@ -107,9 +107,8 @@ fn reading_of(row: &Json, line: usize) -> [Option<f64>; LIVE_LEGAL_COLUMNS] {
 }
 
 /// The pinned payload, checked for the metadata that makes it comparable.
-fn parity_rows() -> Vec<ParityRow> {
-    let pin = json::parse(EXPECTED_STIM_JSON).expect("expected_stim.json parses");
-
+/// The pin's protocol metadata must describe *this* fixture and *this* crate.
+fn assert_pin_protocol(pin: &Json) {
     assert_eq!(
         pin.get("fixture").and_then(Json::as_str),
         Some(READING_REL),
@@ -120,11 +119,29 @@ fn parity_rows() -> Vec<ParityRow> {
         Some("5:15"),
         "the pin must carry the bank's unused-axon contract",
     );
-    // The reference and the adapter each claim to normalise against the spans
-    // the sidecar froze. Rust is held to that by
-    // `shipped_bank_frozen_minmax_matches_live_raw_ranges` and Python by
-    // `live_stim_parity.frozen_minmax_failures`; this is the third edge of the
-    // triangle, so the two cannot agree on a span the bank never froze.
+
+    let columns = pin
+        .get("live_columns")
+        .and_then(Json::as_array)
+        .expect("the pin lists its live columns");
+    assert_eq!(columns.len(), LIVE_LEGAL_COLUMNS);
+    for (axon, column) in columns.iter().enumerate() {
+        assert_eq!(
+            column.as_str(),
+            Some(LIVE_COLUMNS[axon]),
+            "axon {axon}: the pin and the crate must agree on the column order",
+        );
+    }
+}
+
+/// The pin normalised against the same frozen spans this crate does.
+///
+/// The reference and the adapter each claim to normalise against the spans the
+/// sidecar froze. Rust is held to that by
+/// `shipped_bank_frozen_minmax_matches_live_raw_ranges` and Python by
+/// `live_stim_parity.frozen_minmax_failures`; this is the third edge of the
+/// triangle, so the two cannot agree on a span the bank never froze.
+fn assert_pin_spans(pin: &Json) {
     let spans = pin
         .get("frozen_minmax")
         .expect("the pin carries the spans it normalised against");
@@ -142,19 +159,44 @@ fn parity_rows() -> Vec<ParityRow> {
             "axon {axon} ({sensor}): the pin and the crate disagree on the frozen span",
         );
     }
+}
 
-    let columns = pin
-        .get("live_columns")
+/// One pinned sample paired with the fixture row it was encoded from.
+fn parity_row_of(sample: &Json, line: usize, row: &Json) -> ParityRow {
+    let pinned_line = sample
+        .get("line")
+        .and_then(Json::as_f64)
+        .expect("each sample names its source line") as usize;
+    assert_eq!(
+        pinned_line, line,
+        "the pin and the fixture must be in the same order",
+    );
+    let stim = sample
+        .get("stim")
         .and_then(Json::as_array)
-        .expect("the pin lists its live columns");
-    assert_eq!(columns.len(), LIVE_LEGAL_COLUMNS);
-    for (axon, column) in columns.iter().enumerate() {
-        assert_eq!(
-            column.as_str(),
-            Some(LIVE_COLUMNS[axon]),
-            "axon {axon}: the pin and the crate must agree on the column order",
-        );
+        .expect("each sample carries a stim vector");
+    assert_eq!(
+        stim.len(),
+        CHANNEL_COUNT,
+        "line {line}: stim is the 16-wide vector `W @ stim` consumes",
+    );
+    ParityRow {
+        line,
+        episode_id: sample
+            .get("episode_id")
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        reading: reading_of(row, line),
+        expected: std::array::from_fn(|axon| stim[axon].as_f64().expect("each axon is a number")),
     }
+}
+
+/// The pinned payload, checked for the metadata that makes it comparable.
+fn parity_rows() -> Vec<ParityRow> {
+    let pin = json::parse(EXPECTED_STIM_JSON).expect("expected_stim.json parses");
+    assert_pin_protocol(&pin);
+    assert_pin_spans(&pin);
 
     let samples = pin
         .get("samples")
@@ -171,37 +213,7 @@ fn parity_rows() -> Vec<ParityRow> {
     samples
         .iter()
         .zip(raw)
-        .map(|(sample, (line, row))| {
-            let pinned_line = sample
-                .get("line")
-                .and_then(Json::as_f64)
-                .expect("each sample names its source line") as usize;
-            assert_eq!(
-                pinned_line, line,
-                "the pin and the fixture must be in the same order",
-            );
-            let stim = sample
-                .get("stim")
-                .and_then(Json::as_array)
-                .expect("each sample carries a stim vector");
-            assert_eq!(
-                stim.len(),
-                CHANNEL_COUNT,
-                "line {line}: stim is the 16-wide vector `W @ stim` consumes",
-            );
-            ParityRow {
-                line,
-                episode_id: sample
-                    .get("episode_id")
-                    .and_then(Json::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                reading: reading_of(&row, line),
-                expected: std::array::from_fn(|axon| {
-                    stim[axon].as_f64().expect("each axon is a number")
-                }),
-            }
-        })
+        .map(|(sample, (line, row))| parity_row_of(sample, line, &row))
         .collect()
 }
 
@@ -291,51 +303,54 @@ fn bit_exact_cases() -> Vec<BitExactCase> {
         .expect("the pin carries its bit-exact cases");
     assert!(!cases.is_empty(), "an empty section would pass vacuously");
 
-    cases
-        .iter()
-        .map(|case| {
-            let label = case
-                .get("label")
-                .and_then(Json::as_str)
-                .expect("each case is labelled")
-                .to_owned();
-            let reading_bits = case
-                .get("reading_bits")
-                .and_then(Json::as_array)
-                .expect("each case carries its reading");
-            assert_eq!(reading_bits.len(), LIVE_LEGAL_COLUMNS, "{label}");
-            let reading = std::array::from_fn(|axon| {
-                bits_f64(
-                    reading_bits[axon]
-                        .as_str()
-                        .expect("reading bits are strings"),
-                    &label,
-                )
-            });
-            let refused = case
-                .get("refused")
-                .and_then(Json::as_bool)
-                .expect("each case records whether the reference refused it");
-            let expected = (!refused).then(|| {
-                let stim_bits = case
-                    .get("stim_bits")
-                    .and_then(Json::as_array)
-                    .expect("an accepted case carries its vector");
-                assert_eq!(stim_bits.len(), CHANNEL_COUNT, "{label}");
-                std::array::from_fn(|axon| {
-                    bits_f32(
-                        stim_bits[axon].as_str().expect("stim bits are strings"),
-                        &label,
-                    )
-                })
-            });
-            BitExactCase {
-                label,
-                reading,
-                expected,
-            }
+    cases.iter().map(bit_exact_case_of).collect()
+}
+
+/// Decode one `bit_exact` entry from its hex bit patterns.
+fn bit_exact_case_of(case: &Json) -> BitExactCase {
+    let label = case
+        .get("label")
+        .and_then(Json::as_str)
+        .expect("each case is labelled")
+        .to_owned();
+
+    let reading_bits = case
+        .get("reading_bits")
+        .and_then(Json::as_array)
+        .expect("each case carries its reading");
+    assert_eq!(reading_bits.len(), LIVE_LEGAL_COLUMNS, "{label}");
+    let reading = std::array::from_fn(|axon| {
+        bits_f64(
+            reading_bits[axon]
+                .as_str()
+                .expect("reading bits are strings"),
+            &label,
+        )
+    });
+
+    let refused = case
+        .get("refused")
+        .and_then(Json::as_bool)
+        .expect("each case records whether the reference refused it");
+    let expected = (!refused).then(|| {
+        let stim_bits = case
+            .get("stim_bits")
+            .and_then(Json::as_array)
+            .expect("an accepted case carries its vector");
+        assert_eq!(stim_bits.len(), CHANNEL_COUNT, "{label}");
+        std::array::from_fn(|axon| {
+            bits_f32(
+                stim_bits[axon].as_str().expect("stim bits are strings"),
+                &label,
+            )
         })
-        .collect()
+    });
+
+    BitExactCase {
+        label,
+        reading,
+        expected,
+    }
 }
 
 /// Acceptance, second half: the two encoders agree on the readings the JSONL
@@ -486,19 +501,7 @@ fn the_stim_vector_rides_the_linear_node_into_the_graph() {
     let adapter = LiveStimAdapter::new();
     let model = SnnModel::load_default().expect("the shipped model loads");
     let graph = graph::build_lif_graph(&model).expect("the shipped model builds a graph");
-
-    let Some(NirNode::Linear(linear)) = graph.get(LINEAR_NODE) else {
-        panic!("the learned weights ride the Linear node");
-    };
-    let TensorData::F64(weight) = linear.weight.data() else {
-        panic!("expected an f64 weight tensor");
-    };
-    let Some(NirNode::Lif(lif)) = graph.get(LIF_NODE) else {
-        panic!("expected a LIF node");
-    };
-    let (TensorData::F64(taus), TensorData::F64(rs)) = (lif.tau.data(), lif.r.data()) else {
-        panic!("expected f64 tau and r tensors");
-    };
+    let (weight, taus, rs) = graph_tensors(&graph);
 
     // Keyed by fixture line, so the responsiveness check below compares two
     // readings that genuinely differ rather than two copies of one.
@@ -508,44 +511,9 @@ fn the_stim_vector_rides_the_linear_node_into_the_graph() {
         let stim = adapter
             .stim_optional(row.reading)
             .unwrap_or_else(|err| panic!("{READING_REL}:{}: {err}", row.line));
-        let mut row_currents = Vec::with_capacity(NEURON_COUNT);
-
-        for unit in 0..NEURON_COUNT {
-            let current = |axons: usize| -> f64 {
-                (0..axons)
-                    .map(|axon| weight[unit * CHANNEL_COUNT + axon] * f64::from(stim[axon]))
-                    .sum()
-            };
-
-            // `Linear` computes `I = W @ stim` across all 16 axons, and the
-            // five live ones account for every bit of it.
-            //
-            // This equality does *not* detect an unused-axon leak, and must
-            // not be read as if it did -- see
-            // `the_graph_cannot_be_moved_by_an_unused_axon` for why it cannot,
-            // and `no_fixture_row_leaks_onto_an_unused_axon` for the check
-            // that does. What it documents is the round trip itself: the
-            // vector the adapter builds is the vector this node consumes.
-            let all_axons = current(CHANNEL_COUNT);
-            assert_eq!(
-                all_axons,
-                current(LIVE_LEGAL_COLUMNS),
-                "{READING_REL}:{} unit {unit}: axons 5-15 moved the current",
-                row.line,
-            );
-
-            // One NIR step from rest is the reference recurrence with `v = 0`:
-            // `v = decay * 0 + W @ stim`.
-            let decay = (-TIMESTEP_SECONDS / taus[unit]).exp();
-            let stepped = rs[unit] * (1.0 - decay) * all_axons;
-            assert!(
-                (stepped - all_axons).abs() <= 1e-12 * all_axons.abs().max(1.0),
-                "{READING_REL}:{} unit {unit}: one step gave {stepped}, \
-                 `v = decay * v + W @ stim` from rest gives {all_axons}",
-                row.line,
-            );
-            row_currents.push(all_axons);
-        }
+        let row_currents = (0..NEURON_COUNT)
+            .map(|unit| unit_current(weight, taus, rs, &stim, unit, row.line))
+            .collect();
         currents.push((row.line, row_currents));
     }
 
@@ -614,6 +582,64 @@ fn the_graph_cannot_be_moved_by_an_unused_axon() {
             "unit {unit}: the live columns must carry learned weights",
         );
     }
+}
+
+/// The `Linear` weight matrix and the LIF `tau` / `r` columns, as f64 slices.
+fn graph_tensors(graph: &nir_rs::NirGraph) -> (&[f64], &[f64], &[f64]) {
+    let Some(NirNode::Linear(linear)) = graph.get(LINEAR_NODE) else {
+        panic!("the learned weights ride the Linear node");
+    };
+    let TensorData::F64(weight) = linear.weight.data() else {
+        panic!("expected an f64 weight tensor");
+    };
+    let Some(NirNode::Lif(lif)) = graph.get(LIF_NODE) else {
+        panic!("expected a LIF node");
+    };
+    let (TensorData::F64(taus), TensorData::F64(rs)) = (lif.tau.data(), lif.r.data()) else {
+        panic!("expected f64 tau and r tensors");
+    };
+    (weight, taus, rs)
+}
+
+/// `I = W @ stim` for one unit, checked against the reference recurrence.
+///
+/// The `all_axons == live_only` equality does *not* detect an unused-axon
+/// leak, and must not be read as if it did -- see
+/// `the_graph_cannot_be_moved_by_an_unused_axon` for why it cannot, and
+/// `no_fixture_row_leaks_onto_an_unused_axon` for the check that does. What it
+/// documents is the round trip itself: the vector the adapter builds is the
+/// vector this node consumes.
+fn unit_current(
+    weight: &[f64],
+    taus: &[f64],
+    rs: &[f64],
+    stim: &[f32; CHANNEL_COUNT],
+    unit: usize,
+    line: usize,
+) -> f64 {
+    let current = |axons: usize| -> f64 {
+        (0..axons)
+            .map(|axon| weight[unit * CHANNEL_COUNT + axon] * f64::from(stim[axon]))
+            .sum()
+    };
+
+    let all_axons = current(CHANNEL_COUNT);
+    assert_eq!(
+        all_axons,
+        current(LIVE_LEGAL_COLUMNS),
+        "{READING_REL}:{line} unit {unit}: axons 5-15 moved the current",
+    );
+
+    // One NIR step from rest is the reference recurrence with `v = 0`:
+    // `v = decay * 0 + W @ stim`.
+    let decay = (-TIMESTEP_SECONDS / taus[unit]).exp();
+    let stepped = rs[unit] * (1.0 - decay) * all_axons;
+    assert!(
+        (stepped - all_axons).abs() <= 1e-12 * all_axons.abs().max(1.0),
+        "{READING_REL}:{line} unit {unit}: one step gave {stepped}, \
+         `v = decay * v + W @ stim` from rest gives {all_axons}",
+    );
+    all_axons
 }
 
 /// A reading the bank cannot represent is refused rather than saturated, and
