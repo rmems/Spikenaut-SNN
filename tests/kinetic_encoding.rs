@@ -256,6 +256,83 @@ fn a_non_finite_raw_sample_does_not_touch_the_encoder() {
     assert_eq!(actual_output, expected_output);
 }
 
+/// A finite reading can still yield non-finite *audit* features — and that
+/// never reaches the frame or the spike train.
+///
+/// Regression pin for a real boundary, not a hypothetical: `compute_signal_stats`
+/// accumulates third and fourth moments, so a series far out in `f64` overflows
+/// to a `NaN` skewness/kurtosis while every raw sample stays finite. The
+/// estimators own that behaviour — a bare `KineticPipeline` does the same — so
+/// this test records where the line actually is and proves the encode path is
+/// insulated from it, rather than asserting a guarantee the crate does not make.
+#[test]
+fn extreme_but_finite_readings_never_reach_the_encoder_non_finite() {
+    let mut front_end = LiveKineticFrontEnd::new();
+    let mut encoder = LiveTelemetryEncoder::new().expect("live constants");
+
+    // Far outside any physical GPU span, but finite, so the reading is accepted.
+    front_end.step([1e200; LIVE_LEGAL_COLUMNS]).expect("finite");
+    let (features, output) = front_end
+        .encode_step([3e200; LIVE_LEGAL_COLUMNS], &mut encoder)
+        .expect("a finite reading is accepted");
+
+    // The audit features may be poisoned. That is the documented contract:
+    // `Ok` means the raw samples were finite, not that the moments survived.
+    assert!(
+        features.iter().any(|sensor| !sensor.is_finite()),
+        "1e200 is expected to overflow the moment estimators; if this now holds, \
+         the module docs on derived-feature finiteness need revisiting",
+    );
+
+    // The frame does not care: `to_live_frame` reads only `raw`, which was
+    // validated on the way in, and clamps it into INPUT_RANGE.
+    let (lo, hi) = INPUT_RANGE;
+    let frame = LiveKineticFrontEnd::to_live_frame(&features);
+    for (axon, &value) in frame.iter().enumerate() {
+        assert!(
+            value.is_finite() && (lo..=hi).contains(&value),
+            "axon {axon} ({}) = {value} escaped the range",
+            LIVE_COLUMNS[axon],
+        );
+    }
+    for spike in &output.spikes {
+        assert!(
+            usize::from(spike.channel) < LIVE_LEGAL_COLUMNS,
+            "axons 5-15 stay at zero even on a poisoned reading",
+        );
+    }
+}
+
+/// Across the full declared spans, every derived feature stays finite.
+///
+/// The other half of the boundary above: the overflow is unreachable at any
+/// value `LIVE_RAW_RANGES` admits, so the encode path never meets it in
+/// practice.
+#[test]
+fn readings_across_the_frozen_spans_keep_every_feature_finite() {
+    let mut front_end = LiveKineticFrontEnd::new();
+    for tick in 0..HISTORY_WINDOW {
+        // Sweep each sensor across its own frozen span, and overshoot it.
+        let unit = 1.0 + (tick as f64) * 0.37;
+        let reading = [
+            unit * 75.0,
+            unit * 302.845,
+            unit * 69.0,
+            unit * 2_910.0,
+            unit * 14_801.0,
+        ];
+        let features = front_end.step(reading).expect("finite");
+        for (axon, sensor) in features.iter().enumerate() {
+            assert!(
+                sensor.is_finite(),
+                "tick {tick} axon {axon} ({}) went non-finite inside the declared span: {:?}",
+                LIVE_COLUMNS[axon],
+                sensor.as_array(),
+            );
+        }
+    }
+}
+
 /// Acceptance from issue #14: `kinetic-signals` resolves to 0.4.x from
 /// crates.io, not from a git or sibling-path pin, and the recorded version
 /// matches the lockfile.

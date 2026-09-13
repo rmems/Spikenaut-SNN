@@ -67,6 +67,29 @@
 //! and 0.0 is a finite number: it passes straight through here and normalises
 //! to the bottom of [`crate::encode::INPUT_RANGE`]. Masking sentinels is the
 //! caller's job under the state contract being defined in issue #20.
+//!
+//! # A finite sample does not guarantee finite features
+//!
+//! Accepting a reading means every *raw* sample was finite. It does not mean
+//! every *derived* feature is. `compute_signal_stats` accumulates third and
+//! fourth moments, so a raw value near the top of `f64` squares and cubes its
+//! way to an infinity and the moment ratios come back `NaN`: measured, a
+//! series at `1e100` already yields a `NaN` skewness and kurtosis while the
+//! samples themselves stay perfectly finite.
+//!
+//! This is a property of the estimators, not of this adapter — a bare
+//! [`KineticPipeline`] behaves identically — and [`KineticFeatures::is_finite`]
+//! exists precisely so a caller can gate on it. It is checked rather than
+//! rejected because the useful boundary is physical, not numeric: the live
+//! spans in [`LIVE_RAW_RANGES`] top out at 14801, some ninety-six orders of
+//! magnitude below where the moments break, so a GPU feed that reaches this
+//! condition is already reporting garbage the caller should have caught.
+//!
+//! The spike train is unaffected either way. [`LiveKineticFrontEnd::to_live_frame`]
+//! reads only [`KineticFeatures::raw`], which was validated finite on the way
+//! in, and clamps it into [`INPUT_RANGE`] — so a reading whose audit features
+//! went `NaN` still encodes a finite, in-range frame on axons 0-4. Nothing
+//! non-finite reaches the encoder, and `axons_five_to_fifteen` stay at zero.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -255,6 +278,11 @@ impl KineticFeatures {
     }
 
     /// Whether every named feature is finite.
+    ///
+    /// Worth checking rather than assuming: a finite raw sample can still
+    /// produce a non-finite *derived* feature, because the moment estimators
+    /// overflow well below `f64::MAX`. See the
+    /// [module docs](self#a-finite-sample-does-not-guarantee-finite-features).
     #[must_use]
     pub fn is_finite(&self) -> bool {
         self.as_array().iter().all(|value| value.is_finite())
@@ -457,6 +485,11 @@ impl LiveKineticFrontEnd {
     /// across all five and the next finite reading continues the same
     /// trajectories. Nothing is substituted; see the
     /// [module docs](self#missing-values).
+    ///
+    /// `Ok` means every raw sample was finite — **not** that every returned
+    /// feature is. Check [`KineticFeatures::is_finite`] before treating the
+    /// audit fields as usable; the encode path itself is unaffected. See
+    /// [the module docs](self#a-finite-sample-does-not-guarantee-finite-features).
     pub fn step(
         &mut self,
         reading: [f64; LIVE_LEGAL_COLUMNS],
