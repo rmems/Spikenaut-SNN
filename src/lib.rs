@@ -121,8 +121,8 @@ pub use graph::{
     resistance_from_decay,
 };
 pub use kinetic::{
-    KINETIC_SIGNALS_CRATE_VERSION, KineticError, KineticFeatures, KineticPipeline,
-    LiveKineticFrontEnd,
+    ClockMismatch, KINETIC_DT_SECONDS, KINETIC_SIGNALS_CRATE_VERSION, KineticError,
+    KineticFeatures, KineticPipeline, LiveKineticFrontEnd,
 };
 pub use model::{MERGED_V2_PROVENANCE, ModelError, Neuron, SnnModel, is_q8_8, quantize_q8_8};
 pub use neuromod_host::HostLif;

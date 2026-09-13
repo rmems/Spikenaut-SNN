@@ -170,6 +170,26 @@ pub const VOL_WINDOW: usize = 16;
 /// uninformative `H = 0.5` default; 64 gives it a short but legal window.
 pub const HISTORY_WINDOW: usize = 64;
 
+/// The clock the kinetic estimators run on, in seconds.
+///
+/// [`KineticPipeline`] uses kinetic-signals' [`Default`] parameter structs, and
+/// `SurpriseParams::<f64>::default().dt` is 1 ms — the same 1 kHz tick as
+/// [`crate::encode::DT_SECONDS`]. It is not configurable here, so it is a
+/// constant rather than a field, and `the_kinetic_clock_is_the_model_clock`
+/// pins it to both sources.
+///
+/// It matters because [`KineticPipeline`] stamps Hawkes event times as
+/// `ticks * dt`. Pairing the pipelines with an encoder built on a different
+/// step would put the audit data and the spike train on two different clocks;
+/// [`LiveKineticFrontEnd::encode_step`] refuses that pairing rather than
+/// silently producing it.
+///
+/// This is the `f64` spelling of the same tick [`crate::encode::DT_SECONDS`]
+/// holds in `f32`. They are equal as durations but not bit-for-bit across the
+/// widening, so the runtime guard compares encoders in `f32` and this constant
+/// documents the estimator side.
+pub const KINETIC_DT_SECONDS: f64 = 0.001;
+
 /// Histogram bins handed to [`compute_shannon_entropy`].
 pub const ENTROPY_BINS: usize = 10;
 
@@ -203,13 +223,48 @@ impl fmt::Display for NonFiniteSample {
 
 impl std::error::Error for NonFiniteSample {}
 
+/// An encoder whose step does not match the kinetic estimators' clock.
+///
+/// [`LiveKineticFrontEnd::encode_step`] drives both halves of one tick, so they
+/// have to agree on how long a tick is. The estimators are fixed at
+/// [`KINETIC_DT_SECONDS`] -- the model's 1 ms tick, spelled
+/// [`crate::encode::DT_SECONDS`] on the encoder side;
+/// [`crate::encode::LiveTelemetryEncoder::try_new`] will happily build an
+/// encoder on any positive step.
+///
+/// Pairing them anyway is not a loud failure on its own — the spikes still come
+/// out, the features still come out — which is exactly why it is worth
+/// refusing. Hawkes event times would be stamped `ticks * 0.001` while the
+/// spike train advanced by some other duration, so the audit data would
+/// describe a different timeline from the output it is meant to explain.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClockMismatch {
+    /// The step the encoder was built with, in seconds.
+    pub encoder_dt_seconds: f32,
+}
+
+impl fmt::Display for ClockMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "encoder step {} s does not match the kinetic estimator clock {KINETIC_DT_SECONDS} s; \
+             Hawkes event times would be stamped on a different timeline from the spike train",
+            self.encoder_dt_seconds,
+        )
+    }
+}
+
+impl std::error::Error for ClockMismatch {}
+
 /// Failure of the kinetic front end.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum KineticError {
     /// A raw sample was `NaN` or infinite; pipeline state is unchanged.
     NonFiniteSample(NonFiniteSample),
     /// The projected live frame was rejected by [`LiveTelemetryEncoder`].
     NonFiniteLiveFrame(NonFiniteLiveFrame),
+    /// The encoder's step disagrees with [`KINETIC_DT_SECONDS`]; nothing moved.
+    ClockMismatch(ClockMismatch),
 }
 
 impl fmt::Display for KineticError {
@@ -217,6 +272,7 @@ impl fmt::Display for KineticError {
         match self {
             Self::NonFiniteSample(err) => write!(f, "{err}"),
             Self::NonFiniteLiveFrame(err) => write!(f, "{err}"),
+            Self::ClockMismatch(err) => write!(f, "{err}"),
         }
     }
 }
@@ -232,6 +288,12 @@ impl From<NonFiniteSample> for KineticError {
 impl From<NonFiniteLiveFrame> for KineticError {
     fn from(err: NonFiniteLiveFrame) -> Self {
         Self::NonFiniteLiveFrame(err)
+    }
+}
+
+impl From<ClockMismatch> for KineticError {
+    fn from(err: ClockMismatch) -> Self {
+        Self::ClockMismatch(err)
     }
 }
 
@@ -549,11 +611,30 @@ impl LiveKineticFrontEnd {
     /// [`KineticError::NonFiniteLiveFrame`] if the encoder rejects the
     /// projection. That path is defensive: normalisation clamps into
     /// [`INPUT_RANGE`], so a finite reading projects to a finite frame.
+    ///
+    /// [`KineticError::ClockMismatch`] if `encoder` was built on a step other
+    /// than [`KINETIC_DT_SECONDS`]. Checked before anything moves, so a
+    /// mismatched pairing leaves both the pipelines and the encoder untouched
+    /// rather than producing a half-tick on two clocks. Use
+    /// [`step`](Self::step) and drive the encoder yourself if you genuinely
+    /// want the two on different time bases.
     pub fn encode_step(
         &mut self,
         reading: [f64; LIVE_LEGAL_COLUMNS],
         encoder: &mut LiveTelemetryEncoder,
     ) -> Result<([KineticFeatures; LIVE_LEGAL_COLUMNS], EncodedOutput), KineticError> {
+        // Before `step`, so a rejected pairing is a no-op on both halves --
+        // the same atomicity the non-finite paths keep.
+        let encoder_dt_seconds = encoder.dt_seconds();
+        // Compared against the f32 `DT_SECONDS` rather than against
+        // `KINETIC_DT_SECONDS` directly: `DT_SECONDS` is `1.0 / CLOCK_HZ` in
+        // f32, and widening it to f64 gives 0.0010000000474974513, which is
+        // never `==` the f64 literal. Both name the same 1 ms tick -- see
+        // `the_kinetic_clock_is_the_model_clock` -- so the exact comparison
+        // belongs in the encoder's own precision.
+        if encoder_dt_seconds != crate::encode::DT_SECONDS {
+            return Err(ClockMismatch { encoder_dt_seconds }.into());
+        }
         let features = self.step(reading)?;
         let output = encoder.encode_step(&Self::to_live_frame(&features))?;
         Ok((features, output))
@@ -771,6 +852,54 @@ mod tests {
             KineticError::from(rejected).to_string(),
             "non-finite live telemetry on axon 1 (power_w)",
         );
+    }
+
+    #[test]
+    fn the_kinetic_clock_is_the_model_clock() {
+        let params: kinetic_signals::SurpriseParams<f64> = SurpriseParams::default();
+        assert_eq!(
+            params.dt, KINETIC_DT_SECONDS,
+            "the constant must track what the pipelines actually use",
+        );
+        // Equal as durations; not bit-for-bit, because DT_SECONDS is f32 --
+        // the same comparison `encode::dt_seconds_is_one_millisecond` makes.
+        assert!(
+            (f64::from(crate::encode::DT_SECONDS) - KINETIC_DT_SECONDS).abs() < 1e-9,
+            "kinetic and the encoder must share the model's 1 kHz base",
+        );
+    }
+
+    #[test]
+    fn a_mismatched_encoder_clock_is_refused_before_anything_moves() {
+        use crate::encode::{BASE_RATE_HZ, MAX_RATE_HZ};
+
+        let mut front_end = LiveKineticFrontEnd::new();
+        // A 10 ms encoder is a perfectly valid encoder -- just not one that can
+        // share a tick with estimators stamping Hawkes events at 1 ms.
+        let mut slow = LiveTelemetryEncoder::try_new(BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, 0.01)
+            .expect("a 10 ms step is a valid encoder configuration");
+        let cold = slow.clone();
+
+        let err = front_end
+            .encode_step(READING, &mut slow)
+            .expect_err("two clocks on one tick must be refused");
+        assert_eq!(
+            err,
+            KineticError::ClockMismatch(ClockMismatch {
+                encoder_dt_seconds: 0.01,
+            }),
+        );
+        assert!(err.to_string().contains("does not match the kinetic"));
+
+        // Neither half advanced.
+        assert_eq!(front_end.ticks(), 0, "the pipelines must not have stepped");
+        assert_eq!(slow, cold, "the encoder must not have stepped");
+
+        // The matching encoder is accepted, and `step` alone is still free to
+        // be driven against whatever the caller likes.
+        let mut matched = LiveTelemetryEncoder::new().expect("live constants");
+        assert!(front_end.encode_step(READING, &mut matched).is_ok());
+        assert_eq!(front_end.ticks(), 1);
     }
 
     #[test]
