@@ -7,18 +7,22 @@
 //! into the [Neuromorphic Intermediate Representation][nir], so the graph can
 //! leave the repository in the standard interchange form.
 //!
-//! [`encode`] turns continuous telemetry into spikes at the model's 1 kHz
-//! clock, because the population eats spikes and telemetry is not one.
+//! [`encode`] names the live exp-025 input map ([`LIVE_COLUMNS`]) and still
+//! contains a deprecated historical rate encoder. The population eats spikes
+//! and telemetry is not one, but public [`TelemetryEncoder`] is **not** this
+//! model's front end.
 //!
-//! Public [`TelemetryEncoder`] is **not** this model's front end. The live
-//! exp-025 bank was trained on five legal columns (`mem_util_pct`, `power_w`,
-//! `gpu_temp_c`, `sm_clock_mhz`, `mem_clock_mhz`) with axons 5–15 held at
-//! zero. Its [`CHANNEL_MAP`] still maps unrelated blockchain sources across all
-//! 16 channels and emits a nonzero base rate on those unused axons, so pairing
-//! that encoder with the shipped weights is wrong. See the [`encode`]
-//! module docs.
+//! The live bank was trained on five legal columns (`mem_util_pct`,
+//! `power_w`, `gpu_temp_c`, `sm_clock_mhz`, `mem_clock_mhz`) with axons 5–15
+//! held at zero — game-blind, no game-id / title channels. [`CHANNEL_MAP`] is a
+//! deprecated coin proposal (DNX/Quai/Qubic/Kaspa/Monero/Ocean/Verus/Thermal)
+//! and still emits a nonzero base rate on unused axons, so pairing that
+//! encoder with the shipped weights is wrong.
+//! [`TelemetryEncoder::for_shipped_merged_v2`] refuses that pairing out loud.
+//! See the [`encode`] module docs.
 //!
 //! [`CHANNEL_MAP`]: encode::CHANNEL_MAP
+//! [`LIVE_COLUMNS`]: encode::LIVE_COLUMNS
 //!
 //! Its dependency list is deliberately minimal -- currently [`nir_rs`],
 //! [`axon_encoder`], [`kinetic_signals`], and [`neuromod`], all from crates.io.
@@ -28,9 +32,10 @@
 //! build-dependencies are outside that set by design, and bounded by review
 //! rather than by CI.
 //!
-//! [`kinetic`] is host-side preprocessing *upstream* of [`encode`]: raw
-//! telemetry → kinetic-signals features → the existing [`TelemetryEncoder`].
-//! It does not replace axon-encoder.
+//! [`kinetic`] is host-side preprocessing *upstream* of the historical
+//! [`TelemetryEncoder`]: raw telemetry → kinetic-signals features → that
+//! deprecated coin-map encoder. It is not the live exp-025 adapter and does
+//! not replace axon-encoder.
 //!
 //! [`neuromod_host`] is a thin host-side adapter over published `neuromod`
 //! 0.5.x `LifNeuron`. It constructs and steps a real crates.io type so the
@@ -71,8 +76,9 @@
 //!
 //! # Scope
 //!
-//! [`encode`] converts a 16-wide telemetry frame into spikes and nothing else;
-//! feeding that spike train through the graph is its own ticket.
+//! [`encode`] names [`LIVE_COLUMNS`] and still contains a deprecated historical
+//! 16-wide rate encoder; feeding that spike train through the graph is its own
+//! ticket. That encoder is not the live adapter.
 //!
 //! [`graph`] builds the `Input → Linear → LIF → Output` layer graph and nothing
 //! else: the learned 16×16 weights ride the `Linear` node, and the LIF
@@ -96,7 +102,11 @@ pub mod kinetic;
 pub mod model;
 pub mod neuromod_host;
 
-pub use encode::{CHANNEL_COUNT, CHANNEL_MAP, NonFiniteFrame, TelemetryEncoder, TelemetrySource};
+pub use encode::{
+    CHANNEL_COUNT, LIVE_COLUMNS, LIVE_LEGAL_COLUMNS, LiveMapMismatch, NonFiniteFrame,
+};
+#[allow(deprecated)]
+pub use encode::{CHANNEL_MAP, TelemetryEncoder, TelemetrySource};
 pub use graph::{
     Provenance, build_lif_graph, build_lif_graph_with_provenance, load_default_lif_graph,
     resistance_from_decay,

@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Host-side kinetic preprocessing *upstream* of [`crate::encode`].
+//! Host-side kinetic preprocessing *upstream* of the historical
+//! [`crate::encode::TelemetryEncoder`].
 //!
 //! [`kinetic-signals`](https://crates.io/crates/kinetic-signals) 0.4.x is a
-//! causal temporal feature layer. It does **not** replace `axon-encoder`:
+//! causal temporal feature layer. It does **not** replace `axon-encoder`, and
+//! it is **not** the live exp-025 adapter ([`crate::encode::LIVE_COLUMNS`]):
 //!
 //! ```text
 //! raw telemetry
@@ -13,17 +15,19 @@
 //!         ↓                   moments — the 0.4.0 public surface)
 //! adapter → [f32; 16]
 //!         ↓
-//! axon-encoder             ← [`crate::encode::TelemetryEncoder`]
-//! (continuous → spikes)
+//! axon-encoder             ← historical [`crate::encode::TelemetryEncoder`]
+//! (continuous → spikes)      (deprecated coin CHANNEL_MAP; not LIVE_COLUMNS)
 //! ```
 //!
 //! Unused adapter channels sit at the bottom of [`INPUT_RANGE`], which the
-//! existing encoder maps to [`crate::encode::BASE_RATE_HZ`] liveness ticks.
+//! historical encoder maps to [`crate::encode::BASE_RATE_HZ`] liveness ticks.
 //! That is unused width, not invented kinetic features and not a silent feed.
+//! It is also not the exp-025 unused-axon contract (axons 5–15 held at *zero*,
+//! not at the coin-map base rate).
 //!
 //! This is the KINETIC arm of issue #14. RAW vs KINETIC vs HYBRID training
 //! and held-out Supervisor v3 metrics are out of scope here: this module
-//! only proves the published crate can sit in front of the existing encoder
+//! only proves the published crate can sit in front of the historical encoder
 //! without inventing kinetic-signals APIs or blocking FPGA parity. Software
 //! and FPGA models should receive the same encoded sequence; Hurst / Hawkes
 //! RTL is a later ticket.
@@ -42,6 +46,9 @@
 //! set onto the existing encoder width and leaves unused channels at the
 //! encoder idle floor — unused width, not invented signals. The squash
 //! functions are this crate's; they are not part of kinetic-signals.
+
+// Historical coin-map encoder only. This module is not the live exp-025 adapter.
+#![allow(deprecated)]
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -120,7 +127,7 @@ impl std::error::Error for NonFiniteSample {}
 pub enum KineticError {
     /// The raw sample was `NaN` or infinite; pipeline state is unchanged.
     NonFiniteSample(NonFiniteSample),
-    /// The projected frame was rejected by [`TelemetryEncoder`].
+    /// The projected frame was rejected by the historical [`TelemetryEncoder`].
     NonFiniteFrame(NonFiniteFrame),
 }
 
@@ -206,11 +213,13 @@ impl KineticFeatures {
         self.as_array().iter().all(|value| value.is_finite())
     }
 
-    /// Map the named features onto the 16-wide [`TelemetryEncoder`] frame.
+    /// Map the named features onto the 16-wide historical [`TelemetryEncoder`]
+    /// frame — not [`crate::encode::LIVE_COLUMNS`].
     ///
     /// Channels 0–10 carry the first-pass set; 11–15 stay at the bottom of
-    /// [`INPUT_RANGE`] as unused width. The #9 encoder maps that floor to
-    /// [`crate::encode::BASE_RATE_HZ`] — idle liveness, not silence.
+    /// [`INPUT_RANGE`] as unused width. The historical encoder maps that floor
+    /// to [`crate::encode::BASE_RATE_HZ`] — idle liveness, not silence, and not
+    /// the exp-025 unused-axon zeros.
     /// Squashing is this adapter's, so a kinetic-signals scalar that is
     /// already in `[0, 1]` (Hurst, relative entropy, RMS volatility) is
     /// copied, not reshaped.
@@ -322,7 +331,8 @@ impl KineticPipeline {
         })
     }
 
-    /// [`Self::step`] then [`TelemetryEncoder::encode_step`] on the projected frame.
+    /// [`Self::step`] then historical [`TelemetryEncoder::encode_step`] on the
+    /// projected frame. This is not the live exp-025 adapter.
     ///
     /// # Errors
     ///
