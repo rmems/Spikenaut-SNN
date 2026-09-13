@@ -9,23 +9,21 @@
 //! does that conversion, and [`TelemetryEncoder`] pins it to the layout below
 //! and to that clock.
 //!
-//! # This map is a proposal, not the shipped model's input contract
+//! # This map is incompatible with the shipped exp-025 bank
 //!
-//! [`CHANNEL_MAP`] is a *proposed* layout. Nothing in this repository
-//! establishes that the shipped `merged_v2` weights were trained on it, and it
-//! is not the map the recorded training-time encoder used: the deleted
-//! `dataset/generate_spike_data.py` routed on a record's top-level
-//! `blockchain` field, giving Kaspa channels 0-3, Monero 4-7 and Qubic 8-11,
-//! where this map puts Kaspa at 6-7.
+//! [`CHANNEL_MAP`] is a *proposed* 16-column blockchain layout. The live
+//! `merged_v2` artifact is the exp-025 bank, trained on five legal columns
+//! (`mem_util_pct`, `power_w`, `gpu_temp_c`, `sm_clock_mhz`, `mem_clock_mhz`)
+//! with axons 5–15 held at zero. This encoder still maps unrelated sources
+//! across all 16 channels and emits a nonzero [`BASE_RATE_HZ`] even on those
+//! unused axons.
 //!
-//! The two do not agree, and neither is established as the shipped weights'
-//! input contract -- those weights were imported from an external path, with
-//! no training run in this repository linking them to either encoder. So this
-//! module is a forward-looking contract: encoding telemetry with it
-//! establishes nothing about whether `merged_v2` can read the result -- which
-//! is not the same as establishing that it cannot. Do not present the two as
-//! matching components: pair them only once a training run exists that
-//! actually used this map.
+//! Pairing [`TelemetryEncoder`] with the shipped weights is therefore wrong,
+//! not merely unproven. It also disagrees with the deleted
+//! `dataset/generate_spike_data.py` training-time encoder, which routed on a
+//! record's top-level `blockchain` field (Kaspa channels 0-3, Monero 4-7,
+//! Qubic 8-11; this map puts Kaspa at 6-7). Those two historical maps still
+//! disagree with each other; neither is the live train mapping.
 //!
 //! # Channel map
 //!
@@ -361,8 +359,9 @@ impl std::error::Error for NonFiniteFrame {}
 
 /// A rate encoder fixed to [`CHANNEL_MAP`] and the model's 1 kHz clock.
 ///
-/// [`CHANNEL_MAP`] is a proposed layout, not the shipped weights' input
-/// contract -- see the [module docs](self).
+/// [`CHANNEL_MAP`] is incompatible with the exp-025 5-column train mapping
+/// (axons 5–15 were held at zero). Pairing this encoder with the shipped
+/// weights is wrong -- see the [module docs](self).
 ///
 /// A thin wrapper over `axon-encoder`'s [`RateEncoder`]. The wrapper exists for
 /// the frame type: [`Encoder::encode`] takes any-width slice, while every method
@@ -411,10 +410,10 @@ impl TelemetryEncoder {
     ///
     /// The step is derived from the model's clock, which `config.json`
     /// records. Nothing else here is: the rates and range are this crate's
-    /// choices, and the layout is the [`CHANNEL_MAP`] proposal, which is not
-    /// established as `merged_v2`'s input contract -- see the
-    /// [module docs](self). A frame encoded here is not thereby compatible
-    /// with the shipped weights.
+    /// choices, and the layout is the [`CHANNEL_MAP`] proposal, which is
+    /// incompatible with the exp-025 5-column train mapping -- see the
+    /// [module docs](self). A frame encoded here is not a valid stimulus for
+    /// the shipped weights.
     ///
     /// # Errors
     ///

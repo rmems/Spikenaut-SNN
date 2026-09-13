@@ -13,9 +13,9 @@
 //! so a decoded [`SnnModel`] is exactly the parameter set the `.mem` artifacts
 //! hold and cannot carry a decay rate outside `(0, 1)`.
 //!
-//! [`SnnModel::load_default`] is that artifact, not a post-exp-009 legal-encoder
-//! retrain and not the session-holdout 5-ch v3 encoder. See
-//! [`MERGED_V2_PROVENANCE`].
+//! [`SnnModel::load_default`] is that artifact: the exp-025 Dale health-PASS
+//! bank, a post-exp-009 legal-encoder retrain on the session-holdout 5-ch v3
+//! encoder. See [`MERGED_V2_PROVENANCE`].
 //!
 //! This module does no NIR mapping. See [`crate::graph`] for that.
 
@@ -108,9 +108,9 @@ pub fn is_q8_8(value: f64) -> bool {
 /// Provenance stamp for the shipped `merged_v2` artifact loaded by this crate.
 ///
 /// This is the repository file at [`MODEL_RELATIVE_PATH`], a 16-neuron LIF
-/// population with known training-path defects. It is not a post-exp-009
-/// legal-encoder retrain and not the session-holdout 5-ch v3 encoder.
-pub const MERGED_V2_PROVENANCE: &str = "shipped merged_v2 artifact: 16-neuron LIF; known training-path defects (monotonic hidden weights, lockstep); not a post-exp-009 legal-encoder retrain; not session-holdout 5-ch v3";
+/// population from the exp-025 Dale health-PASS Distill sidecar export. It is
+/// a post-exp-009 legal-encoder retrain on the session-holdout 5-ch v3 encoder.
+pub const MERGED_V2_PROVENANCE: &str = "shipped merged_v2 artifact: 16-neuron LIF; exp-025 Dale health-PASS bank (Distill a1fa491, seed 123, 20 epochs, Hub v3 JSONL 26d7d744); post-exp-009 legal-encoder retrain; session-holdout 5-ch v3";
 
 /// Embedded copy of `dataset/merged_v2/snn_model.json`.
 ///
@@ -149,10 +149,11 @@ pub struct Neuron {
     pub last_spike: bool,
     /// Learned input weights, one per input channel (`NEURON_COUNT` entries).
     ///
-    /// Row `i` of `parameters_weights.mem`. The hidden layer is purely
-    /// feed-forward — the README records that the network has no recurrent
-    /// feedback — so these weigh the graph's input, not the population's own
-    /// spikes. [`crate::graph`] places them on a NIR `Linear` node.
+    /// Row `i` of `parameters_weights.mem`. The hidden layer is feed-forward
+    /// — the network has no recurrent feedback — so these weigh the graph's
+    /// input, not the population's own spikes. [`crate::graph`] places them
+    /// on a NIR `Linear` node. Sign is mixed (outgoing Dale lives on the
+    /// sidecar `output_weights` / `inhibitory` fields, not here).
     pub weights: Vec<f64>,
 }
 
@@ -219,8 +220,8 @@ impl SnnModel {
     /// Decode the shipped `merged_v2` model from the embedded JSON.
     ///
     /// This is the repository artifact described by [`MERGED_V2_PROVENANCE`]:
-    /// 16-neuron LIF, known training-path defects, not a post-exp-009
-    /// legal-encoder retrain and not session-holdout 5-ch v3.
+    /// 16-neuron LIF, exp-025 Dale health-PASS, post-exp-009 legal-encoder
+    /// retrain on session-holdout 5-ch v3.
     ///
     /// The bytes are compiled in (`include_str!`), so this does not depend on
     /// a checkout path or `CARGO_MANIFEST_DIR` at runtime. [`default_model_path`]
@@ -263,14 +264,15 @@ impl SnnModel {
     ///   invariant: every number must be finite and inside the Q8.8 range, and
     ///   `decay_rate` must lie in `(0, 1)`
     /// - [`ModelError::Schema`] if the document or any neuron carries a member
-    ///   this decoder does not read. An unrecognised member is a schema change,
-    ///   and refusing it here is what stops a later revision of the artifact
-    ///   from decoding partially and still being labelled `merged_v2`.
+    ///   outside the Distill sidecar allowlist. Sidecar provenance and
+    ///   per-neuron `output_weights` / `inhibitory` are accepted but not
+    ///   mapped onto the NIR graph. A key outside those lists is still a
+    ///   schema change.
     ///
     /// Numbers are snapped onto the Q8.8 grid; see [`quantize_q8_8`].
     pub fn from_json_str(text: &str) -> Result<Self, ModelError> {
         let document = json::parse(text)?;
-        reject_unknown_members("the document", &document, &["neurons"])?;
+        reject_unknown_members("the document", &document, DOCUMENT_MEMBERS)?;
         let entries = neuron_entries(&document)?;
 
         let neurons = entries
@@ -353,6 +355,47 @@ impl SnnModel {
         Ok(Tensor::from_f64(vec![units, units], data)?)
     }
 }
+
+/// Top-level keys accepted on `snn_model.json`.
+///
+/// `neurons` is the only key this decoder *reads*. The rest are Distill
+/// sidecar provenance (encoder pin, Dale / K-WTA metadata, episode split).
+/// They are allowlisted so the exp-025 export loads, and they are still not
+/// placed on the NIR graph. A key outside this list remains a hard error.
+const DOCUMENT_MEMBERS: &[&str] = &[
+    "dale",
+    "decay_semantics",
+    "ei_ratio",
+    "encoder",
+    "episode_split",
+    "exp023_knobs",
+    "frozen_lineage",
+    "frozen_minmax",
+    "k_wta",
+    "legal_columns",
+    "n_outputs",
+    "neurons",
+    "q88",
+    "seed",
+    "source",
+    "unused_axons",
+];
+
+/// Per-neuron keys accepted on `snn_model.json`.
+///
+/// `output_weights` and `inhibitory` are sidecar fields (3-wide readout and
+/// outgoing-Dale flag). They are allowlisted so the export loads; the NIR
+/// graph still maps only hidden `weights` / `threshold` / `decay_rate`.
+/// A key outside this list remains a hard error.
+const NEURON_MEMBERS: &[&str] = &[
+    "decay_rate",
+    "inhibitory",
+    "last_spike",
+    "membrane_potential",
+    "output_weights",
+    "threshold",
+    "weights",
+];
 
 /// Refuse a model that is not the shipped 16-unit population.
 ///
@@ -508,17 +551,7 @@ fn parse_neuron_weights(
 /// `index` appears in every error this raises, so a bad value in a
 /// 16-record document names the record it came from.
 fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<Neuron, ModelError> {
-    reject_unknown_members(
-        &format!("neuron {index}"),
-        entry,
-        &[
-            "decay_rate",
-            "last_spike",
-            "membrane_potential",
-            "threshold",
-            "weights",
-        ],
-    )?;
+    reject_unknown_members(&format!("neuron {index}"), entry, NEURON_MEMBERS)?;
     let fields = NeuronFields { index, entry };
 
     // Decoded before the struct literal to keep the original error precedence:
@@ -540,11 +573,11 @@ fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<N
 /// Reject an object that carries members this decoder does not read.
 ///
 /// The graph builder stamps `Provenance::MERGED_V2` on whatever this decoder
-/// produces. Ignoring an unrecognised member would let a later revision of the
-/// artifact — a retrain that adds per-neuron output weights, say — decode
-/// partially and still ship under that stamp, describing a model the graph does
-/// not contain. Failing here makes the schema change visible at load time
-/// instead of silent in the graph.
+/// produces. Sidecar metadata and per-neuron `output_weights` / `inhibitory`
+/// are on the exp-025 allowlist because the Distill export writes them; they
+/// are still not mapped onto the NIR graph (that graph was always hidden-layer
+/// only). A key outside the allowlist is still refused, so a later schema
+/// revision cannot decode by silent truncation.
 ///
 /// `context` names the object for the error message. A non-object is an error
 /// too: every caller has already committed to reading members off it.

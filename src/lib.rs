@@ -10,13 +10,13 @@
 //! [`encode`] turns continuous telemetry into spikes at the model's 1 kHz
 //! clock, because the population eats spikes and telemetry is not one.
 //!
-//! It is **not** established as this model's front end. Its [`CHANNEL_MAP`] is
-//! a proposal: it disagrees with the recorded training-time mapping, and
-//! nothing in this repository establishes which mapping -- if either -- the
-//! shipped weights correspond to. Encoding with it therefore establishes
-//! nothing about compatibility with those weights -- which is not the same as
-//! knowing it is wrong -- so do not present the two as matching components.
-//! See the [`encode`] module docs.
+//! Public [`TelemetryEncoder`] is **not** this model's front end. The live
+//! exp-025 bank was trained on five legal columns (`mem_util_pct`, `power_w`,
+//! `gpu_temp_c`, `sm_clock_mhz`, `mem_clock_mhz`) with axons 5–15 held at
+//! zero. Its [`CHANNEL_MAP`] still maps unrelated blockchain sources across all
+//! 16 channels and emits a nonzero base rate on those unused axons, so pairing
+//! that encoder with the shipped weights is wrong. See the [`encode`]
+//! module docs.
 //!
 //! [`CHANNEL_MAP`]: encode::CHANNEL_MAP
 //!
@@ -38,9 +38,9 @@
 //! FPGA, or training loops.
 //!
 //! The graph [`load_default_lif_graph`] returns is the shipped `merged_v2`
-//! artifact ([`model::MERGED_V2_PROVENANCE`]): 16-neuron LIF with known
-//! training-path defects. It is not a post-exp-009 legal-encoder retrain and
-//! not the session-holdout 5-ch v3 encoder.
+//! artifact ([`model::MERGED_V2_PROVENANCE`]): 16-neuron LIF, exp-025 Dale
+//! health-PASS, a post-exp-009 legal-encoder retrain on the session-holdout
+//! 5-ch v3 encoder.
 //!
 //! That claim is stamped into the graph metadata only by
 //! [`load_default_lif_graph`], which loads the artifact itself. Graphs built

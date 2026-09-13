@@ -340,15 +340,16 @@ def _shipped_file_matches_its_pins(gold, real) -> int:
         f"shipped file has {len(gold)} words, expected {N_OUTPUT_WEIGHTS}",
     )
     _require(
-        gold[0] == "FFF9",
-        f"self-test expects shipped word 0 to be FFF9, got {gold[0]}",
+        gold[0] == "0060",
+        f"self-test expects shipped word 0 to be 0060 (exp-025 pin), "
+        f"got {gold[0]}",
     )
     checks += 4
     return checks
 
 
 def _gold_pin_rejects_swapped_word(tmp, stream, real, gold) -> int:
-    """An FFF9->FFF8 swap round-trips cleanly; only the gold pin catches it."""
+    """A well-formed word-0 swap to FFF8 round-trips; only the gold pin catches it."""
     checks = 0
     print(
         "7. well-formed output-weight corruption is REJECTED (shipped-file pin)",
@@ -361,17 +362,17 @@ def _gold_pin_rejects_swapped_word(tmp, stream, real, gold) -> int:
     mut_path = tmp / "parameters_output_weights_fff8.mem"
     _write_mem(mut_path, mutated_words)
     unpinned_fff8 = check_signed_section(
-        "output weights (FFF9->FFF8, no pin)",
+        "output weights (word0->FFF8, no pin)",
         "sign-integrity + round-trip only",
         parse_mem(mut_path),
         N_OUTPUT_WEIGHTS,
     )
     _require(
         unpinned_fff8.ok,
-        "sanity: FFF9->FFF8 still passes sign+round-trip; the pin is load-bearing",
+        "sanity: word0->FFF8 still passes sign+round-trip; the pin is load-bearing",
     )
     pinned_fff8 = check_signed_section(
-        "output weights (FFF9->FFF8)",
+        "output weights (word0->FFF8)",
         "gold hex pin",
         parse_mem(mut_path),
         N_OUTPUT_WEIGHTS,
@@ -379,7 +380,7 @@ def _gold_pin_rejects_swapped_word(tmp, stream, real, gold) -> int:
     )
     _require(
         not pinned_fff8.ok,
-        "verifier ACCEPTED FFF9->FFF8 corruption against the gold pin",
+        "verifier ACCEPTED word0->FFF8 corruption against the gold pin",
     )
     _require(
         len(pinned_fff8.mismatches) == 1 and pinned_fff8.mismatches[0].index == 0,
@@ -392,8 +393,8 @@ def _gold_pin_rejects_swapped_word(tmp, stream, real, gold) -> int:
 def wellformed_corruption_rejected(tmp: Path, stream) -> int:
     """Reject well-formed output-weight corruption that still round-trips.
 
-    An FFF9->FFF8 swap decodes and re-encodes cleanly, so only the
-    shipped-file pin catches it.
+    A well-formed word-0 swap to FFF8 decodes and re-encodes cleanly, so
+    only the shipped-file pin catches it.
     """
     real = parse_mem(MEM_OUTPUT)
     gold = tuple(e.text.upper() for e in real)
@@ -401,9 +402,9 @@ def wellformed_corruption_rejected(tmp: Path, stream) -> int:
     #
     # Sign-integrity + decode->re-encode accept any well-formed 48-word
     # file with at least one high-bit word. The gold pin is what makes
-    # FFF9->FFF8 and "47 zeros + FFFF" fail.
+    # word0->FFF8 and "47 zeros + FFFF" fail.
     checks += _gold_pin_rejects_swapped_word(tmp, stream, real, gold)
-    print("   ok: FFF9->FFF8 rejected by gold pin, accepted without it", file=stream)
+    print("   ok: word0->FFF8 rejected by gold pin, accepted without it", file=stream)
     checks += _gold_pin_rejects_zeroed_image(tmp, stream, gold)
     print("", file=stream)
     return checks

@@ -25,10 +25,10 @@
 //!
 //! # The `Linear` node
 //!
-//! The 256 stored weights are the layer's learned input weights: the README
-//! records that the hidden layer is purely excitatory and that the network has
-//! *no* recurrent feedback, so there is nothing recurrent for them to be. They
-//! belong on the wire between `Input` and the population — without the
+//! The 256 stored weights are the layer's learned input weights: the network
+//! has *no* recurrent feedback, so there is nothing recurrent for them to be.
+//! Sign is mixed (outgoing Dale is on the sidecar readout, not this matrix).
+//! They belong on the wire between `Input` and the population — without the
 //! `Linear` node the graph is identical for every possible weight matrix, and
 //! nothing a consumer runs would depend on what the model learned.
 //!
@@ -63,11 +63,11 @@
 //! be applied.
 //!
 //! Leaving `R = 1` would therefore hand consumers a different network. The
-//! shipped decay rates run from `0.796875` to `0.94921875`, so `(1 - decay)`
-//! attenuates every input to between 20% and 5% of its trained magnitude, and
-//! the units with the longest memory are starved the hardest. Setting
-//! `R = 1 / (1 - decay_rate)` per unit cancels the factor and makes one NIR
-//! step reproduce the model's step exactly. [`resistance_from_decay`] does it.
+//! shipped decay rates are keep `00DA` = `0.8515625`, so `(1 - decay)`
+//! attenuates every input to about 14.8% of its trained magnitude if `R` is
+//! left at 1. Setting `R = 1 / (1 - decay_rate)` per unit cancels the factor
+//! and makes one NIR step reproduce the model's step exactly.
+//! [`resistance_from_decay`] does it.
 //!
 //! # Provenance
 //!
@@ -190,8 +190,8 @@ impl Provenance<'static> {
 /// This is the only constructor that stamps [`Provenance::MERGED_V2`], and the
 /// stamp is true by construction: the model is loaded and consumed here, so no
 /// caller can have modified it. The graph is the repository's 16-neuron LIF
-/// artifact, not a post-exp-009 legal-encoder retrain and not session-holdout
-/// 5-ch v3.
+/// artifact: exp-025 Dale health-PASS, a post-exp-009 legal-encoder retrain
+/// on session-holdout 5-ch v3.
 ///
 /// # Errors
 ///
@@ -739,15 +739,10 @@ mod tests {
     /// Every unit's resistance is per-neuron, not a shared constant: each one
     /// is [`resistance_from_decay`] of *that* unit's decay rate.
     ///
-    /// This deliberately does not assert that the resistances ascend. They do
-    /// today, because the shipped decay rates are the placeholder
-    /// `torch.linspace(0.8, 0.95, 16)` the README documents -- but that is a
-    /// property of a defect, not of this function. A retrain that fits decay
-    /// rates per neuron would almost certainly produce a non-monotonic vector,
-    /// and an ordering assertion would fail on it and report "graduated decays
-    /// give strictly increasing resistances" -- describing the *intended*
-    /// outcome as a regression. Pinning each value to its own input is both
-    /// stricter than the ordering check and survives the retrain.
+    /// This deliberately does not assert that the resistances differ. exp-025
+    /// keep is uniform `00DA`, so a distinctness check would fail on the live
+    /// bank and describe a Distill keep convention as a wiring bug. Heterogeneous
+    /// mapping is covered by `a_non_monotonic_decay_vector_still_maps_per_unit`.
     ///
     /// This asserts the *wiring*, not the formula: it calls the same
     /// [`resistance_from_decay`] the builder does, so a wrong formula would
@@ -773,16 +768,6 @@ mod tests {
                 model.neurons[unit].decay_rate,
             );
         }
-
-        // Non-vacuity: a shared constant would satisfy the loop above only if
-        // every decay rate were also identical, so require the population to
-        // actually distinguish its units.
-        let distinct = rs.iter().filter(|r| **r != rs[0]).count();
-        assert!(
-            distinct > 0,
-            "every unit got the same resistance {}, so `r` is not per-neuron",
-            rs[0],
-        );
     }
 
     /// A non-monotonic decay vector still maps per unit -- and would have

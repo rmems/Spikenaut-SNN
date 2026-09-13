@@ -17,7 +17,7 @@ What it does
    sha256 of its *canonical token sequence* and the exact 48 hex words
    (computed from the file as shipped). Sign-integrity and decode->re-encode
    stay as defense in depth; they are not enough on their own (a well-formed
-   FFF9->FFF8 swap still round-trips).
+   word-0 0060->FFF8 swap still round-trips).
 4. Exits non-zero with a per-value report on any mismatch. An empty or short
    result set is a hard failure, never a pass: reporting a clean verification
    having read nothing is worse than crashing, because it gets believed.
