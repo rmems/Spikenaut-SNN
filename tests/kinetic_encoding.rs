@@ -145,8 +145,7 @@ fn live_features_at_t_depend_only_on_samples_up_to_t() {
 /// pair each call is what makes it a replay: no state survives between runs.
 fn encode_live_fixture() -> [usize; CHANNEL_COUNT] {
     let mut front_end = LiveKineticFrontEnd::new();
-    let mut encoder =
-        LiveTelemetryEncoder::for_shipped_merged_v2().expect("the legitimate live pairing");
+    let mut encoder = LiveTelemetryEncoder::new().expect("the live configuration is valid");
     let (lo, hi) = INPUT_RANGE;
     let mut fired = [0_usize; CHANNEL_COUNT];
 

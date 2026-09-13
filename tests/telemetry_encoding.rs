@@ -118,14 +118,74 @@ fn live_columns_are_primary_and_the_coin_encoder_refuses_the_shipped_bank() {
     );
 }
 
-/// The live 5-column encoder is the pairing the coin encoder refuses.
+/// Neither encoder is the shipped bank's front end, and they fail differently.
 ///
-/// `LiveTelemetryEncoder::for_shipped_merged_v2` succeeds, its frame is five
-/// wide, and a whole second of saturated ticks never reaches axons 5-15.
+/// The coin encoder has the wrong columns. The live encoder has the right
+/// columns and the wrong modality: `merged_v2` was trained and evaluated on
+/// analog current (`input = W @ stim`, Poisson unused), so a spike train is a
+/// different input distribution wearing the bank's name. Two mistakes, two
+/// errors — a single shared one would hide which is which.
 #[test]
-fn the_live_encoder_accepts_the_shipped_bank_and_leaves_axons_five_to_fifteen_at_zero() {
-    let mut encoder = LiveTelemetryEncoder::for_shipped_merged_v2()
-        .expect("LIVE_COLUMNS is the map the shipped bank was trained on");
+fn both_shipped_bank_pairings_are_refused_for_different_reasons() {
+    assert_eq!(
+        TelemetryEncoder::for_shipped_merged_v2(),
+        Err(spikenaut_snn::LiveMapMismatch),
+    );
+    assert_eq!(
+        LiveTelemetryEncoder::for_shipped_merged_v2(),
+        Err(spikenaut_snn::SpikeModalityMismatch),
+    );
+
+    let modality = spikenaut_snn::SpikeModalityMismatch.to_string();
+    assert!(modality.contains("analog current"), "{modality}");
+    assert_ne!(modality, spikenaut_snn::LiveMapMismatch.to_string());
+
+    // The refusal is specific, not a blanket ban: the encoder still builds for
+    // a consumer that actually eats spikes.
+    assert!(LiveTelemetryEncoder::new().is_ok());
+}
+
+/// The concrete consequence: this encoder cannot represent "no stimulus".
+///
+/// A normalised zero still fires at `BASE_RATE_HZ`, so an idle sensor does not
+/// read as idle. That is the measurable reason the rate path is not compatible
+/// with weights trained on analog current.
+#[test]
+fn a_normalised_zero_still_fires_on_the_live_rate_encoder() {
+    let mut encoder = LiveTelemetryEncoder::new().expect("the live configuration is valid");
+    let idle = [INPUT_RANGE.0; LIVE_LEGAL_COLUMNS];
+
+    let mut totals = [0_usize; CHANNEL_COUNT];
+    for _ in 0..TICKS_PER_SECOND {
+        for spike in &encoder.encode_step(&idle).expect("finite").spikes {
+            totals[usize::from(spike.channel)] += 1;
+        }
+    }
+
+    for (axon, &count) in totals.iter().take(LIVE_LEGAL_COLUMNS).enumerate() {
+        let expected = expected_rate_hz(INPUT_RANGE.0);
+        assert!(
+            (count as f32 - expected).abs() <= 1.0,
+            "axon {axon} ({}) fired {count} times at the bottom of the range, \
+             expected ~{expected} Hz -- zero stimulus is not representable",
+            LIVE_COLUMNS[axon],
+        );
+    }
+    assert!(
+        totals[LIVE_LEGAL_COLUMNS..].iter().all(|&c| c == 0),
+        "axons 5-15 are unwritten even at the base rate",
+    );
+}
+
+/// The live 5-column encoder gets the columns right and stays off axons 5-15.
+///
+/// It is still not the shipped bank's front end — see
+/// `both_shipped_bank_pairings_are_refused_for_different_reasons` — but the
+/// column contract it does implement has to hold: five wide, and a whole second
+/// of saturated ticks never reaching axons 5-15.
+#[test]
+fn the_live_encoder_drives_five_columns_and_leaves_axons_five_to_fifteen_at_zero() {
+    let mut encoder = LiveTelemetryEncoder::new().expect("the live configuration is valid");
     assert_eq!(encoder.dt_seconds(), DT_SECONDS);
     assert_eq!(LIVE_COLUMNS.len(), LIVE_LEGAL_COLUMNS);
     const {

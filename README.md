@@ -104,9 +104,20 @@ This is the mapping the live exp-025 `merged_v2` bank was trained on. Sidecar me
 
 Public `TelemetryEncoder` / `CHANNEL_MAP` is **not** this adapter. It is a deprecated 16-column coin proposal (DNX/Quai/Qubic/Kaspa/Monero/Ocean/Verus/Thermal). Pairing that encoder with the shipped weights is wrong: training held axons 5–15 at zero, while that encoder maps unrelated blockchain sources across all 16 channels and still emits its nonzero base rate on the unused axons. `TelemetryEncoder::for_shipped_merged_v2` refuses construction as a live adapter.
 
-Rust names the live sensors as `encode::LIVE_COLUMNS` and now ships the encoder that matches them. `encode::LiveTelemetryEncoder` is a real, non-deprecated 5-column rate encoder: it takes a `[f32; 5]`, so a 16-wide coin-shaped frame is a compile error, and it drives axons 0–4 only — axons 5–15 are never written and stay at zero, exactly as they were in train. `LiveTelemetryEncoder::for_shipped_merged_v2` constructs; `TelemetryEncoder::for_shipped_merged_v2` still refuses.
+Rust names the live sensors as `encode::LIVE_COLUMNS` and now ships an encoder that matches their **columns**. `encode::LiveTelemetryEncoder` is a real, non-deprecated 5-column rate encoder: it takes a `[f32; 5]`, so a 16-wide coin-shaped frame is a compile error, and it drives axons 0–4 only — axons 5–15 are never written.
 
-A live 5-column **kinetic** encode path exists on top of that: `kinetic::LiveKineticFrontEnd` runs one causal `kinetic-signals` pipeline per live sensor and encodes through `LiveTelemetryEncoder`, targeting axons 0–4 with axons 5–15 held at zero. Its projection is the identity — each sensor's own raw value, normalised against the `frozen_minmax` span the sidecar records for it, lands on its own axon. The eleven kinetic features come back alongside the frame as audit data and **do not** reach an axon: which of them (if any) earns one is the RAW / KINETIC / HYBRID ablation, which remains open — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14). The encode path is host-side only and does not block FPGA parity.
+**It is still not this bank's front end, and it says so.** `merged_v2` was trained and evaluated on *analog current*, not on spikes: `tools/hamming_core.py` steps it as `input = W @ stim` and labels that line "analog current, not Poisson", and `tools/HAMMING_PROTOCOL.md` records the exp-024 condition as "analog current, Poisson unused when `learn=false`". Rate-coding the same five sensors changes the magnitude and temporal distribution of every input — most concretely, a normalized `0.0` encodes at the non-zero `BASE_RATE_HZ`, so an idle sensor stops reading as idle and zero stimulus is not representable at all.
+
+So the crate now refuses **two** wrong pairings, with two different diagnoses:
+
+| Constructor | Columns | Modality | Result |
+|---|---|---|---|
+| `TelemetryEncoder::for_shipped_merged_v2` | wrong (coin, 16-wide) | spikes | `Err(LiveMapMismatch)` |
+| `LiveTelemetryEncoder::for_shipped_merged_v2` | right (`LIVE_COLUMNS`) | wrong (spikes) | `Err(SpikeModalityMismatch)` |
+
+`LiveTelemetryEncoder::new` still builds, because the encoder is correct for a consumer that actually eats spikes — the FPGA path — on the live five-sensor map. An analog `stim` adapter for the shipped bank is a separate ticket.
+
+A live 5-column **kinetic** encode path exists on top of that: `kinetic::LiveKineticFrontEnd` runs one causal `kinetic-signals` pipeline per live sensor and encodes through `LiveTelemetryEncoder`, targeting axons 0–4 with axons 5–15 held at zero. Being a spike path, it inherits the modality caveat above — it is not the shipped bank's front end either. Its projection is the identity — each sensor's own raw value, normalised against the `frozen_minmax` span the sidecar records for it, lands on its own axon. The eleven kinetic features come back alongside the frame as audit data and **do not** reach an axon: which of them (if any) earns one is the RAW / KINETIC / HYBRID ablation, which remains open — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14). The encode path is host-side only and does not block FPGA parity.
 
 Non-finite samples are rejected whole and never substituted, by both encoders and by the kinetic front end: a single `NaN` sensor rejects the five-wide reading before any estimator or accumulator moves. Dropout **sentinels** are a different problem and neither encoder solves it — `gpu_temp_c == 0` is a finite number and passes straight through. Masking it is the caller's job under the state contract in [#20](https://github.com/rmems/Spikenaut-SNN/issues/20).
 
@@ -247,9 +258,9 @@ src/                               # Rust, `spikenaut-snn`
 ├── graph.rs                       # Builds the NIR graph
 ├── encode.rs                      # LIVE_COLUMNS + LiveTelemetryEncoder
                                    # (exp-025 5-col, PRIMARY, axons 0-4);
-                                   # deprecated coin CHANNEL_MAP encoder that
-                                   # must not pair with the shipped bank;
-                                   # not a runtime
+                                   # refuses the shipped bank twice over --
+                                   # wrong columns (coin) and wrong modality
+                                   # (spikes vs analog current); not a runtime
 ├── kinetic.rs                     # Host-side kinetic-signals front end
                                    # upstream of encode.rs; encodes against
                                    # the live 5-col contract (axons 0-4,

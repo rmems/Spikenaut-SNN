@@ -17,6 +17,13 @@
 //! (continuous → spikes)      (axons 5–15 unwritten, held at zero)
 //! ```
 //!
+//! That tail is a **spike** path, so it is not the shipped `merged_v2` front
+//! end — that bank eats analog current, and
+//! [`LiveTelemetryEncoder::for_shipped_merged_v2`] refuses accordingly. What
+//! this module proves is that the published crate sits correctly in front of
+//! the live five-sensor map; pairing the result with the shipped weights is a
+//! separate question with its own answer.
+//!
 //! One [`KineticPipeline`] runs per live sensor, so the five series keep
 //! independent estimator state. Axons 5–15 are never written: they are unused
 //! width on the exp-025 bank, held at *zero* in train, and this module does not
@@ -76,6 +83,12 @@
 //! way to an infinity and the moment ratios come back `NaN`: measured, a
 //! series at `1e100` already yields a `NaN` skewness and kurtosis while the
 //! samples themselves stay perfectly finite.
+//!
+//! It does not clear on the next tick. The offending sample stays in the
+//! [`HISTORY_WINDOW`] the moments are computed over, so ordinary readings that
+//! follow it keep coming back non-finite until the window evicts it — measured,
+//! a `f64::MAX` sample poisons every subsequent feature vector for the rest of
+//! that window.
 //!
 //! This is a property of the estimators, not of this adapter — a bare
 //! [`KineticPipeline`] behaves identically — and [`KineticFeatures::is_finite`]
@@ -423,7 +436,7 @@ impl Default for KineticPipeline {
 /// use spikenaut_snn::kinetic::LiveKineticFrontEnd;
 ///
 /// let mut front_end = LiveKineticFrontEnd::new();
-/// let mut encoder = LiveTelemetryEncoder::for_shipped_merged_v2()?;
+/// let mut encoder = LiveTelemetryEncoder::new()?;
 ///
 /// // mem_util_pct, power_w, gpu_temp_c, sm_clock_mhz, mem_clock_mhz.
 /// let reading = [42.0, 180.0, 61.0, 1_900.0, 9_500.0];
@@ -703,8 +716,7 @@ mod tests {
     #[test]
     fn the_live_front_end_encodes_only_the_five_live_axons() {
         let mut front_end = LiveKineticFrontEnd::new();
-        let mut encoder =
-            LiveTelemetryEncoder::for_shipped_merged_v2().expect("the legitimate live pairing");
+        let mut encoder = LiveTelemetryEncoder::new().expect("live constants");
 
         let mut fired = [0_usize; crate::encode::CHANNEL_COUNT];
         for tick in 0..32 {

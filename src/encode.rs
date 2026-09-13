@@ -9,10 +9,18 @@
 //!
 //! The population is still 16-wide (`n_channels` in `config.json`) and still
 //! runs on a 1 kHz clock, so a stimulus has to be a spike train, not a float
-//! vector. [`LiveTelemetryEncoder`] is that adapter: a 5-column rate encoder
-//! that targets axons 0–4 and never writes axons 5–15, so the unused width
-//! stays at zero exactly as it was in train. Naming the live map, shipping the
-//! encoder that matches it, and refusing the wrong one is the contract.
+//! vector — for a consumer that eats spikes. [`LiveTelemetryEncoder`] is that
+//! encoder: 5-column, targeting axons 0–4 and never writing axons 5–15.
+//!
+//! It is **not** the shipped bank's front end, and does not claim to be. That
+//! bank was trained and evaluated on *analog current* (`input = W @ stim`,
+//! Poisson explicitly unused — see `tools/HAMMING_PROTOCOL.md`), so
+//! [`LiveTelemetryEncoder::for_shipped_merged_v2`] refuses with
+//! [`SpikeModalityMismatch`] just as the coin encoder refuses with
+//! [`LiveMapMismatch`] — two different mistakes, two different diagnoses. An
+//! analog `stim` adapter is a separate ticket. Naming the live map, shipping
+//! the encoder that matches its *columns*, and refusing every wrong pairing out
+//! loud is the contract.
 //!
 //! # Live map (PRIMARY)
 //!
@@ -430,6 +438,46 @@ impl fmt::Display for LiveMapMismatch {
 
 impl std::error::Error for LiveMapMismatch {}
 
+/// Returned when a caller asks to pair the live 5-column *rate* encoder with
+/// the shipped exp-025 bank.
+///
+/// [`LiveTelemetryEncoder::for_shipped_merged_v2`] always yields this error.
+///
+/// The columns are right — [`LIVE_COLUMNS`] on axons 0–4, axons 5–15 unwritten
+/// — so this is not [`LiveMapMismatch`]. The *modality* is wrong. The shipped
+/// bank consumes an analog current vector, not a spike train:
+/// `tools/hamming_core.py` steps it as `input = W @ stim` and labels that line
+/// "analog current, not Poisson", and `tools/HAMMING_PROTOCOL.md` records the
+/// exp-024 condition as "analog current, Poisson unused when `learn=false`".
+///
+/// Rate-coding the same five sensors changes both the magnitude and the
+/// temporal distribution of every input. The sharpest case is the one the
+/// unused-axon contract already cares about: a normalised `0.0` encodes at
+/// [`BASE_RATE_HZ`], so an *idle* sensor stops looking idle — the encoder has
+/// no way to express zero stimulus at all. Feeding that to weights trained on
+/// analog current is a different experiment wearing the bank's name.
+///
+/// [`LiveTelemetryEncoder`] is still the correct 5-column rate encoder, and
+/// the map it targets is the live one. It is a front end for a spike-consuming
+/// consumer — the FPGA path — not for `merged_v2`. An analog `stim` adapter for
+/// the shipped bank is a separate ticket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SpikeModalityMismatch;
+
+impl fmt::Display for SpikeModalityMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(
+            "LiveTelemetryEncoder targets the live exp-025 columns but emits a spike train; \
+             the shipped merged_v2 bank was trained and evaluated on analog current \
+             (`input = W @ stim`, Poisson unused), and a normalised zero would encode at the \
+             non-zero base rate rather than as no stimulus. Pairing this encoder with the bank \
+             is refused; an analog stim adapter is a separate ticket.",
+        )
+    }
+}
+
+impl std::error::Error for SpikeModalityMismatch {}
+
 /// A live 5-column frame rejected for carrying a value that is not finite.
 ///
 /// Returned by [`LiveTelemetryEncoder::encode_step`] and
@@ -554,21 +602,29 @@ impl fmt::Display for NonFiniteLiveFrame {
 
 impl std::error::Error for NonFiniteLiveFrame {}
 
-/// The live exp-025 adapter: a rate encoder fixed to [`LIVE_COLUMNS`] and the
-/// model's 1 kHz clock.
+/// A rate encoder fixed to the live [`LIVE_COLUMNS`] map and the model's 1 kHz
+/// clock.
 ///
-/// This is the encoder [`TelemetryEncoder`] is not. Every method takes a
-/// `&[f32; LIVE_LEGAL_COLUMNS]`, so a 16-wide coin-shaped frame is a compile
-/// error rather than a quietly wrong stimulus, and the wrapped [`RateEncoder`]
-/// is driven with that 5-wide slice. `axon-encoder` emits one channel index per
-/// slot it is handed, so spikes only ever land on axons 0-4: axons 5-15 are
-/// never written and stay at zero, which is the contract the shipped
-/// `merged_v2` bank was trained under (`unused_axons` is `5:15`).
+/// This gets right the half [`TelemetryEncoder`] gets wrong: the columns. Every
+/// method takes a `&[f32; LIVE_LEGAL_COLUMNS]`, so a 16-wide coin-shaped frame
+/// is a compile error rather than a quietly wrong stimulus, and the wrapped
+/// [`RateEncoder`] is driven with that 5-wide slice. `axon-encoder` emits one
+/// channel index per slot it is handed, so spikes only ever land on axons 0-4:
+/// axons 5-15 are never written, matching the bank's `unused_axons` of `5:15`.
 ///
-/// Holding the unused width at zero -- rather than at [`BASE_RATE_HZ`], which
-/// is what the historical encoder does to its unused channels -- is the whole
-/// difference. A liveness tick on an axon the bank never saw in training is
-/// not a liveness tick, it is a stimulus.
+/// # Not the `merged_v2` front end
+///
+/// Right columns is not the same as right *input*. The shipped bank was
+/// trained and evaluated on **analog current** — `input = W @ stim`, with
+/// Poisson explicitly unused — so a spike train is the wrong modality for it,
+/// and [`Self::for_shipped_merged_v2`] refuses with [`SpikeModalityMismatch`]
+/// rather than constructing. Note in particular that this encoder cannot
+/// express zero stimulus: a normalised `0.0` still fires at [`BASE_RATE_HZ`],
+/// so an idle sensor does not read as idle.
+///
+/// What it *is* good for is a consumer that actually eats spikes — the FPGA
+/// path — on the live five-sensor map. Build it with [`new`](Self::new) for
+/// that, and see [`SpikeModalityMismatch`] for the evidence behind the refusal.
 ///
 /// Normalising raw sensor values into [`INPUT_RANGE`] stays the caller's job;
 /// this module only clamps, and only finite values. [`crate::kinetic`] is one
@@ -579,8 +635,11 @@ impl std::error::Error for NonFiniteLiveFrame {}
 /// ```
 /// use spikenaut_snn::encode::{DT_SECONDS, LIVE_LEGAL_COLUMNS, LiveTelemetryEncoder};
 ///
-/// let mut encoder = LiveTelemetryEncoder::for_shipped_merged_v2()?;
+/// let mut encoder = LiveTelemetryEncoder::new()?;
 /// assert_eq!(encoder.dt_seconds(), DT_SECONDS);
+///
+/// // Not the shipped bank's front end: that pairing is refused by name.
+/// assert!(LiveTelemetryEncoder::for_shipped_merged_v2().is_err());
 ///
 /// // Every legal column saturated: 200 Hz at a 1 ms step is one spike every
 /// // fifth tick, and only the five live axons ever fire.
@@ -617,23 +676,27 @@ pub struct LiveTelemetryEncoder {
 }
 
 impl LiveTelemetryEncoder {
-    /// Build the live front end for the shipped `merged_v2` bank.
+    /// Always fail: a spike train is not what the shipped bank eats.
     ///
-    /// This is the pairing [`TelemetryEncoder::for_shipped_merged_v2`] refuses.
-    /// It succeeds here because [`LIVE_COLUMNS`] *is* the map the bank was
-    /// trained on and because this encoder leaves axons 5-15 unwritten.
+    /// This encoder targets the right columns — that is the half
+    /// [`TelemetryEncoder`] gets wrong — but `merged_v2` was trained and
+    /// evaluated on *analog current*, not on Poisson spikes. The two refusals
+    /// are therefore different diagnoses of different mistakes:
     ///
-    /// It is an alias for [`new`](Self::new) rather than a distinct
-    /// configuration: there is only one live configuration, and the name is
-    /// what makes the pairing explicit at the call site.
+    /// | Constructor | Columns | Modality | Error |
+    /// | --- | --- | --- | --- |
+    /// | [`TelemetryEncoder::for_shipped_merged_v2`] | wrong (coin, 16-wide) | spikes | [`LiveMapMismatch`] |
+    /// | `LiveTelemetryEncoder::for_shipped_merged_v2` | right ([`LIVE_COLUMNS`]) | wrong (spikes) | [`SpikeModalityMismatch`] |
+    ///
+    /// Use [`new`](Self::new) to build the encoder for a spike-consuming
+    /// consumer, where it is exactly right. See [`SpikeModalityMismatch`] for
+    /// the evidence.
     ///
     /// # Errors
     ///
-    /// Returns [`EncoderError`] on the same terms as [`new`](Self::new); in
-    /// practice the default constants are infallible and the test suite pins
-    /// them.
-    pub fn for_shipped_merged_v2() -> Result<Self, EncoderError> {
-        Self::new()
+    /// Always [`SpikeModalityMismatch`].
+    pub fn for_shipped_merged_v2() -> Result<Self, SpikeModalityMismatch> {
+        Err(SpikeModalityMismatch)
     }
 
     /// Build this crate's default live encoder.
@@ -1191,18 +1254,54 @@ mod tests {
     }
 
     #[test]
-    fn the_live_encoder_pairs_with_the_shipped_bank() {
-        let encoder = LiveTelemetryEncoder::for_shipped_merged_v2()
-            .expect("the live 5-column map is the legitimate merged_v2 pairing");
-        assert_eq!(encoder.dt_seconds(), DT_SECONDS);
-        assert_eq!(
-            encoder,
-            LiveTelemetryEncoder::new().expect("live constants are a valid encoder"),
-        );
-        // The deprecated coin encoder still refuses the same pairing.
+    fn both_encoders_refuse_the_shipped_bank_for_different_reasons() {
+        // Wrong columns: the coin map is not LIVE_COLUMNS.
         assert_eq!(
             TelemetryEncoder::for_shipped_merged_v2(),
             Err(LiveMapMismatch),
+        );
+        assert!(
+            LiveMapMismatch
+                .to_string()
+                .contains("not the live exp-025 adapter")
+        );
+
+        // Right columns, wrong modality: the bank eats analog current, not
+        // spikes, so the live *rate* encoder is refused too -- by a different
+        // error, because it is a different mistake.
+        assert_eq!(
+            LiveTelemetryEncoder::for_shipped_merged_v2(),
+            Err(SpikeModalityMismatch),
+        );
+        let message = SpikeModalityMismatch.to_string();
+        assert!(message.contains("analog current"), "{message}");
+        assert!(message.contains("Poisson unused"), "{message}");
+        assert_ne!(
+            LiveMapMismatch.to_string(),
+            message,
+            "the two refusals must not read as the same diagnosis",
+        );
+
+        // The encoder itself is still constructible for a spike consumer.
+        let encoder = LiveTelemetryEncoder::new().expect("live constants are a valid encoder");
+        assert_eq!(encoder.dt_seconds(), DT_SECONDS);
+    }
+
+    #[test]
+    fn the_live_rate_encoder_cannot_express_zero_stimulus() {
+        // The concrete reason the rate path is not the bank's front end: a
+        // normalised zero is a BASE_RATE_HZ tick, not silence. Over one second
+        // an "idle" sensor still fires.
+        let mut encoder = LiveTelemetryEncoder::new().expect("live constants are a valid encoder");
+        let idle = [INPUT_RANGE.0; LIVE_LEGAL_COLUMNS];
+        let mut fired = 0_usize;
+        for _ in 0..1000 {
+            fired += encoder.encode_step(&idle).expect("finite").spikes.len();
+        }
+        assert!(
+            fired > 0,
+            "a normalised zero encodes at the base rate, which is why this \
+             encoder is not the analog-current front end",
         );
     }
 
