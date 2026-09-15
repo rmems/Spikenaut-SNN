@@ -70,12 +70,7 @@ def format_bank_report(bank: ModelBank) -> str:
     return "\n".join(lines)
 
 
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point. Returns the process exit code.
-
-    0 = every entry attested, 1 = an entry or field failed attestation (or a
-    self-test assertion failed), 2 = the manifest could not be parsed at all.
-    """
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Attest a model-bank manifest before selection (Linear RM-1327)."
@@ -86,9 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         nargs="?",
         type=Path,
         default=SHIPPED_MANIFEST,
-        help=(
-            "path to model_bank.json (default: the shipped merged_v2 bank)"
-        ),
+        help="path to model_bank.json (default: the shipped merged_v2 bank)",
     )
     parser.add_argument(
         "--select",
@@ -105,8 +98,12 @@ def main(argv: list[str] | None = None) -> int:
             "attests"
         ),
     )
-    args = parser.parse_args(argv)
+    return parser
 
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point. Returns 0, 1 (attestation/self-test fail), or 2 (parse)."""
+    args = _build_parser().parse_args(argv)
     try:
         if args.self_test:
             self_test()
