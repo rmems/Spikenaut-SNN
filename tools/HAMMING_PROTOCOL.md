@@ -1,9 +1,13 @@
 # Float-vs-Q8.8 Hamming protocol (issue #39)
 
 This is a **measurement with its protocol**, not a pass/fail gate. How much
-float-to-Q8.8 spike disagreement is acceptable is blocked on the
-output/decision contract ([#20](https://github.com/rmems/Spikenaut-SNN/issues/20)).
-This document must not grow a Hamming threshold.
+float-to-Q8.8 spike disagreement is acceptable is still not a Hamming
+threshold: that gate stays deferred to
+[#20](https://github.com/rmems/Spikenaut-SNN/issues/20). The output-row
+decision contract (how a Distill `(comfort, temp, power)` score row becomes
+a shadow-policy decision) is now `src/decision.rs` /
+`tools/decision_core.py` (Linear RM-1328). This document must not grow a
+Hamming threshold.
 
 The harness is `tools/measure_hamming.py`. It is standard-library Python.
 The keep-LIF it steps is **harness-only** — `src/` still does not advance

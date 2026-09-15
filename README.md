@@ -22,7 +22,7 @@ model_name: Spikenaut-SNN-v2
 
 A 16-neuron Leaky-Integrate-and-Fire (LIF) spiking neural network **designed to learn** a compact temporal representation of machine state from live hardware and node telemetry, targeting a Xilinx Artix-7 FPGA. That is the intended architecture; nothing here demonstrates that the shipped weights learned such a representation — see Status below.
 
-Spikenaut is the small-supervisor layer of a wider research program, **Artificial Interoception / Neuromorphic Supervisor** ([#7](https://github.com/rmems/Spikenaut-SNN/issues/7)). The name comes from "spike" (neural firing) and "naut" (navigator). This repository holds the model artifact — the shipped weight files and the Q8.8 export contract. Two caveats the name invites: the weights are not established as trained (Status, below), and there is no decision contract — nothing in this repository or its history defines what the three output rows mean.
+Spikenaut is the small-supervisor layer of a wider research program, **Artificial Interoception / Neuromorphic Supervisor** ([#7](https://github.com/rmems/Spikenaut-SNN/issues/7)). The name comes from "spike" (neural firing) and "naut" (navigator). This repository holds the model artifact — the shipped weight files and the Q8.8 export contract. Two caveats the name invites: the weights are not established as trained (Status, below), and the three output rows are Distill regression channels `(comfort, temp, power)`, not a bound RM-1150 action list.
 
 ## Status — read this first
 
@@ -32,7 +32,7 @@ This is a **research artifact, not a validated supervisor.** Five things a reade
 |---|---|
 | **The live bank is exp-025, not the #2 ramp.** | `dataset/merged_v2/` is the Distill sidecar Dale health-PASS export (protocol pin [`a1fa491`](https://github.com/rmems/SynapticDistill.jl/commit/a1fa491c70397b96967ba6cf8f08c2ce2fbb2fb7), seed 123, 20 epochs, Hub v3 JSONL sha `26d7d744…`, legal 5-ch, lineage `74acdd0f`). Hidden weights are mixed-sign. Outgoing Dale is 12:4 (`inhibitory` on neurons 12–15). Health k=none on `gpu-000170..198`: cofire **0.863**, all-16 **0.000**, I_spikes **223511** (exp-009 PASS). The monotonic ramp [#2](https://github.com/rmems/Spikenaut-SNN/issues/2) tracked is the bank this promote replaces. |
 | **Decay is Distill keep=0.85, not the old linspace.** | All 16 `parameters_decay.mem` words are `00DA` (0.8515625). That is sidecar keep semantics, not `torch.linspace(0.8, 0.95, 16)`. `tau = -dt / ln(decay)` is therefore the same 6.21 ms on every unit. |
-| **The output layer is the sidecar readout, still without a decision contract.** | 48 signed Q8.8 words, also present as per-neuron `output_weights` in `snn_model.json`. Scratch Hamming on the published harness: k=none **14.960%**, k=4 **49.095%**, json↔mem hidden **0/256** — measurement only; no pass/fail threshold ([#20](https://github.com/rmems/Spikenaut-SNN/issues/20) still open). Nothing here defines what rows 0–2 mean or how a score becomes a decision. |
+| **The output layer is the Distill readout with a documented decision contract.** | 48 signed Q8.8 words, also present as per-neuron `output_weights` in `snn_model.json`, neuron-major 16×3. Distill trained the three rows as regression onto `(comfort, temp, power)` (`sample_readout_target` at sidecar `a1fa491`). `src/decision.rs` / `tools/decision_core.py` convert one finite score row through `replay_output_row`: argmax, lowest-index ties, fail-closed on NaN/empty/wrong-width. RM-1150's five-wide `ALLOW/WARN/THROTTLE/PAUSE/YIELD_GPU` list is unbound — mapping it onto these three channels would be a guess. Scratch Hamming on the published harness: k=none **14.960%**, k=4 **49.095%**, json↔mem hidden **0/256** — measurement only; no pass/fail threshold ([#20](https://github.com/rmems/Spikenaut-SNN/issues/20) still open). |
 | **Weight provenance is the Distill sidecar pin.** | Trainer is `scripts/spikenaut_train.jl` at Distill `a1fa491`. This repository still does not run that script. The 8-record `fresh_sync_data.jsonl` import is the *previous* bank's story, not this one. Closed [#13](https://github.com/rmems/Spikenaut-SNN/issues/13) (2026-09-13) tracked that sidecar pin; it landed via Distill (exp-025 promote). |
 | **FPGA parity is unproven; live smoke is not parity.** | [silicon-hdl#68](https://github.com/rmems/silicon-hdl/issues/68) is CLOSED: Phase C live smoke **PASS** on Basys 3 — PROGRAM_OK plus `step_en` ~heartbeat after BTNC in SW15 status mode. That is a programmed-board heartbeat, not software↔FPGA spike/action/membrane agreement. Spike, action, membrane-potential, and quantization error vs the software model have not been measured; [#6](https://github.com/rmems/Spikenaut-SNN/issues/6) stays open. The LUT/power/register/WNS rows below remain Vivado synthesis estimates, not board-measured. |
 
@@ -298,9 +298,16 @@ tools/                             # Python package, standard library only
                                    # src/stim.rs, on a shared fixture. CLI;
                                    # the pin itself is live_stim_pin.py and
                                    # --self-test is live_stim_selftest.py.
-└── fixtures/live_stim/            # reading.jsonl + expected_stim.json, read
+├── decision_parity.py             # Cross-language pin for the output-row
+                                   # decision contract (RM-1328):
+                                   # decision_core.py vs src/decision.rs.
+                                   # Distill (comfort, temp, power); RM-1150
+                                   # five-wide list unbound.
+├── fixtures/live_stim/            # reading.jsonl + expected_stim.json, read
                                    # by both live_stim_parity.py and
                                    # tests/live_stim.rs
+└── fixtures/decision/             # expected.json golden pin for
+                                   # replay_output_row (RM-1328)
 
 src/                               # Rust, `spikenaut-snn`
 ├── lib.rs                         # Crate root: what the library exposes
@@ -316,6 +323,9 @@ src/                               # Rust, `spikenaut-snn`
                                    # analog stim vector `W @ stim` consumes,
                                    # axons 5-15 exactly 0.0; pinned against
                                    # the Python reference encoder (#52)
+├── decision.rs                    # Output-row -> decision contract
+                                   # (RM-1328): replay_output_row, lowest-
+                                   # index ties, fail-closed NaN/width
 ├── kinetic.rs                     # Host-side kinetic-signals front end
                                    # upstream of encode.rs; encodes against
                                    # the live 5-col contract (axons 0-4,
@@ -332,14 +342,14 @@ The artifacts are the product; the code exists to check them and to hand them
 to consumers in a standard form. The Rust crate still does not run the
 network — `Neuron::membrane_potential` is decoded and never advanced.
 `stim::LiveStimAdapter` builds the input the network would eat; it does not
-step it.
+step it. `decision::replay_output_row` converts one already-scored Distill
+row into a shadow-policy decision; it does not actuate the host.
 `tools/measure_hamming.py` is the documented exception: it publishes
 float-vs-Q8.8 Hamming on a holdout via a standard-library **keep-LIF**
 stepper in `tools/hamming_core.py`
 ([#39](https://github.com/rmems/Spikenaut-SNN/issues/39)). That is not a
 claim `src/` executes spikes, and it is not a Hamming pass/fail gate — the
-tolerance is blocked on the output/decision contract
-([#20](https://github.com/rmems/Spikenaut-SNN/issues/20)). Protocol:
+tolerance is deferred to [#20](https://github.com/rmems/Spikenaut-SNN/issues/20). Protocol:
 `tools/HAMMING_PROTOCOL.md`.
 
 ### Loading on FPGA
@@ -387,7 +397,7 @@ A replacement corpus, `qubic_ticks_snn.jsonl` (~27,430 records), and a data adap
 - **FPGA spike/action/membrane parity vs software is not done.** Phase C live smoke ([silicon-hdl#68](https://github.com/rmems/silicon-hdl/issues/68), CLOSED) is **PASS**: PROGRAM_OK + `step_en` ~heartbeat after BTNC in SW15 status mode on Basys. That is not FPGA parity, not a Dale inhibitory proof on board, and not a measurement of the power/LUT rows below. Spike agreement, action agreement, membrane-potential error, and quantization error against the software model have not been measured. [#6](https://github.com/rmems/Spikenaut-SNN/issues/6) stays open.
 - **Float-vs-Q8.8 Hamming is published as a measurement, not a gate.** `tools/measure_hamming.py` reports per-tick Hamming (%) and mean bits for `k=none` and `k=4` with the full protocol (weights, encoder, episodes, seed). exp-025 scratch (this bank): k=none **14.960%**, k=4 **49.095%**, json↔mem hidden **0/256**. exp-024 claimed `k=none` 13.187% / 0.1608 bits and `k=4` 56.188% / 1.697 bits on the exp-023 PASS Distill knobs scratch (seed 123 / 5 ep), legal 5-ch train-scaled encoder, frozen minmax lineage `74acdd0f`, v3 test `gpu-000170..198` (n=117653). The in-repo harness run is a method fixture, not a reproduction of either scratch. A pass threshold is deferred to [#20](https://github.com/rmems/Spikenaut-SNN/issues/20). [#39](https://github.com/rmems/Spikenaut-SNN/issues/39), [#4](https://github.com/rmems/Spikenaut-SNN/issues/4)
 - **Unsigned `.mem` export still zero-clamps negatives.** `silicon-bridge`'s `encode_q88` / `encode_q88_unsigned` on the `$readmemh` `.mem` parameter-export path still clamp negatives to 0 (`u16`). Using that path blindly would destroy signed inhibitory weights (hidden and `parameters_output_weights.mem`). A separate `encode_q88_signed` (`i16`) exists for UART/host stimuli; it is not a substitute for signed weight `.mem` export. [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) is still the crates.io pin and signed-export ticket.
-- **The output layer has a JSON source and still has no decision contract.** The 48 signed values in `parameters_output_weights.mem` match per-neuron `output_weights` in `snn_model.json` (neuron-major). `tools/verify_q88.py` still pins the `.mem` by canonical sha256 and gold hex. Nothing here defines what the three rows mean. [#4](https://github.com/rmems/Spikenaut-SNN/issues/4), [#20](https://github.com/rmems/Spikenaut-SNN/issues/20)
+- **The output layer has a JSON source and a documented decision contract.** The 48 signed values in `parameters_output_weights.mem` match per-neuron `output_weights` in `snn_model.json` (neuron-major). Distill row order is `(comfort, temp, power)`. `replay_output_row` is the software replay path: argmax, lowest-index ties, fail-closed on non-finite or malformed rows. RM-1150 `ALLOW/WARN/THROTTLE/PAUSE/YIELD_GPU` stays unbound. `tools/verify_q88.py` still pins the `.mem` by canonical sha256 and gold hex. [#6](https://github.com/rmems/Spikenaut-SNN/issues/6), Linear RM-1328.
 - **Tier A stream-READY is not axon fill.** After [gaming-telemetry#27](https://github.com/rmems/gaming-telemetry/pull/27), axon **6** (`memory_used_mb`) is **READY** to stream; each of `pcie_tx_kbps` and `pcie_rx_kbps` is independently **READY** to stream (axon **7** is **stream-candidate / projection TBD** and stays unused (0) until a named Stage-1 EXP); axon **8** (`fan_speed_perc`) is **CONDITIONAL READY** (variance-gated). Axons **5** (`gpu_util_pct`) and **9** (`cpu_util_pct`) stay **BLOCKED** (collector schema absent — do not invent them, and do not substitute encoder/decoder util). Live bank remains exp-025 axons 0-4; unused 5-15 stay 0 until a named Stage-1 EXP. Schema / acceptance on [#20](https://github.com/rmems/Spikenaut-SNN/issues/20) stay open.
 - **Upstream dataset hygiene.** Sibling telemetry datasets still carry dead columns, schema drift, mixed timestamp formats, synthetic tail records, and stuck values. [#2](https://github.com/rmems/Spikenaut-SNN/issues/2), [#3](https://github.com/rmems/Spikenaut-SNN/issues/3)
 
