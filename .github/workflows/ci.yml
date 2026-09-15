@@ -139,6 +139,19 @@ jobs:
           python3 tools/live_stim_parity.py --self-test
           python3 -m tools.live_stim_parity --self-test
 
+      # Output-row -> decision contract (RM-1328). Python reference vs the
+      # committed golden pin; `cargo test` asserts the Rust half against the
+      # same file. Distill (comfort, temp, power); RM-1150 five-wide unbound.
+      - name: Pin the output-row decision contract
+        run: |
+          python3 tools/decision_parity.py
+          python3 -m tools.decision_parity
+
+      - name: Prove the decision pin can fail
+        run: |
+          python3 tools/decision_parity.py --self-test
+          python3 -m tools.decision_parity --self-test
+
       # Only the repository's own copy is checked here. The Hugging Face card
       # is not in this checkout and fetching it would put a network call in a
       # job whose whole point is that it needs nothing installed and nothing

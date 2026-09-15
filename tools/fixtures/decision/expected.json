@@ -1,0 +1,739 @@
+{
+  "contract": "spikenaut-output-row-v1",
+  "vocabulary": [
+    "comfort",
+    "temp",
+    "power"
+  ],
+  "tie_break": "lowest-index",
+  "confidence_formula": "margin / (|winner| + |runner_up|)",
+  "output_width": 3,
+  "supervisor_vocabulary_unbound": [
+    "ALLOW",
+    "WARN",
+    "THROTTLE",
+    "PAUSE",
+    "YIELD_GPU"
+  ],
+  "n_outputs_json": 3,
+  "output_weight_count": 48,
+  "note": "Cross-language pin for the output-row decision contract (Linear RM-1328): tools/decision_core.py vs Rust spikenaut_snn::decision. Shipped vocabulary is Distill (comfort, temp, power); RM-1150 ALLOW/WARN/THROTTLE/PAUSE/YIELD_GPU is recorded unbound. Regenerate with `python3 tools/decision_parity.py --write`.",
+  "cases": [
+    {
+      "name": "normal_comfort",
+      "row_bits": [
+        "3feccccccccccccd",
+        "3fc999999999999a",
+        "3fb999999999999a"
+      ],
+      "row": [
+        0.9,
+        0.2,
+        0.1
+      ],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": true,
+      "kind": "propose",
+      "abstain_reason": null,
+      "winning_index": 0,
+      "winning_score": 0.9,
+      "winning_action": "comfort",
+      "runner_up_index": 1,
+      "runner_up_score": 0.2,
+      "margin": 0.7,
+      "confidence": 0.6363636363636362,
+      "tied": false,
+      "scores": [
+        0.9,
+        0.2,
+        0.1
+      ]
+    },
+    {
+      "name": "normal_temp",
+      "row_bits": [
+        "3fb999999999999a",
+        "3fe999999999999a",
+        "3fc999999999999a"
+      ],
+      "row": [
+        0.1,
+        0.8,
+        0.2
+      ],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": true,
+      "kind": "propose",
+      "abstain_reason": null,
+      "winning_index": 1,
+      "winning_score": 0.8,
+      "winning_action": "temp",
+      "runner_up_index": 2,
+      "runner_up_score": 0.2,
+      "margin": 0.6000000000000001,
+      "confidence": 0.6000000000000001,
+      "tied": false,
+      "scores": [
+        0.1,
+        0.8,
+        0.2
+      ]
+    },
+    {
+      "name": "normal_power",
+      "row_bits": [
+        "3fb999999999999a",
+        "3fc999999999999a",
+        "3feccccccccccccd"
+      ],
+      "row": [
+        0.1,
+        0.2,
+        0.9
+      ],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": true,
+      "kind": "propose",
+      "abstain_reason": null,
+      "winning_index": 2,
+      "winning_score": 0.9,
+      "winning_action": "power",
+      "runner_up_index": 1,
+      "runner_up_score": 0.2,
+      "margin": 0.7,
+      "confidence": 0.6363636363636362,
+      "tied": false,
+      "scores": [
+        0.1,
+        0.2,
+        0.9
+      ]
+    },
+    {
+      "name": "tie_first_two",
+      "row_bits": [
+        "3fe0000000000000",
+        "3fe0000000000000",
+        "3fb999999999999a"
+      ],
+      "row": [
+        0.5,
+        0.5,
+        0.1
+      ],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": true,
+      "kind": "propose",
+      "abstain_reason": null,
+      "winning_index": 0,
+      "winning_score": 0.5,
+      "winning_action": "comfort",
+      "runner_up_index": 1,
+      "runner_up_score": 0.5,
+      "margin": 0.0,
+      "confidence": 0.0,
+      "tied": true,
+      "scores": [
+        0.5,
+        0.5,
+        0.1
+      ]
+    },
+    {
+      "name": "tie_outer",
+      "row_bits": [
+        "3fe0000000000000",
+        "3fb999999999999a",
+        "3fe0000000000000"
+      ],
+      "row": [
+        0.5,
+        0.1,
+        0.5
+      ],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": true,
+      "kind": "propose",
+      "abstain_reason": null,
+      "winning_index": 0,
+      "winning_score": 0.5,
+      "winning_action": "comfort",
+      "runner_up_index": 2,
+      "runner_up_score": 0.5,
+      "margin": 0.0,
+      "confidence": 0.0,
+      "tied": true,
+      "scores": [
+        0.5,
+        0.1,
+        0.5
+      ]
+    },
+    {
+      "name": "all_equal",
+      "row_bits": [
+        "3fd999999999999a",
+        "3fd999999999999a",
+        "3fd999999999999a"
+      ],
+      "row": [
+        0.4,
+        0.4,
+        0.4
+      ],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": true,
+      "kind": "propose",
+      "abstain_reason": null,
+      "winning_index": 0,
+      "winning_score": 0.4,
+      "winning_action": "comfort",
+      "runner_up_index": 1,
+      "runner_up_score": 0.4,
+      "margin": 0.0,
+      "confidence": 0.0,
+      "tied": true,
+      "scores": [
+        0.4,
+        0.4,
+        0.4
+      ]
+    },
+    {
+      "name": "all_zero",
+      "row_bits": [
+        "0000000000000000",
+        "0000000000000000",
+        "0000000000000000"
+      ],
+      "row": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": true,
+      "kind": "propose",
+      "abstain_reason": null,
+      "winning_index": 0,
+      "winning_score": 0.0,
+      "winning_action": "comfort",
+      "runner_up_index": 1,
+      "runner_up_score": 0.0,
+      "margin": 0.0,
+      "confidence": 0.0,
+      "tied": true,
+      "scores": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "negative_argmax",
+      "row_bits": [
+        "bfb999999999999a",
+        "bfe0000000000000",
+        "bfc999999999999a"
+      ],
+      "row": [
+        -0.1,
+        -0.5,
+        -0.2
+      ],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": true,
+      "kind": "propose",
+      "abstain_reason": null,
+      "winning_index": 0,
+      "winning_score": -0.1,
+      "winning_action": "comfort",
+      "runner_up_index": 2,
+      "runner_up_score": -0.2,
+      "margin": 0.1,
+      "confidence": 0.3333333333333333,
+      "tied": false,
+      "scores": [
+        -0.1,
+        -0.5,
+        -0.2
+      ]
+    },
+    {
+      "name": "high_confidence_comfort",
+      "row_bits": [
+        "3ff0000000000000",
+        "0000000000000000",
+        "0000000000000000"
+      ],
+      "row": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": true,
+      "kind": "propose",
+      "abstain_reason": null,
+      "winning_index": 0,
+      "winning_score": 1.0,
+      "winning_action": "comfort",
+      "runner_up_index": 1,
+      "runner_up_score": 0.0,
+      "margin": 1.0,
+      "confidence": 1.0,
+      "tied": false,
+      "scores": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "abstain_on_tie",
+      "row_bits": [
+        "3fe0000000000000",
+        "3fe0000000000000",
+        "3fb999999999999a"
+      ],
+      "row": [
+        0.5,
+        0.5,
+        0.1
+      ],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": true
+      },
+      "ok": true,
+      "kind": "abstain",
+      "abstain_reason": "tie",
+      "winning_index": 0,
+      "winning_score": 0.5,
+      "winning_action": "comfort",
+      "runner_up_index": 1,
+      "runner_up_score": 0.5,
+      "margin": 0.0,
+      "confidence": 0.0,
+      "tied": true,
+      "scores": [
+        0.5,
+        0.5,
+        0.1
+      ]
+    },
+    {
+      "name": "low_confidence_abstain",
+      "row_bits": [
+        "3fe051eb851eb852",
+        "3fdf5c28f5c28f5c",
+        "0000000000000000"
+      ],
+      "row": [
+        0.51,
+        0.49,
+        0.0
+      ],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.5,
+        "abstain_on_tie": false
+      },
+      "ok": true,
+      "kind": "abstain",
+      "abstain_reason": "low_confidence",
+      "winning_index": 0,
+      "winning_score": 0.51,
+      "winning_action": "comfort",
+      "runner_up_index": 1,
+      "runner_up_score": 0.49,
+      "margin": 0.020000000000000018,
+      "confidence": 0.020000000000000018,
+      "tied": false,
+      "scores": [
+        0.51,
+        0.49,
+        0.0
+      ]
+    },
+    {
+      "name": "supervisor_five_wide_pause",
+      "row_bits": [
+        "0000000000000000",
+        "3fb999999999999a",
+        "3fc999999999999a",
+        "3feccccccccccccd",
+        "0000000000000000"
+      ],
+      "row": [
+        0.0,
+        0.1,
+        0.2,
+        0.9,
+        0.0
+      ],
+      "config": {
+        "vocabulary": [
+          "ALLOW",
+          "WARN",
+          "THROTTLE",
+          "PAUSE",
+          "YIELD_GPU"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": true,
+      "kind": "propose",
+      "abstain_reason": null,
+      "winning_index": 3,
+      "winning_score": 0.9,
+      "winning_action": "PAUSE",
+      "runner_up_index": 2,
+      "runner_up_score": 0.2,
+      "margin": 0.7,
+      "confidence": 0.6363636363636362,
+      "tied": false,
+      "scores": [
+        0.0,
+        0.1,
+        0.2,
+        0.9,
+        0.0
+      ]
+    },
+    {
+      "name": "empty_row",
+      "row_bits": [],
+      "row": [],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": false,
+      "error": "empty_row",
+      "message": "output row is empty"
+    },
+    {
+      "name": "width_short",
+      "row_bits": [
+        "3fb999999999999a",
+        "3fc999999999999a"
+      ],
+      "row": [
+        0.1,
+        0.2
+      ],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": false,
+      "error": "width_mismatch",
+      "message": "output row width 2, expected 3",
+      "got": 2,
+      "expected": 3
+    },
+    {
+      "name": "width_long",
+      "row_bits": [
+        "3fb999999999999a",
+        "3fc999999999999a",
+        "3fd3333333333333",
+        "3fd999999999999a"
+      ],
+      "row": [
+        0.1,
+        0.2,
+        0.3,
+        0.4
+      ],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": false,
+      "error": "width_mismatch",
+      "message": "output row width 4, expected 3",
+      "got": 4,
+      "expected": 3
+    },
+    {
+      "name": "empty_vocabulary",
+      "row_bits": [
+        "3fb999999999999a",
+        "3fc999999999999a",
+        "3fd3333333333333"
+      ],
+      "row": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "config": {
+        "vocabulary": [],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": false,
+      "error": "empty_vocabulary",
+      "message": "decision vocabulary is empty"
+    },
+    {
+      "name": "nan_first",
+      "row_bits": [
+        "7ff8000000000000",
+        "3fc999999999999a",
+        "3fb999999999999a"
+      ],
+      "row": null,
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": false,
+      "error": "non_finite",
+      "message": "non-finite output score at index 0",
+      "indices": [
+        0
+      ]
+    },
+    {
+      "name": "pos_inf",
+      "row_bits": [
+        "3fb999999999999a",
+        "7ff0000000000000",
+        "3fb999999999999a"
+      ],
+      "row": null,
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": false,
+      "error": "non_finite",
+      "message": "non-finite output score at index 1",
+      "indices": [
+        1
+      ]
+    },
+    {
+      "name": "neg_inf",
+      "row_bits": [
+        "3fb999999999999a",
+        "3fc999999999999a",
+        "fff0000000000000"
+      ],
+      "row": null,
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": false,
+      "error": "non_finite",
+      "message": "non-finite output score at index 2",
+      "indices": [
+        2
+      ]
+    },
+    {
+      "name": "all_non_finite",
+      "row_bits": [
+        "7ff8000000000000",
+        "7ff0000000000000",
+        "fff0000000000000"
+      ],
+      "row": null,
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": false,
+      "error": "non_finite",
+      "message": "non-finite output scores at indexes 0, 1, 2",
+      "indices": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "name": "checkpoint_neuron0_spike",
+      "row_bits": [
+        "3fd8000000000000",
+        "3fd2000000000000",
+        "3fb9000000000000"
+      ],
+      "row": [
+        0.375,
+        0.28125,
+        0.09765625
+      ],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": true,
+      "kind": "propose",
+      "abstain_reason": null,
+      "winning_index": 0,
+      "winning_score": 0.375,
+      "winning_action": "comfort",
+      "runner_up_index": 1,
+      "runner_up_score": 0.28125,
+      "margin": 0.09375,
+      "confidence": 0.14285714285714285,
+      "tied": false,
+      "scores": [
+        0.375,
+        0.28125,
+        0.09765625
+      ],
+      "spikes": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "readout_prefix": [
+        0.375,
+        0.28125,
+        0.09765625
+      ],
+      "winning_channel": "comfort"
+    }
+  ]
+}

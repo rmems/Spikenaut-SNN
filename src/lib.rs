@@ -57,6 +57,14 @@
 //! dependency is load-bearing. It does not rewrite shipped weights, Distill,
 //! FPGA, or training loops.
 //!
+//! [`decision`] is the software replay path from one readout score row to a
+//! typed shadow-policy decision (Linear RM-1328). It is pure: argmax with
+//! lowest-index ties, fail-closed on `NaN` / empty / wrong-width rows, and a
+//! Distill `(comfort, temp, power)` vocabulary. It does not actuate the host.
+//! RM-1150's five-wide `ALLOW/WARN/THROTTLE/PAUSE/YIELD_GPU` list is documented
+//! and unbound — mapping it onto the shipped three-wide regression head would
+//! be a guess.
+//!
 //! The graph [`load_default_lif_graph`] returns is the shipped `merged_v2`
 //! artifact ([`model::MERGED_V2_PROVENANCE`]): 16-neuron LIF, exp-025 Dale
 //! health-PASS, a post-exp-009 legal-encoder retrain on the session-holdout
@@ -89,6 +97,15 @@
 //! # Ok::<(), spikenaut_snn::ModelError>(())
 //! ```
 //!
+//! ```
+//! use spikenaut_snn::{DecisionKind, replay_output_row};
+//!
+//! let decision = replay_output_row(&[0.9, 0.2, 0.1])?;
+//! assert_eq!(decision.kind, DecisionKind::Propose);
+//! assert_eq!(decision.diagnostics.winning_action, "comfort");
+//! # Ok::<(), spikenaut_snn::DecisionError>(())
+//! ```
+//!
 //! # Scope
 //!
 //! [`encode`] names [`LIVE_COLUMNS`], ships the live 5-column rate encoder for
@@ -105,13 +122,15 @@
 //! `.mem` artifacts.
 //!
 //! Writing `.nir` files (the `nir-rs` `hdf5` feature links the system libhdf5)
-//! and the output-layer weights in `parameters_output_weights.mem` belong to
-//! their own tickets.
+//! is still its own ticket. The 48 output-layer weights are not placed on the
+//! NIR graph; [`decision`] consumes an already-scored row (or scores a spike
+//! vector through that neuron-major image) and does not load them into NIR.
 //!
 //! [nir]: https://neuroir.org/
 
 #![warn(missing_docs)]
 
+pub mod decision;
 pub mod encode;
 pub mod graph;
 pub mod json;
@@ -120,6 +139,11 @@ pub mod model;
 pub mod neuromod_host;
 pub mod stim;
 
+pub use decision::{
+    AbstainReason, CONTRACT_ID, Decision, DecisionConfig, DecisionError, DecisionKind, Diagnostics,
+    HeadChannel, OUTPUT_WEIGHT_COUNT, OUTPUT_WIDTH, SHIPPED_VOCABULARY, SupervisorAction, decide,
+    replay_output_row, replay_tick, score_readout,
+};
 pub use encode::{
     CHANNEL_COUNT, LIVE_COLUMNS, LIVE_LEGAL_COLUMNS, LiveMapMismatch, LiveTelemetryEncoder,
     NonFiniteFrame, NonFiniteLiveFrame, SpikeModalityMismatch,
