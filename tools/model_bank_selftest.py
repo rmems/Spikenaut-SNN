@@ -24,6 +24,7 @@ from pathlib import Path
 try:  # package import: `python3 -m tools.verify_model_bank`
     from .model_bank import (
         FEATURE_MAP_LIVE_EXP_025,
+        MANIFEST_FILENAME,
         NUMERIC_FORMAT_Q88,
         OUTPUT_CONTRACT_SUPERVISOR_V3_RM1150,
         REPO_ROOT,
@@ -38,6 +39,7 @@ try:  # package import: `python3 -m tools.verify_model_bank`
 except ImportError:  # direct script: `python3 tools/verify_model_bank.py`
     from model_bank import (
         FEATURE_MAP_LIVE_EXP_025,
+        MANIFEST_FILENAME,
         NUMERIC_FORMAT_Q88,
         OUTPUT_CONTRACT_SUPERVISOR_V3_RM1150,
         REPO_ROOT,
@@ -51,9 +53,9 @@ except ImportError:  # direct script: `python3 tools/verify_model_bank.py`
     from q88_core import SelfTestFailure
 
 FIXTURE_ROOT = REPO_ROOT / "tools" / "fixtures" / "model_bank"
-VALID_MANIFEST = FIXTURE_ROOT / "valid" / "model_bank.json"
-TAMPERED_MANIFEST = FIXTURE_ROOT / "tampered-checkpoint" / "model_bank.json"
-UNSUPPORTED_MANIFEST = FIXTURE_ROOT / "unsupported-version" / "model_bank.json"
+VALID_MANIFEST = FIXTURE_ROOT / "valid" / MANIFEST_FILENAME
+TAMPERED_MANIFEST = FIXTURE_ROOT / "tampered-checkpoint" / MANIFEST_FILENAME
+UNSUPPORTED_MANIFEST = FIXTURE_ROOT / "unsupported-version" / MANIFEST_FILENAME
 
 SELF_TEST_SECTIONS = 10
 EXPECTED_REQUIRE_CALLS = 15
@@ -68,6 +70,10 @@ def _require(condition: bool, message: str) -> None:
 
 
 _require.calls = 0
+
+
+def _bundle_manifest(bundle: Path) -> Path:
+    return bundle / MANIFEST_FILENAME
 
 
 def _raises_attestation(
@@ -129,7 +135,7 @@ def serialization_is_stable(stream) -> int:
     raw = VALID_MANIFEST.read_text(encoding="utf-8")
     document = json.loads(raw)
     dumped = dumps_manifest(document)
-    _require(raw == dumped, "valid/model_bank.json is the stable serialization")
+    _require(raw == dumped, "golden valid manifest is the stable serialization")
     _require(dumped.endswith("\n"), "stable dump has a trailing newline")
     _require("\r" not in dumped, "stable dump is LF-only")
     return 3
@@ -139,7 +145,7 @@ def copied_bundle_still_attests(stream, tmp: Path) -> int:
     print("3. moving a valid bundle without changing bytes still attests", file=stream)
     dest = tmp / "moved-valid"
     shutil.copytree(VALID_MANIFEST.parent, dest)
-    bank = load_model_bank(dest / "model_bank.json")
+    bank = load_model_bank(_bundle_manifest(dest))
     entry = bank.select("fixture-ok")
     original = load_model_bank(VALID_MANIFEST).select("fixture-ok")
     print(f"   original digest: {original.checkpoint_digest}", file=stream)
@@ -178,7 +184,7 @@ def missing_file_rejected(stream, tmp: Path) -> int:
     shutil.copytree(VALID_MANIFEST.parent, dest)
     (dest / "checkpoints" / "ok.bin").unlink()
     return _raises_attestation(
-        lambda: load_model_bank(dest / "model_bank.json"),
+        lambda: load_model_bank(_bundle_manifest(dest)),
         entry="fixture-ok",
         field="checkpoint",
     )
@@ -188,13 +194,13 @@ def duplicate_id_rejected(stream, tmp: Path) -> int:
     print("7. duplicate model ID is rejected", file=stream)
     dest = tmp / "duplicate-id"
     shutil.copytree(VALID_MANIFEST.parent, dest)
-    document = json.loads((dest / "model_bank.json").read_text(encoding="utf-8"))
+    document = json.loads(_bundle_manifest(dest).read_text(encoding="utf-8"))
     document["models"].append(dict(document["models"][0]))
-    (dest / "model_bank.json").write_text(
+    _bundle_manifest(dest).write_text(
         dumps_manifest(document), encoding="utf-8"
     )
     return _raises_attestation(
-        lambda: load_model_bank(dest / "model_bank.json"),
+        lambda: load_model_bank(_bundle_manifest(dest)),
         entry="fixture-ok",
         field="id",
     )
@@ -204,13 +210,13 @@ def missing_contract_id_rejected(stream, tmp: Path) -> int:
     print("8. missing required contract ID is rejected", file=stream)
     dest = tmp / "missing-contract"
     shutil.copytree(VALID_MANIFEST.parent, dest)
-    document = json.loads((dest / "model_bank.json").read_text(encoding="utf-8"))
+    document = json.loads(_bundle_manifest(dest).read_text(encoding="utf-8"))
     del document["models"][0]["output_contract_id"]
-    (dest / "model_bank.json").write_text(
+    _bundle_manifest(dest).write_text(
         dumps_manifest(document), encoding="utf-8"
     )
     return _raises_attestation(
-        lambda: load_model_bank(dest / "model_bank.json"),
+        lambda: load_model_bank(_bundle_manifest(dest)),
         entry="fixture-ok",
         field="output_contract_id",
     )

@@ -58,13 +58,15 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SHIPPED_MANIFEST = REPO_ROOT / "dataset" / "merged_v2" / "model_bank.json"
+MANIFEST_FILENAME = "model_bank.json"
+SHIPPED_MANIFEST = REPO_ROOT / "dataset" / "merged_v2" / MANIFEST_FILENAME
 SHIPPED_CHECKPOINT = REPO_ROOT / "dataset" / "merged_v2" / "snn_model.json"
 
 SCHEMA_VERSION = 1
 SUPPORTED_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION})
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+MSG_MISSING_FIELD = "missing required field"
 
 # Canonical identifiers this repository ships. Unknown-but-well-formed IDs
 # still attest — the bank is not a registry — but missing/empty values do not.
@@ -320,30 +322,11 @@ def load_unattested_checkpoint(path: Path | str) -> Any:
 def _attest_document(
     document: dict[str, Any], root: Path
 ) -> tuple[AttestedEntry, ...]:
-    extra = set(document) - MANIFEST_KEYS
-    if extra:
-        names = ", ".join(sorted(extra))
-        _fail(
-            field=sorted(extra)[0],
-            message=f"unsupported extra field(s): {names}",
-        )
-    version = document.get("schema_version", _MISSING)
-    if version is _MISSING:
-        _fail(field="schema_version", message="missing required field")
-    if type(version) is not int:
-        _fail(
-            field="schema_version",
-            message=f"must be an integer, got {type(version).__name__}",
-        )
-    if version not in SUPPORTED_SCHEMA_VERSIONS:
-        supported = ", ".join(str(v) for v in sorted(SUPPORTED_SCHEMA_VERSIONS))
-        _fail(
-            field="schema_version",
-            message=f"unsupported version {version} (supported: {supported})",
-        )
+    _reject_unknown_keys(document, MANIFEST_KEYS)
+    _require_schema_version(document.get("schema_version", _MISSING))
     models = document.get("models", _MISSING)
     if models is _MISSING:
-        _fail(field="models", message="missing required field")
+        _fail(field="models", message=MSG_MISSING_FIELD)
     if not isinstance(models, list):
         _fail(
             field="models",
@@ -356,6 +339,39 @@ def _attest_document(
         seen[entry.id] = index
         attested.append(entry)
     return tuple(attested)
+
+
+def _require_schema_version(version: Any) -> None:
+    if version is _MISSING:
+        _fail(field="schema_version", message=MSG_MISSING_FIELD)
+    # bool is a subclass of int; True would otherwise pass as version 1.
+    if isinstance(version, bool) or not isinstance(version, int):
+        _fail(
+            field="schema_version",
+            message=f"must be an integer, got {type(version).__name__}",
+        )
+    if version not in SUPPORTED_SCHEMA_VERSIONS:
+        supported = ", ".join(str(v) for v in sorted(SUPPORTED_SCHEMA_VERSIONS))
+        _fail(
+            field="schema_version",
+            message=f"unsupported version {version} (supported: {supported})",
+        )
+
+
+def _reject_unknown_keys(
+    mapping: Mapping[str, Any],
+    allowed: frozenset[str],
+    *,
+    entry: str | None = None,
+) -> None:
+    extra = set(mapping) - allowed
+    if extra:
+        names = ", ".join(sorted(extra))
+        _fail(
+            entry=entry,
+            field=min(extra),
+            message=f"unsupported extra field(s): {names}",
+        )
 
 
 def _attest_entry(
@@ -371,21 +387,50 @@ def _attest_entry(
             field="id",
             message=f"entry must be an object, got {type(raw).__name__}",
         )
-    extra = set(raw) - ENTRY_KEYS
-    if extra:
-        names = ", ".join(sorted(extra))
-        _fail(
-            entry=label,
-            field="id",
-            message=f"unsupported extra field(s): {names}",
-        )
+    _reject_unknown_keys(raw, ENTRY_KEYS, entry=label)
     model_id = _require_token(raw.get("id", _MISSING), entry=label, field="id")
     if model_id in seen:
-        _fail(
-            entry=model_id,
-            field="id",
-            message="duplicate model ID",
-        )
+        _fail(entry=model_id, field="id", message="duplicate model ID")
+    relative, checkpoint, computed = _attest_checkpoint(raw, model_id, root)
+    feature = _require_token(
+        raw.get("feature_map_id", _MISSING),
+        entry=model_id,
+        field="feature_map_id",
+    )
+    contract = _require_contract_id(
+        raw.get("output_contract_id", _MISSING),
+        entry=model_id,
+    )
+    fmt = _require_token(
+        raw.get("numeric_format", _MISSING),
+        entry=model_id,
+        field="numeric_format",
+    )
+    dataset = _optional_digest(raw, model_id)
+    return AttestedEntry(
+        id=model_id,
+        checkpoint=checkpoint,
+        checkpoint_relative=relative,
+        checkpoint_digest=computed,
+        feature_map_id=feature,
+        output_contract_id=contract,
+        numeric_format=fmt,
+        training_dataset_digest=dataset,
+    )
+
+
+def _optional_digest(raw: Mapping[str, Any], model_id: str) -> str | None:
+    dataset_raw = raw.get("training_dataset_digest", _MISSING)
+    if dataset_raw is _MISSING:
+        return None
+    return _require_digest(
+        dataset_raw, entry=model_id, field="training_dataset_digest"
+    )
+
+
+def _attest_checkpoint(
+    raw: Mapping[str, Any], model_id: str, root: Path
+) -> tuple[str, Path, str]:
     relative = _require_token(
         raw.get("checkpoint", _MISSING), entry=model_id, field="checkpoint"
     )
@@ -415,40 +460,9 @@ def _attest_entry(
         _fail(
             entry=model_id,
             field="checkpoint_digest",
-            message=(
-                f"mismatch (declared {declared}, computed {computed})"
-            ),
+            message=f"mismatch (declared {declared}, computed {computed})",
         )
-    feature = _require_token(
-        raw.get("feature_map_id", _MISSING),
-        entry=model_id,
-        field="feature_map_id",
-    )
-    contract = _require_contract_id(
-        raw.get("output_contract_id", _MISSING),
-        entry=model_id,
-    )
-    fmt = _require_token(
-        raw.get("numeric_format", _MISSING),
-        entry=model_id,
-        field="numeric_format",
-    )
-    dataset_raw = raw.get("training_dataset_digest", _MISSING)
-    dataset = None
-    if dataset_raw is not _MISSING:
-        dataset = _require_digest(
-            dataset_raw, entry=model_id, field="training_dataset_digest"
-        )
-    return AttestedEntry(
-        id=model_id,
-        checkpoint=checkpoint,
-        checkpoint_relative=relative,
-        checkpoint_digest=computed,
-        feature_map_id=feature,
-        output_contract_id=contract,
-        numeric_format=fmt,
-        training_dataset_digest=dataset,
-    )
+    return relative, checkpoint, computed
 
 
 def _reaffirm(entry: AttestedEntry) -> None:
@@ -485,14 +499,12 @@ def _require_relative_checkpoint(relative: str, *, entry: str) -> None:
             field="checkpoint",
             message=f"must not contain '..', got {relative!r}",
         )
-    if path.as_posix() != relative.replace("\\", "/") or "\\" in relative:
-        # Windows separators would make the same bundle path-dependent.
-        if "\\" in relative:
-            _fail(
-                entry=entry,
-                field="checkpoint",
-                message=f"must use POSIX separators, got {relative!r}",
-            )
+    if "\\" in relative:
+        _fail(
+            entry=entry,
+            field="checkpoint",
+            message=f"must use POSIX separators, got {relative!r}",
+        )
 
 
 def _require_contract_id(value: Any, *, entry: str) -> str:
@@ -507,7 +519,7 @@ def _require_contract_id(value: Any, *, entry: str) -> str:
 
 def _require_token(value: Any, *, entry: str, field: str) -> str:
     if value is _MISSING:
-        _fail(entry=entry, field=field, message="missing required field")
+        _fail(entry=entry, field=field, message=MSG_MISSING_FIELD)
     if not isinstance(value, str) or not value:
         _fail(
             entry=entry,

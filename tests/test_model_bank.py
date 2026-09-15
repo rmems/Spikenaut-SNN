@@ -21,6 +21,7 @@ from pathlib import Path
 
 from tools.model_bank import (
     FEATURE_MAP_LIVE_EXP_025,
+    MANIFEST_FILENAME,
     NUMERIC_FORMAT_Q88,
     OUTPUT_CONTRACT_SUPERVISOR_V3_RM1150,
     REPO_ROOT,
@@ -33,9 +34,9 @@ from tools.model_bank import (
 )
 
 FIXTURE_ROOT = REPO_ROOT / "tools" / "fixtures" / "model_bank"
-VALID = FIXTURE_ROOT / "valid" / "model_bank.json"
-TAMPERED = FIXTURE_ROOT / "tampered-checkpoint" / "model_bank.json"
-UNSUPPORTED = FIXTURE_ROOT / "unsupported-version" / "model_bank.json"
+VALID = FIXTURE_ROOT / "valid" / MANIFEST_FILENAME
+TAMPERED = FIXTURE_ROOT / "tampered-checkpoint" / MANIFEST_FILENAME
+UNSUPPORTED = FIXTURE_ROOT / "unsupported-version" / MANIFEST_FILENAME
 SHIPPED_CHECKPOINT = REPO_ROOT / "dataset" / "merged_v2" / "snn_model.json"
 FIXTURE_DIGEST = (
     "sha256:bd0133a6225aa377e9c68668b7abd4d69a1dc670877ad01be5629befa7d10111"
@@ -73,7 +74,7 @@ class ModelBankTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "moved"
             shutil.copytree(VALID.parent, dest)
-            moved = load_model_bank(dest / "model_bank.json").select("fixture-ok")
+            moved = load_model_bank(dest / MANIFEST_FILENAME).select("fixture-ok")
             original = load_model_bank(VALID).select("fixture-ok")
             print(f"original digest: {original.checkpoint_digest}")
             print(f"moved digest:    {moved.checkpoint_digest}")
@@ -105,7 +106,7 @@ class ModelBankTests(unittest.TestCase):
             shutil.copytree(VALID.parent, dest)
             (dest / "checkpoints" / "ok.bin").unlink()
             with self.assertRaises(BankAttestationError) as caught:
-                load_model_bank(dest / "model_bank.json")
+                load_model_bank(dest / MANIFEST_FILENAME)
             self.assertEqual(caught.exception.entry, "fixture-ok")
             self.assertEqual(caught.exception.field, "checkpoint")
             self.assertIn("missing file", str(caught.exception))
@@ -114,13 +115,13 @@ class ModelBankTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "dup"
             shutil.copytree(VALID.parent, dest)
-            document = json.loads((dest / "model_bank.json").read_text(encoding="utf-8"))
+            document = json.loads((dest / MANIFEST_FILENAME).read_text(encoding="utf-8"))
             document["models"].append(dict(document["models"][0]))
-            (dest / "model_bank.json").write_text(
+            (dest / MANIFEST_FILENAME).write_text(
                 dumps_manifest(document), encoding="utf-8"
             )
             with self.assertRaises(BankAttestationError) as caught:
-                load_model_bank(dest / "model_bank.json")
+                load_model_bank(dest / MANIFEST_FILENAME)
             self.assertEqual(caught.exception.entry, "fixture-ok")
             self.assertEqual(caught.exception.field, "id")
             self.assertIn("duplicate model ID", str(caught.exception))
@@ -129,13 +130,13 @@ class ModelBankTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "nocontract"
             shutil.copytree(VALID.parent, dest)
-            document = json.loads((dest / "model_bank.json").read_text(encoding="utf-8"))
+            document = json.loads((dest / MANIFEST_FILENAME).read_text(encoding="utf-8"))
             del document["models"][0]["output_contract_id"]
-            (dest / "model_bank.json").write_text(
+            (dest / MANIFEST_FILENAME).write_text(
                 dumps_manifest(document), encoding="utf-8"
             )
             with self.assertRaises(BankAttestationError) as caught:
-                load_model_bank(dest / "model_bank.json")
+                load_model_bank(dest / MANIFEST_FILENAME)
             self.assertEqual(caught.exception.entry, "fixture-ok")
             self.assertEqual(caught.exception.field, "output_contract_id")
             self.assertIn("missing required contract ID", str(caught.exception))
