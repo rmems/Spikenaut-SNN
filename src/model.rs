@@ -227,6 +227,11 @@ impl SnnModel {
     /// a checkout path or `CARGO_MANIFEST_DIR` at runtime. [`default_model_path`]
     /// remains available for source-tree tools.
     ///
+    /// This is the pre-RM-1327 single-checkpoint path and stays the Rust
+    /// compatibility wrapper for the shipped artifact. Selecting among attested
+    /// bank entries is `tools.model_bank` / `tools/verify_model_bank.py`; this
+    /// method does not consult `dataset/merged_v2/model_bank.json`.
+    ///
     /// # Errors
     ///
     /// See [`SnnModel::from_json_str`]. Also [`ModelError::Schema`] if the

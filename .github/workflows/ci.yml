@@ -92,7 +92,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      # Standard library only, by design -- there is nothing to install.
+      # Verifiers are standard library only. There is nothing to install.
 
       # Both invocations, because the package and direct-script import paths
       # resolve differently and have broken independently of each other.
@@ -148,3 +148,14 @@ jobs:
         run: |
           python3 tools/check_model_card.py
           python3 tools/check_model_card.py --self-test
+
+      # Model-bank attestation (RM-1327). Standard library only — unittest
+      # is the CI runner. `pytest -q -s` collects the same tests locally
+      # when pytest is installed; CI does not pip-install it (Sonar S8544).
+      - name: Attest model-bank entries
+        run: |
+          python3 tools/verify_model_bank.py
+          python3 -m tools.verify_model_bank
+          python3 tools/verify_model_bank.py --self-test
+          python3 -m tools.verify_model_bank --self-test
+          python3 -m unittest tests.test_model_bank -v
