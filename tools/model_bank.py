@@ -8,16 +8,16 @@ hand a caller only entries that passed.
 
 Minimum attestation per entry
 -----------------------------
-* ``id`` — unique within the bank
-* ``checkpoint`` — path relative to the manifest directory
-* ``checkpoint_digest`` — ``sha256:`` + 64 lowercase hex of the checkpoint
+* ``id`` -- unique within the bank
+* ``checkpoint`` -- path relative to the manifest directory
+* ``checkpoint_digest`` -- ``sha256:`` + 64 lowercase hex of the checkpoint
   **file bytes** (not the path, not a directory walk)
-* ``feature_map_id`` — input-map identifier
-* ``output_contract_id`` — output-row / action-map identifier; the shipped
+* ``feature_map_id`` -- input-map identifier
+* ``output_contract_id`` -- output-row / action-map identifier; the shipped
   value names the RM-1150 supervisor-v3 decision contract. This loader does
   not implement that decision.
-* ``numeric_format`` — e.g. ``q8.8-fixed-point``
-* ``training_dataset_digest`` — optional, same ``sha256:`` form
+* ``numeric_format`` -- e.g. ``q8.8-fixed-point``
+* ``training_dataset_digest`` -- optional, same ``sha256:`` form
 
 Bank loading rejects a missing checkpoint, a digest mismatch, a duplicate
 model ID, an unsupported ``schema_version``, and a missing required contract
@@ -69,7 +69,7 @@ DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 MSG_MISSING_FIELD = "missing required field"
 
 # Canonical identifiers this repository ships. Unknown-but-well-formed IDs
-# still attest — the bank is not a registry — but missing/empty values do not.
+# still attest -- the bank is not a registry -- but missing/empty values do not.
 FEATURE_MAP_LIVE_EXP_025 = "spikenaut.feature-map.live-exp-025.v1"
 OUTPUT_CONTRACT_SUPERVISOR_V3_RM1150 = (
     "spikenaut.output-contract.supervisor-v3.rm-1150"
@@ -251,7 +251,7 @@ def wrap_legacy_checkpoint(
 
     Computes the digest from the file bytes. Callers that already have a lone
     ``snn_model.json`` can migrate without writing a manifest first. The
-    required contract identifiers still have to be supplied — wrapping does
+    required contract identifiers still have to be supplied -- wrapping does
     not invent an output map.
     """
     path = Path(checkpoint_path)
