@@ -344,8 +344,7 @@ def _attest_document(
 def _require_schema_version(version: Any) -> None:
     if version is _MISSING:
         _fail(field="schema_version", message=MSG_MISSING_FIELD)
-    # bool is a subclass of int; True would otherwise pass as version 1.
-    if isinstance(version, bool) or not isinstance(version, int):
+    if not _is_int_version(version):
         _fail(
             field="schema_version",
             message=f"must be an integer, got {type(version).__name__}",
@@ -356,6 +355,10 @@ def _require_schema_version(version: Any) -> None:
             field="schema_version",
             message=f"unsupported version {version} (supported: {supported})",
         )
+
+
+def _is_int_version(version: Any) -> bool:
+    return isinstance(version, int) and not isinstance(version, bool)
 
 
 def _reject_unknown_keys(
@@ -486,25 +489,22 @@ def _reaffirm(entry: AttestedEntry) -> None:
 
 
 def _require_relative_checkpoint(relative: str, *, entry: str) -> None:
+    reason = _unsafe_relative_reason(relative)
+    if reason is not None:
+        _fail(entry=entry, field="checkpoint", message=reason)
+
+
+def _unsafe_relative_reason(relative: str) -> str | None:
     path = Path(relative)
-    if path.is_absolute() or path.anchor:
-        _fail(
-            entry=entry,
-            field="checkpoint",
-            message=f"must be a relative path, got {relative!r}",
-        )
-    if any(part == ".." for part in path.parts):
-        _fail(
-            entry=entry,
-            field="checkpoint",
-            message=f"must not contain '..', got {relative!r}",
-        )
+    if path.is_absolute():
+        return f"must be a relative path, got {relative!r}"
+    if path.anchor:
+        return f"must be a relative path, got {relative!r}"
+    if ".." in path.parts:
+        return f"must not contain '..', got {relative!r}"
     if "\\" in relative:
-        _fail(
-            entry=entry,
-            field="checkpoint",
-            message=f"must use POSIX separators, got {relative!r}",
-        )
+        return f"must use POSIX separators, got {relative!r}"
+    return None
 
 
 def _require_contract_id(value: Any, *, entry: str) -> str:

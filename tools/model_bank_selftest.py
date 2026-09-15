@@ -86,19 +86,31 @@ def _raises_attestation(
     try:
         fn()
     except BankAttestationError as exc:
-        text = str(exc)
-        if exc.field != field or field not in text:
-            raise SelfTestFailure(
-                f"error must name field {field!r}, got {text!r}"
-            ) from exc
-        if entry is not None and entry not in text:
-            raise SelfTestFailure(
-                f"error must name entry {entry!r}, got {text!r}"
-            ) from exc
+        _assert_error_names(exc, field=field, entry=entry)
         return 1
     raise SelfTestFailure(
         f"expected BankAttestationError naming field {field!r}"
     )
+
+
+def _assert_error_names(
+    exc: BankAttestationError, *, field: str, entry: str | None
+) -> None:
+    text = str(exc)
+    if exc.field != field:
+        raise SelfTestFailure(
+            f"error must name field {field!r}, got {text!r}"
+        )
+    if field not in text:
+        raise SelfTestFailure(
+            f"error must name field {field!r}, got {text!r}"
+        )
+    if entry is None:
+        return
+    if entry not in text:
+        raise SelfTestFailure(
+            f"error must name entry {entry!r}, got {text!r}"
+        )
 
 
 def valid_fixture_attests(stream) -> int:
