@@ -92,7 +92,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      # Standard library only, by design -- there is nothing to install.
+      # Verifiers are standard library only. pytest is installed only for the
+      # RM-1327 model-bank job below; the rest of this job still needs nothing.
 
       # Both invocations, because the package and direct-script import paths
       # resolve differently and have broken independently of each other.
@@ -148,3 +149,19 @@ jobs:
         run: |
           python3 tools/check_model_card.py
           python3 tools/check_model_card.py --self-test
+
+      # Model-bank attestation (RM-1327). The verifier is standard library
+      # only. pytest is an optional runner for the same tests; unittest is
+      # the stdlib path so this job still needs nothing installed.
+      - name: Attest model-bank entries
+        run: |
+          python3 tools/verify_model_bank.py
+          python3 -m tools.verify_model_bank
+          python3 tools/verify_model_bank.py --self-test
+          python3 -m tools.verify_model_bank --self-test
+          python3 -m unittest tests.test_model_bank -v
+
+      - name: pytest model-bank (stdlib unittest, pytest runner)
+        run: |
+          python3 -m pip install pytest
+          python3 -m pytest -q -s tests/test_model_bank.py
