@@ -67,8 +67,9 @@
 //!
 //! [`decision`] is the software replay path from one readout score row to a
 //! typed shadow-policy decision (Linear RM-1328). It is pure: argmax with
-//! lowest-index ties, fail-closed on `NaN` / empty / wrong-width rows, and a
-//! Distill `(comfort, temp, power)` vocabulary. It does not actuate the host.
+//! lowest-index ties, fail-closed on `NaN` / empty / wrong-width rows and on
+//! finite rows whose derived margin or confidence overflows, and a Distill
+//! `(comfort, temp, power)` vocabulary. It does not actuate the host.
 //! RM-1150's five-wide `ALLOW/WARN/THROTTLE/PAUSE/YIELD_GPU` list is documented
 //! and unbound — mapping it onto the shipped three-wide regression head would
 //! be a guess.

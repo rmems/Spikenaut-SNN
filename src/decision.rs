@@ -48,10 +48,11 @@
 //!   formula is exact on Q8.8 and on Distill `f32` promoted to `f64`.
 //! - **Abstention**: confidence strictly below the configured floor, or an
 //!   opted-in tie. The would-be winner stays in the diagnostics.
-//! - **Fail closed**: empty row, width mismatch, and any `NaN` / `±Inf`
-//!   return [`DecisionError`]. Nothing is substituted, and no action is
-//!   proposed. Same for an invalid config (empty or duplicate vocabulary,
-//!   empty label, non-finite floor outside `[0, 1]`).
+//! - **Fail closed**: empty row, width mismatch, any `NaN` / `±Inf` in the
+//!   input, and a finite row whose derived margin or confidence overflows
+//!   to `NaN` / `±Inf` all return [`DecisionError`]. Nothing is substituted,
+//!   and no action is proposed. Same for an invalid config (empty or
+//!   duplicate vocabulary, empty label, non-finite floor outside `[0, 1]`).
 //!
 //! Diagnostics copy the finite scores and the winning index/label. They do
 //! not borrow membrane, weights, or any other mutable model state.
@@ -328,6 +329,16 @@ pub enum DecisionError {
         /// The rejected floor.
         value: f64,
     },
+    /// Input scores were finite, but `winner - runner_up` or
+    /// `margin / (|winner| + |runner_up|)` overflowed to `NaN` / `±Inf`.
+    /// Example: `[f64::MAX, -f64::MAX, -f64::MAX]`. The contract refuses to
+    /// propose with non-finite diagnostics (`NaN < floor` is false).
+    DerivedNonFinite {
+        /// True when the derived margin is not finite.
+        margin: bool,
+        /// True when the derived confidence is not finite.
+        confidence: bool,
+    },
 }
 
 impl fmt::Display for DecisionError {
@@ -365,6 +376,9 @@ impl fmt::Display for DecisionError {
                     "confidence floor {value} is not a finite value in [0, 1]"
                 )
             }
+            Self::DerivedNonFinite { margin, confidence } => {
+                f.write_str(derived_non_finite_message(*margin, *confidence))
+            }
         }
     }
 }
@@ -378,9 +392,10 @@ impl std::error::Error for DecisionError {}
 ///
 /// # Errors
 ///
-/// See [`DecisionError`]: empty/wrong-width rows, any non-finite score, and
-/// an invalid config all fail closed. A well-formed low-confidence or tied
-/// row is [`Ok`] with [`DecisionKind::Abstain`], not an error.
+/// See [`DecisionError`]: empty/wrong-width rows, any non-finite score, a
+/// finite row whose derived margin/confidence overflowed, and an invalid
+/// config all fail closed. A well-formed low-confidence or tied row is
+/// [`Ok`] with [`DecisionKind::Abstain`], not an error.
 pub fn decide(row: &[f64], config: &DecisionConfig) -> Result<Decision, DecisionError> {
     validate_config(&config.vocabulary, config.confidence_floor)?;
     let expected = config.width();
@@ -388,7 +403,7 @@ pub fn decide(row: &[f64], config: &DecisionConfig) -> Result<Decision, Decision
     let (winning_index, runner_up_index, tied) = pick_winner(&scores);
     let winning_score = scores[winning_index];
     let runner_up_score = runner_up_index.map(|index| scores[index]);
-    let (margin, confidence) = margin_and_confidence(winning_score, runner_up_score);
+    let (margin, confidence) = margin_and_confidence(winning_score, runner_up_score)?;
     let diagnostics = Diagnostics {
         winning_index,
         winning_score,
@@ -418,7 +433,7 @@ pub fn decide(row: &[f64], config: &DecisionConfig) -> Result<Decision, Decision
 /// # Errors
 ///
 /// [`DecisionError::EmptyRow`], [`DecisionError::WidthMismatch`] (not width
-/// 3), or [`DecisionError::NonFinite`].
+/// 3), [`DecisionError::NonFinite`], or [`DecisionError::DerivedNonFinite`].
 pub fn replay_output_row(row: &[f64]) -> Result<Decision, DecisionError> {
     decide(row, &DecisionConfig::shipped())
 }
@@ -570,14 +585,34 @@ fn runner_up(scores: &[f64], winning_index: usize) -> Option<usize> {
     best
 }
 
-fn margin_and_confidence(winning_score: f64, runner_up_score: Option<f64>) -> (f64, f64) {
+fn derived_non_finite_message(margin: bool, confidence: bool) -> &'static str {
+    match (margin, confidence) {
+        (true, true) => "derived margin and confidence are not finite",
+        (true, false) => "derived margin is not finite",
+        (false, true) => "derived confidence is not finite",
+        (false, false) => "derived diagnostics are not finite",
+    }
+}
+
+fn margin_and_confidence(
+    winning_score: f64,
+    runner_up_score: Option<f64>,
+) -> Result<(f64, f64), DecisionError> {
     let Some(runner) = runner_up_score else {
-        return (0.0, 1.0);
+        return Ok((0.0, 1.0));
     };
     let margin = winning_score - runner;
     let denom = winning_score.abs() + runner.abs();
     let confidence = if denom > 0.0 { margin / denom } else { 0.0 };
-    (margin, confidence)
+    let margin_bad = !margin.is_finite();
+    let confidence_bad = !confidence.is_finite();
+    if margin_bad || confidence_bad {
+        return Err(DecisionError::DerivedNonFinite {
+            margin: margin_bad,
+            confidence: confidence_bad,
+        });
+    }
+    Ok((margin, confidence))
 }
 
 #[cfg(test)]
@@ -617,5 +652,22 @@ mod tests {
         assert_eq!(config.width(), OUTPUT_WIDTH);
         assert_eq!(config.confidence_floor(), 0.0);
         assert!(!config.abstain_on_tie());
+    }
+
+    #[test]
+    fn overflow_confidence_fails_closed() {
+        let err = replay_output_row(&[f64::MAX, -f64::MAX, -f64::MAX]).unwrap_err();
+        match err {
+            DecisionError::DerivedNonFinite { margin, confidence } => {
+                assert!(margin);
+                assert!(confidence);
+            }
+            other => panic!("expected DerivedNonFinite, got {other:?}"),
+        }
+        let ok = replay_output_row(&[f64::MAX, 0.0, 0.0]).expect("MAX vs 0 stays finite");
+        assert_eq!(ok.kind, DecisionKind::Propose);
+        assert_eq!(ok.diagnostics.winning_index, 0);
+        assert_eq!(ok.diagnostics.confidence, 1.0);
+        assert!(ok.diagnostics.margin.is_finite());
     }
 }

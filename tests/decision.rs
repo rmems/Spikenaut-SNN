@@ -38,6 +38,8 @@ enum Expected {
         indices: Vec<usize>,
         got: Option<usize>,
         expected_width: Option<usize>,
+        margin: Option<bool>,
+        confidence: Option<bool>,
     },
 }
 
@@ -94,6 +96,14 @@ fn optional_usize(value: &Json, key: &str, what: &str) -> Option<usize> {
             Some(*number as usize)
         }
         Some(_) => panic!("{what}: {key} must be a number or null"),
+    }
+}
+
+fn optional_bool(value: &Json, key: &str, what: &str) -> Option<bool> {
+    match value.get(key) {
+        None | Some(Json::Null) => None,
+        Some(Json::Bool(flag)) => Some(*flag),
+        Some(_) => panic!("{what}: {key} must be a bool or null"),
     }
 }
 
@@ -165,6 +175,8 @@ fn expected_of(value: &Json, what: &str) -> Expected {
                 .unwrap_or_default(),
             got: optional_usize(value, "got", what),
             expected_width: optional_usize(value, "expected", what),
+            margin: optional_bool(value, "margin", what),
+            confidence: optional_bool(value, "confidence", what),
         }
     }
 }
@@ -264,6 +276,7 @@ fn classify_error(err: &DecisionError) -> (&str, Vec<usize>, Option<usize>, Opti
         DecisionError::InvalidConfidenceFloor { .. } => {
             ("invalid_confidence_floor", Vec::new(), None, None)
         }
+        DecisionError::DerivedNonFinite { .. } => ("derived_non_finite", Vec::new(), None, None),
     }
 }
 
@@ -350,6 +363,8 @@ fn rust_matches_the_python_pin() {
                         indices,
                         got,
                         expected_width,
+                        margin,
+                        confidence,
                     },
                 ) => {
                     let (got_code, got_indices, got_got, got_expected) = classify_error(&err);
@@ -360,6 +375,26 @@ fn rust_matches_the_python_pin() {
                     if *code == "width_mismatch" {
                         assert_eq!(got_got, *got, "{}", case.name);
                         assert_eq!(got_expected, *expected_width, "{}", case.name);
+                    }
+                    if *code == "derived_non_finite" {
+                        match err {
+                            DecisionError::DerivedNonFinite {
+                                margin: got_margin,
+                                confidence: got_confidence,
+                            } => {
+                                assert_eq!(got_margin, margin.unwrap_or(true), "{}", case.name);
+                                assert_eq!(
+                                    got_confidence,
+                                    confidence.unwrap_or(true),
+                                    "{}",
+                                    case.name
+                                );
+                            }
+                            other => panic!(
+                                "{}: classified derived_non_finite but got {other:?}",
+                                case.name
+                            ),
+                        }
                     }
                 }
                 (Ok(got), Expected::Err { code, .. }) => {
@@ -436,6 +471,14 @@ fn malformed_rows_do_not_propose() {
     match err {
         DecisionError::NonFinite { indices } => assert_eq!(indices, [1, 2]),
         other => panic!("expected NonFinite, got {other:?}"),
+    }
+    let err = replay_output_row(&[f64::MAX, -f64::MAX, -f64::MAX]).unwrap_err();
+    match err {
+        DecisionError::DerivedNonFinite { margin, confidence } => {
+            assert!(margin);
+            assert!(confidence);
+        }
+        other => panic!("expected DerivedNonFinite, got {other:?}"),
     }
 }
 

@@ -52,6 +52,7 @@ ERROR_EMPTY_VOCABULARY = "empty_vocabulary"
 ERROR_INVALID_LABEL = "invalid_label"
 ERROR_DUPLICATE_LABEL = "duplicate_label"
 ERROR_INVALID_CONFIDENCE_FLOOR = "invalid_confidence_floor"
+ERROR_DERIVED_NON_FINITE = "derived_non_finite"
 
 
 class DecisionError(ValueError):
@@ -292,12 +293,38 @@ def _runner_up(scores: Sequence[float], winning_index: int) -> int | None:
     return best
 
 
+def _derived_non_finite_message(margin_bad: bool, confidence_bad: bool) -> str:
+    if margin_bad and confidence_bad:
+        return "derived margin and confidence are not finite"
+    if margin_bad:
+        return "derived margin is not finite"
+    if confidence_bad:
+        return "derived confidence is not finite"
+    return "derived diagnostics are not finite"
+
+
 def _margin_and_confidence(
     winning_score: float, runner_up_score: float | None
 ) -> tuple[float, float]:
+    """Margin and confidence, or fail closed if either overflows.
+
+    Finite scores can still overflow: ``[f64.MAX, -f64.MAX, -f64.MAX]``
+    yields Inf margin and NaN confidence. ``NaN < floor`` is false, so a
+    proposal would leak non-finite diagnostics. Reject those derived
+    values instead of substituting a number.
+    """
     if runner_up_score is None:
         return 0.0, 1.0
     margin = winning_score - runner_up_score
     denom = abs(winning_score) + abs(runner_up_score)
     confidence = 0.0 if denom == 0.0 else margin / denom
+    margin_bad = not math.isfinite(margin)
+    confidence_bad = not math.isfinite(confidence)
+    if margin_bad or confidence_bad:
+        raise DecisionError(
+            ERROR_DERIVED_NON_FINITE,
+            _derived_non_finite_message(margin_bad, confidence_bad),
+            margin=margin_bad,
+            confidence=confidence_bad,
+        )
     return margin, confidence

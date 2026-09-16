@@ -10,15 +10,29 @@ Standard library only.
 from __future__ import annotations
 
 import json
+import tempfile
+from pathlib import Path
 
 try:
     from .decision_core import SHIPPED_VOCABULARY
-    from .decision_pin import _PINNED_METADATA, build_pin, pin_failures
-    from .q88_core import SelfTestFailure
+    from .decision_pin import (
+        _PINNED_METADATA,
+        assert_output_json_mem_parity,
+        build_pin,
+        load_shipped_model,
+        pin_failures,
+    )
+    from .q88_core import MEM_OUTPUT, ParseError, SelfTestFailure, parse_mem
 except ImportError:
     from decision_core import SHIPPED_VOCABULARY
-    from decision_pin import _PINNED_METADATA, build_pin, pin_failures
-    from q88_core import SelfTestFailure
+    from decision_pin import (
+        _PINNED_METADATA,
+        assert_output_json_mem_parity,
+        build_pin,
+        load_shipped_model,
+        pin_failures,
+    )
+    from q88_core import MEM_OUTPUT, ParseError, SelfTestFailure, parse_mem
 
 
 def _require(condition: bool, message: str) -> None:
@@ -89,6 +103,64 @@ def _self_test_cases(reference: dict) -> None:
         bool(pin_failures(reference, flipped)),
         "a fail-closed case rewritten as a proposal must be reported",
     )
+    not_object = _clone(reference)
+    not_object["cases"][0] = "not-an-object"
+    _require(
+        bool(pin_failures(reference, not_object)),
+        "a non-object case must be reported, not AttributeError",
+    )
+
+
+def _self_test_model_parse_error() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        bad = Path(tmp) / "snn_model.json"
+        bad.write_text("{", encoding="utf-8")
+        try:
+            load_shipped_model(bad)
+        except ParseError:
+            return
+        except Exception as exc:
+            raise SelfTestFailure(
+                f"malformed model JSON raised {type(exc).__name__}, "
+                "expected ParseError"
+            ) from exc
+        raise SelfTestFailure("malformed model JSON was accepted")
+
+
+def _self_test_json_mem_parity() -> None:
+    model = load_shipped_model()
+    entries = parse_mem(MEM_OUTPUT)
+    assert_output_json_mem_parity(model, entries)
+    drifted = _clone(model)
+    drifted["neurons"][0]["output_weights"][0] = (
+        drifted["neurons"][0]["output_weights"][0] + 1.0
+    )
+    try:
+        assert_output_json_mem_parity(drifted, entries)
+    except ParseError:
+        pass
+    else:
+        raise SelfTestFailure("JSON vs .mem value drift was accepted")
+    reordered = _clone(model)
+    swapped = False
+    for neuron in reordered["neurons"]:
+        weights = neuron["output_weights"]
+        for left in range(len(weights)):
+            for right in range(left + 1, len(weights)):
+                if weights[left] != weights[right]:
+                    weights[left], weights[right] = weights[right], weights[left]
+                    swapped = True
+                    break
+            if swapped:
+                break
+        if swapped:
+            break
+    _require(swapped, "shipped readout must have a pair of unequal channels")
+    try:
+        assert_output_json_mem_parity(reordered, entries)
+    except ParseError:
+        return
+    raise SelfTestFailure("JSON vs .mem order drift was accepted")
 
 
 def run_self_test() -> int:
@@ -96,6 +168,8 @@ def run_self_test() -> int:
     try:
         _self_test_metadata(reference)
         _self_test_cases(reference)
+        _self_test_model_parse_error()
+        _self_test_json_mem_parity()
     except SelfTestFailure as exc:
         print(f"FAIL self-test: {exc}")
         return 1

@@ -15,7 +15,6 @@ Standard library only. ASCII hyphens only (cp1252-safe).
 from __future__ import annotations
 
 import json
-import math
 import struct
 from pathlib import Path
 
@@ -23,8 +22,6 @@ try:
     from .decision_core import (
         CONFIDENCE_FORMULA,
         CONTRACT_ID,
-        KIND_ABSTAIN,
-        KIND_PROPOSE,
         OUTPUT_WIDTH,
         SHIPPED_VOCABULARY,
         SUPERVISOR_VOCABULARY,
@@ -38,13 +35,20 @@ try:
         score_readout,
     )
     from .hamming_const import N_NEURONS, REPO_ROOT
-    from .q88_core import MEM_OUTPUT, ParseError, decode_q88, parse_mem
+    from .q88_core import (
+        MEM_OUTPUT,
+        ParseError,
+        Q88RangeError,
+        as_finite_float,
+        decode_q88,
+        encode_q88_hex,
+        parse_mem,
+        read_utf8_text,
+    )
 except ImportError:
     from decision_core import (
         CONFIDENCE_FORMULA,
         CONTRACT_ID,
-        KIND_ABSTAIN,
-        KIND_PROPOSE,
         OUTPUT_WIDTH,
         SHIPPED_VOCABULARY,
         SUPERVISOR_VOCABULARY,
@@ -58,7 +62,16 @@ except ImportError:
         score_readout,
     )
     from hamming_const import N_NEURONS, REPO_ROOT
-    from q88_core import MEM_OUTPUT, ParseError, decode_q88, parse_mem
+    from q88_core import (
+        MEM_OUTPUT,
+        ParseError,
+        Q88RangeError,
+        as_finite_float,
+        decode_q88,
+        encode_q88_hex,
+        parse_mem,
+        read_utf8_text,
+    )
 
 EXPECTED_DECISION = (
     REPO_ROOT / "tools" / "fixtures" / "decision" / "expected.json"
@@ -82,6 +95,9 @@ _SHIPPED_CFG = {
     "confidence_floor": 0.0,
     "abstain_on_tie": False,
 }
+
+# IEEE-754 binary64 max; finite input whose derived margin/confidence overflow.
+_F64_MAX = struct.unpack(">d", bytes.fromhex("7fefffffffffffff"))[0]
 
 
 def _f64_bits(value: float) -> str:
@@ -140,22 +156,82 @@ def _shipped_readout() -> list[float]:
     return [decode_q88(entry.word) for entry in entries]
 
 
+def load_shipped_model(path: Path = SHIPPED_MODEL) -> dict:
+    """Load ``snn_model.json`` as an object, or raise ``ParseError``.
+
+    Missing, unreadable, invalid-UTF-8, and malformed JSON must exit the
+    documented status-2 path. ``decision_parity.main`` only catches
+    ``ParseError``; a raw ``OSError`` / ``UnicodeDecodeError`` /
+    ``JSONDecodeError`` would traceback instead.
+    """
+    if not path.is_file():
+        raise ParseError(f"missing shipped sidecar: {path}")
+    try:
+        payload = json.loads(read_utf8_text(path))
+    except json.JSONDecodeError as exc:
+        raise ParseError(f"{path.name}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ParseError(f"{path.name}: expected an object")
+    return payload
+
+
+def assert_output_json_mem_parity(model: dict, mem_entries: list) -> None:
+    """Refuse JSON ``output_weights`` that disagree with neuron-major ``.mem``.
+
+    Shape-only checks let value or channel-order drift pass while decisions
+    still score the ``.mem`` image. Snap each JSON scalar through Q8.8 and
+    compare the hex word, in Distill neuron-major order.
+    """
+    neurons = model.get("neurons")
+    if not isinstance(neurons, list) or len(neurons) != N_NEURONS:
+        got = 0 if not isinstance(neurons, list) else len(neurons)
+        raise ParseError(f"{SHIPPED_MODEL.name}: expected {N_NEURONS} neurons, got {got}")
+    expected = N_NEURONS * OUTPUT_WIDTH
+    if len(mem_entries) != expected:
+        raise ParseError(
+            f"{MEM_OUTPUT.name}: {len(mem_entries)} words, expected {expected}"
+        )
+    for index, neuron in enumerate(neurons):
+        if not isinstance(neuron, dict):
+            raise ParseError(
+                f"neurons[{index}]: expected a JSON object, got "
+                f"{type(neuron).__name__}"
+            )
+        weights = neuron.get("output_weights")
+        if not isinstance(weights, list) or len(weights) != OUTPUT_WIDTH:
+            got = (
+                type(weights).__name__
+                if not isinstance(weights, list)
+                else len(weights)
+            )
+            raise ParseError(
+                f"neurons[{index}].output_weights: {got} entries, "
+                f"expected {OUTPUT_WIDTH}-wide"
+            )
+        for channel, weight in enumerate(weights):
+            where = f"neurons[{index}].output_weights[{channel}]"
+            value = as_finite_float(weight, where)
+            try:
+                want = encode_q88_hex(value)
+            except Q88RangeError as exc:
+                raise ParseError(str(exc)) from exc
+            mem_index = index * OUTPUT_WIDTH + channel
+            got = mem_entries[mem_index].text.upper()
+            if want != got:
+                raise ParseError(
+                    f"{where}: JSON encodes {want}, "
+                    f"{MEM_OUTPUT.name}[{mem_index}] is {got}"
+                )
+
+
 def _n_outputs_json() -> int:
-    model = json.loads(SHIPPED_MODEL.read_text(encoding="utf-8"))
+    model = load_shipped_model()
     n_outputs = model.get("n_outputs")
     if n_outputs != OUTPUT_WIDTH:
         raise ParseError(
             f"{SHIPPED_MODEL.name}: n_outputs {n_outputs!r}, expected {OUTPUT_WIDTH}"
         )
-    neurons = model.get("neurons")
-    if not isinstance(neurons, list) or len(neurons) != N_NEURONS:
-        raise ParseError(f"{SHIPPED_MODEL.name}: expected {N_NEURONS} neurons")
-    for index, neuron in enumerate(neurons):
-        weights = neuron.get("output_weights")
-        if not isinstance(weights, list) or len(weights) != OUTPUT_WIDTH:
-            raise ParseError(
-                f"neurons[{index}].output_weights: expected {OUTPUT_WIDTH}-wide"
-            )
+    assert_output_json_mem_parity(model, parse_mem(MEM_OUTPUT))
     return int(n_outputs)
 
 
@@ -260,6 +336,10 @@ def named_cases() -> list[dict]:
             "all_non_finite",
             [float("nan"), float("inf"), float("-inf")],
         ),
+        _finite_case(
+            "overflow_confidence",
+            [_F64_MAX, -_F64_MAX, -_F64_MAX],
+        ),
     ]
     cases.extend(_checkpoint_cases())
     return cases
@@ -268,7 +348,7 @@ def named_cases() -> list[dict]:
 def build_pin() -> dict:
     n_outputs = _n_outputs_json()
     readout = _shipped_readout()
-    return {
+    payload = {
         "contract": CONTRACT_ID,
         "vocabulary": list(SHIPPED_VOCABULARY),
         "tie_break": TIE_BREAK,
@@ -325,7 +405,10 @@ def pin_failures(reference: dict, pinned: dict) -> list[str]:
     if len(want) != len(got):
         failures.append(f"cases: pinned {len(got)}, reference {len(want)}")
         return failures
-    for expected, actual in zip(want, got, strict=True):
+    for index, (expected, actual) in enumerate(zip(want, got, strict=True)):
+        if not isinstance(expected, dict) or not isinstance(actual, dict):
+            failures.append(f"cases[{index}]: both sides must be objects")
+            continue
         name = expected.get("name")
         if actual.get("name") != name:
             failures.append(
