@@ -178,15 +178,15 @@ def score_readout(
             got=len(spikes),
             expected=NEURON_COUNT,
         )
-    _require_real_numbers(neuron_major)
-    _refuse_non_finite(neuron_major)
+    weights = _coerce_real_numbers(neuron_major)
+    _refuse_non_finite(weights)
     scores = [0.0] * OUTPUT_WIDTH
     for neuron, spiked in enumerate(spikes):
         if not spiked:
             continue
         base = neuron * OUTPUT_WIDTH
         for channel in range(OUTPUT_WIDTH):
-            scores[channel] += float(neuron_major[base + channel])
+            scores[channel] += weights[base + channel]
     return tuple(scores)
 
 
@@ -219,6 +219,12 @@ def _validate_config(vocabulary: Sequence[str], confidence_floor: float) -> None
         raise DecisionError(ERROR_EMPTY_VOCABULARY, "decision vocabulary is empty")
     seen: list[str] = []
     for index, label in enumerate(vocabulary):
+        if not isinstance(label, str):
+            raise DecisionError(
+                ERROR_INVALID_LABEL,
+                f"decision vocabulary label {index} is not a string",
+                index=index,
+            )
         if label == "":
             raise DecisionError(
                 ERROR_INVALID_LABEL,
@@ -250,20 +256,22 @@ def _validate_row(row: Sequence[float], expected: int) -> tuple[float, ...]:
             got=len(row),
             expected=expected,
         )
-    _require_real_numbers(row)
-    _refuse_non_finite(row)
-    return tuple(float(value) for value in row)
+    scores = _coerce_real_numbers(row)
+    _refuse_non_finite(scores)
+    return scores
 
 
-def _require_real_numbers(values: Sequence[object]) -> None:
-    """Refuse JSON/Python booleans and other non-reals.
+def _coerce_real_numbers(values: Sequence[object]) -> tuple[float, ...]:
+    """Refuse booleans, non-reals, and values that cannot become finite f64.
 
     ``bool`` subclasses ``int``, so ``math.isfinite(True)`` is true and
     ``float(True)`` is ``1.0``. ``replay_output_row([True, False, False])``
-    would otherwise propose ``comfort`` with confidence 1. Rust has no
-    boolean score type, so that would also break the cross-language input
-    contract.
+    would otherwise propose ``comfort`` with confidence 1. A Python ``int``
+    larger than the finite ``float`` range raises ``OverflowError`` from
+    ``float()`` / ``math.isfinite``. Rust only accepts ``f64``, so both
+    leaks would break the fail-closed cross-language input contract.
     """
+    converted: list[float] = []
     for index, value in enumerate(values):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise DecisionError(
@@ -271,6 +279,17 @@ def _require_real_numbers(values: Sequence[object]) -> None:
                 f"output score at index {index} is not a real number",
                 index=index,
             )
+        try:
+            number = float(value)
+        except (OverflowError, ValueError) as exc:
+            raise DecisionError(
+                ERROR_INVALID_SCORE,
+                f"output score at index {index} is not representable "
+                "as a finite float",
+                index=index,
+            ) from exc
+        converted.append(number)
+    return tuple(converted)
 
 
 def _refuse_non_finite(values: Sequence[float]) -> None:

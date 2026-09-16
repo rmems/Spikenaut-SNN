@@ -16,11 +16,13 @@ from pathlib import Path
 
 try:
     from .decision_core import (
+        ERROR_INVALID_LABEL,
         ERROR_INVALID_SCORE,
         KIND_PROPOSE,
         NEURON_COUNT,
         OUTPUT_WEIGHT_COUNT,
         SHIPPED_VOCABULARY,
+        DecisionConfig,
         DecisionError,
         replay_output_row,
         score_readout,
@@ -36,11 +38,13 @@ try:
     from .q88_core import MEM_OUTPUT, ParseError, SelfTestFailure, parse_mem
 except ImportError:
     from decision_core import (
+        ERROR_INVALID_LABEL,
         ERROR_INVALID_SCORE,
         KIND_PROPOSE,
         NEURON_COUNT,
         OUTPUT_WEIGHT_COUNT,
         SHIPPED_VOCABULARY,
+        DecisionConfig,
         DecisionError,
         replay_output_row,
         score_readout,
@@ -265,6 +269,37 @@ def _self_test_boolean_scores() -> None:
         )
 
 
+def _self_test_unrepresentable_scores() -> None:
+    _expect_invalid_score(
+        lambda: replay_output_row([10**1000, 0, 0]),
+        what="unrepresentable integer scores",
+    )
+    huge_weights = [0.0] * OUTPUT_WEIGHT_COUNT
+    huge_weights[0] = 10**1000
+    _expect_invalid_score(
+        lambda: score_readout(huge_weights, [False] * NEURON_COUNT),
+        what="unrepresentable readout weights",
+    )
+
+
+def _self_test_vocabulary_types() -> None:
+    try:
+        DecisionConfig.new([None, "temp", "power"])
+    except DecisionError as exc:
+        if exc.code != ERROR_INVALID_LABEL:
+            raise SelfTestFailure(
+                f"non-string vocabulary raised {exc.code}, "
+                f"expected {ERROR_INVALID_LABEL}"
+            ) from exc
+        return
+    except Exception as exc:
+        raise SelfTestFailure(
+            f"non-string vocabulary raised {type(exc).__name__}, "
+            "expected DecisionError"
+        ) from exc
+    raise SelfTestFailure("non-string vocabulary was accepted")
+
+
 def _self_test_json_mem_parity() -> None:
     model = load_shipped_model()
     entries = parse_mem(MEM_OUTPUT)
@@ -308,6 +343,8 @@ def run_self_test() -> int:
         _self_test_cases(reference)
         _self_test_model_parse_error()
         _self_test_boolean_scores()
+        _self_test_unrepresentable_scores()
+        _self_test_vocabulary_types()
         _self_test_json_mem_parity()
     except SelfTestFailure as exc:
         print(f"FAIL self-test: {exc}")
