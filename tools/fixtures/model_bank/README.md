@@ -20,9 +20,9 @@ Reproduce from the repo root:
 ```python
 from pathlib import Path
 from tools.model_bank import dumps_manifest, load_model_bank
-raw = Path("tools/fixtures/model_bank/valid/model_bank.json").read_text()
+raw = Path("tools/fixtures/model_bank/valid/model_bank.json").read_bytes()
 bank = load_model_bank("tools/fixtures/model_bank/valid/model_bank.json")
-assert raw == dumps_manifest(__import__("json").loads(raw))
+assert raw == dumps_manifest(__import__("json").loads(raw.decode("utf-8"))).encode("utf-8")
 print(bank.select("fixture-ok").checkpoint_digest)
 ```
 

@@ -13,7 +13,9 @@ Standard library only; pytest is an optional runner.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -26,6 +28,7 @@ from tools.model_bank import (
     OUTPUT_CONTRACT_SUPERVISOR_V3_RM1150,
     REPO_ROOT,
     BankAttestationError,
+    BankParseError,
     dumps_manifest,
     load_model_bank,
     load_shipped_merged_v2_bank,
@@ -59,16 +62,116 @@ class ModelBankTests(unittest.TestCase):
         )
         self.assertEqual(entry.numeric_format, NUMERIC_FORMAT_Q88)
         self.assertIsNone(entry.training_dataset_digest)
+        self.assertEqual(
+            f"sha256:{hashlib.sha256(entry.checkpoint_bytes).hexdigest()}",
+            entry.checkpoint_digest,
+        )
         with self.assertRaises(BankAttestationError) as caught:
             bank.select("ghost")
         self.assertEqual(caught.exception.field, "id")
         self.assertIn("ghost", str(caught.exception))
 
     def test_manifest_serialization_is_stable(self) -> None:
-        raw = VALID.read_text(encoding="utf-8")
-        self.assertEqual(raw, dumps_manifest(json.loads(raw)))
-        self.assertTrue(raw.endswith("\n"))
-        self.assertNotIn("\r", raw)
+        raw_bytes = VALID.read_bytes()
+        raw = raw_bytes.decode("utf-8")
+        dumped = dumps_manifest(json.loads(raw))
+        self.assertEqual(raw_bytes, dumped.encode("utf-8"))
+        self.assertTrue(dumped.endswith("\n"))
+        self.assertNotIn(b"\r", raw_bytes)
+
+    def test_select_consumes_attested_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "toctou"
+            shutil.copytree(VALID.parent, dest)
+            bank = load_model_bank(dest / MANIFEST_FILENAME)
+            entry = bank.select("fixture-ok")
+            consumed = entry.checkpoint_bytes
+            self.assertEqual(
+                f"sha256:{hashlib.sha256(consumed).hexdigest()}",
+                entry.checkpoint_digest,
+            )
+            entry.checkpoint.write_bytes(b"replaced-after-select\n")
+            self.assertEqual(entry.checkpoint_bytes, consumed)
+            with self.assertRaises(BankAttestationError) as caught:
+                bank.select("fixture-ok")
+            self.assertEqual(caught.exception.field, "checkpoint_digest")
+
+    def test_oversized_json_integer_is_parse_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+            manifest = dest / MANIFEST_FILENAME
+            manifest.write_text(
+                '{"schema_version": 1, "models": [1' + "0" * 5000 + "]}",
+                encoding="utf-8",
+            )
+            with self.assertRaises(BankParseError) as caught:
+                load_model_bank(manifest)
+            self.assertIn("unreadable JSON number", str(caught.exception))
+            checkpoint = dest / "broken.json"
+            checkpoint.write_text(
+                '{"neurons": [1' + "0" * 5000 + "]}", encoding="utf-8"
+            )
+            with self.assertRaises(BankParseError) as caught_ckpt:
+                load_unattested_checkpoint(checkpoint)
+            self.assertIn("unreadable JSON number", str(caught_ckpt.exception))
+
+    def test_unreadable_checkpoint_is_attestation_error(self) -> None:
+        if os.geteuid() == 0:
+            self.skipTest("root can read chmod 0 files")
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "unreadable"
+            shutil.copytree(VALID.parent, dest)
+            ckpt = dest / "checkpoints" / "ok.bin"
+            mode = ckpt.stat().st_mode
+            try:
+                ckpt.chmod(0)
+                with self.assertRaises(BankAttestationError) as caught:
+                    load_model_bank(dest / MANIFEST_FILENAME)
+            finally:
+                ckpt.chmod(mode)
+            self.assertEqual(caught.exception.entry, "fixture-ok")
+            self.assertEqual(caught.exception.field, "checkpoint")
+            self.assertIn("cannot read file", str(caught.exception))
+
+    def test_nul_checkpoint_path_is_attestation_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "nul"
+            shutil.copytree(VALID.parent, dest)
+            document = json.loads((dest / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+            document["models"][0]["checkpoint"] = "check\x00points/ok.bin"
+            (dest / MANIFEST_FILENAME).write_text(
+                dumps_manifest(document), encoding="utf-8"
+            )
+            with self.assertRaises(BankAttestationError) as caught:
+                load_model_bank(dest / MANIFEST_FILENAME)
+            self.assertEqual(caught.exception.entry, "fixture-ok")
+            self.assertEqual(caught.exception.field, "checkpoint")
+            self.assertIn("NUL", str(caught.exception))
+
+    def test_symlink_loop_checkpoint_is_attestation_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "loop"
+            shutil.copytree(VALID.parent, dest)
+            loop = dest / "loop.bin"
+            loop.symlink_to(loop)
+            document = json.loads((dest / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+            document["models"][0]["checkpoint"] = "loop.bin"
+            (dest / MANIFEST_FILENAME).write_text(
+                dumps_manifest(document), encoding="utf-8"
+            )
+            with self.assertRaises(BankAttestationError) as caught:
+                load_model_bank(dest / MANIFEST_FILENAME)
+            self.assertEqual(caught.exception.entry, "fixture-ok")
+            self.assertEqual(caught.exception.field, "checkpoint")
+            self.assertIn("cannot resolve path", str(caught.exception))
+
+    def test_unattested_checkpoint_rejects_invalid_utf8(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            broken = Path(tmp) / "not-utf8.json"
+            broken.write_bytes(b"\xff\xfe not utf-8")
+            with self.assertRaises(BankParseError) as caught:
+                load_unattested_checkpoint(broken)
+            self.assertIn("is not UTF-8", str(caught.exception))
 
     def test_path_independent_copy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

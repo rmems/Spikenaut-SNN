@@ -53,7 +53,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -139,16 +139,70 @@ def digest_file(path: Path) -> str:
     """``sha256:`` digest of the file's bytes.
 
     The path itself is not hashed, so copying the file to a new directory
-    without changing contents yields the same digest.
+    without changing contents yields the same digest. I/O failures become
+    :class:`BankAttestationError` so callers never see a raw ``OSError``.
     """
-    hasher = hashlib.sha256()
+    try:
+        digest, _payload = _read_checkpoint_bytes(path)
+    except OSError as exc:
+        raise BankAttestationError(
+            f"model-bank field 'checkpoint': cannot read file "
+            f"{path.as_posix()!r}: {exc}",
+            field="checkpoint",
+        ) from exc
+    return digest
+
+
+def _hash_bytes(data: bytes) -> str:
+    return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
+def _read_checkpoint_bytes(path: Path) -> tuple[str, bytes]:
     with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(1024 * 1024)
-            if not chunk:
-                break
-            hasher.update(chunk)
-    return f"sha256:{hasher.hexdigest()}"
+        data = handle.read()
+    return _hash_bytes(data), data
+
+
+def _consume_checkpoint(
+    path: Path, *, entry: str, relative: str
+) -> tuple[str, bytes]:
+    try:
+        return _read_checkpoint_bytes(path)
+    except OSError as exc:
+        _fail(
+            entry=entry,
+            field="checkpoint",
+            message=f"cannot read file {relative!r}: {exc}",
+        )
+
+
+def _read_utf8(path: Path, *, kind: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise BankParseError(
+            f"model-bank: cannot read {kind} {path}: {exc}"
+        ) from exc
+    except UnicodeDecodeError as exc:
+        raise BankParseError(
+            f"model-bank: {kind} {path} is not UTF-8: {exc}"
+        ) from exc
+
+
+def _parse_json(text: str, *, source: Path) -> Any:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise BankParseError(
+            f"model-bank: invalid JSON in {source}: {exc}"
+        ) from exc
+    except ValueError as exc:
+        # CPython raises a bare ValueError for an integer literal longer than
+        # sys.get_int_max_str_digits() (4300 by default on 3.11+). It is not a
+        # JSONDecodeError, so it would escape the CLI as a traceback.
+        raise BankParseError(
+            f"model-bank: unreadable JSON number in {source}: {exc}"
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -163,6 +217,7 @@ class AttestedEntry:
     output_contract_id: str
     numeric_format: str
     training_dataset_digest: str | None
+    checkpoint_bytes: bytes
 
 
 @dataclass(frozen=True)
@@ -178,15 +233,16 @@ class ModelBank:
         return tuple(entry.id for entry in self.entries)
 
     def select(self, model_id: str) -> AttestedEntry:
-        """Return one entry, re-affirming its digest at selection time.
+        """Return one entry, consuming the checkpoint bytes that were hashed.
 
         Only entries that passed load-time attestation are visible. An unknown
-        ID is not a silent miss: it names the field.
+        ID is not a silent miss: it names the field. The returned
+        ``checkpoint_bytes`` are the bytes hashed at selection time, so a
+        later replacement of the file cannot change what the caller consumes.
         """
         for entry in self.entries:
             if entry.id == model_id:
-                _reaffirm(entry)
-                return entry
+                return _reaffirm(entry)
         raise BankAttestationError(
             f"model-bank field 'id': not an attested entry: {model_id!r}",
             field="id",
@@ -208,22 +264,7 @@ def load_model_bank(manifest_path: Path | str) -> ModelBank:
     * :class:`BankAttestationError` if any entry fails attestation
     """
     path = Path(manifest_path)
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise BankParseError(
-            f"model-bank: cannot read manifest {path}: {exc}"
-        ) from exc
-    except UnicodeDecodeError as exc:
-        raise BankParseError(
-            f"model-bank: manifest {path} is not UTF-8: {exc}"
-        ) from exc
-    try:
-        document = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise BankParseError(
-            f"model-bank: invalid JSON in {path}: {exc}"
-        ) from exc
+    document = _parse_json(_read_utf8(path, kind="manifest"), source=path)
     if not isinstance(document, dict):
         raise BankParseError(
             f"model-bank: top level must be an object, got {type(document).__name__}"
@@ -256,16 +297,7 @@ def wrap_legacy_checkpoint(
     """
     path = Path(checkpoint_path)
     entry_id = _require_token(model_id, entry=model_id, field="id")
-    relative = path.name
-    _require_relative_checkpoint(relative, entry=entry_id)
-    if not path.is_file():
-        _fail(
-            entry=entry_id,
-            field="checkpoint",
-            message=f"missing file {path.as_posix()!r}",
-        )
-    resolved = path.resolve()
-    digest = digest_file(resolved)
+    resolved, relative, digest, payload = _legacy_checkpoint(path, entry=entry_id)
     feature = _require_token(
         feature_map_id, entry=entry_id, field="feature_map_id"
     )
@@ -289,6 +321,7 @@ def wrap_legacy_checkpoint(
         output_contract_id=contract,
         numeric_format=fmt,
         training_dataset_digest=dataset,
+        checkpoint_bytes=payload,
     )
     return ModelBank(
         manifest_path=None,
@@ -305,18 +338,9 @@ def load_unattested_checkpoint(path: Path | str) -> Any:
     :func:`load_model_bank` when selecting among models.
     """
     checkpoint = Path(path)
-    try:
-        text = checkpoint.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise BankParseError(
-            f"model-bank: cannot read checkpoint {checkpoint}: {exc}"
-        ) from exc
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise BankParseError(
-            f"model-bank: invalid JSON in {checkpoint}: {exc}"
-        ) from exc
+    return _parse_json(
+        _read_utf8(checkpoint, kind="checkpoint"), source=checkpoint
+    )
 
 
 def _attest_document(
@@ -394,7 +418,9 @@ def _attest_entry(
     model_id = _require_token(raw.get("id", _MISSING), entry=label, field="id")
     if model_id in seen:
         _fail(entry=model_id, field="id", message="duplicate model ID")
-    relative, checkpoint, computed = _attest_checkpoint(raw, model_id, root)
+    relative, checkpoint, computed, payload = _attest_checkpoint(
+        raw, model_id, root
+    )
     feature = _require_token(
         raw.get("feature_map_id", _MISSING),
         entry=model_id,
@@ -419,6 +445,7 @@ def _attest_entry(
         output_contract_id=contract,
         numeric_format=fmt,
         training_dataset_digest=dataset,
+        checkpoint_bytes=payload,
     )
 
 
@@ -433,7 +460,7 @@ def _optional_digest(raw: Mapping[str, Any], model_id: str) -> str | None:
 
 def _attest_checkpoint(
     raw: Mapping[str, Any], model_id: str, root: Path
-) -> tuple[str, Path, str]:
+) -> tuple[str, Path, str, bytes]:
     relative = _require_token(
         raw.get("checkpoint", _MISSING), entry=model_id, field="checkpoint"
     )
@@ -443,40 +470,100 @@ def _attest_checkpoint(
         entry=model_id,
         field="checkpoint_digest",
     )
-    checkpoint = (root / relative).resolve()
-    try:
-        checkpoint.relative_to(root)
-    except ValueError:
-        _fail(
-            entry=model_id,
-            field="checkpoint",
-            message=f"path {relative!r} escapes the bundle root",
-        )
-    if not checkpoint.is_file():
-        _fail(
-            entry=model_id,
-            field="checkpoint",
-            message=f"missing file {relative!r}",
-        )
-    computed = digest_file(checkpoint)
+    checkpoint = _resolved_checkpoint(root, relative, entry=model_id)
+    _require_checkpoint_file(checkpoint, entry=model_id, relative=relative)
+    computed, payload = _consume_checkpoint(
+        checkpoint, entry=model_id, relative=relative
+    )
     if computed != declared:
         _fail(
             entry=model_id,
             field="checkpoint_digest",
             message=f"mismatch (declared {declared}, computed {computed})",
         )
-    return relative, checkpoint, computed
+    return relative, checkpoint, computed, payload
 
 
-def _reaffirm(entry: AttestedEntry) -> None:
-    """Selection-time check: the attested file is still the attested bytes."""
-    if not entry.checkpoint.is_file():
+def _legacy_checkpoint(
+    path: Path, *, entry: str
+) -> tuple[Path, str, str, bytes]:
+    relative = path.name
+    _require_relative_checkpoint(relative, entry=entry)
+    resolved = _resolve_existing_path(path, entry=entry)
+    digest, payload = _consume_checkpoint(
+        resolved, entry=entry, relative=relative
+    )
+    return resolved, relative, digest, payload
+
+
+def _resolve_existing_path(path: Path, *, entry: str) -> Path:
+    try:
+        exists = path.is_file()
+        resolved = path.resolve() if exists else path
+    except (ValueError, RuntimeError, OSError) as exc:
         _fail(
-            entry=entry.id,
+            entry=entry,
             field="checkpoint",
-            message=f"missing file {entry.checkpoint_relative!r}",
+            message=f"cannot resolve path {path.as_posix()!r}: {exc}",
         )
-    computed = digest_file(entry.checkpoint)
+    if not exists:
+        _fail(
+            entry=entry,
+            field="checkpoint",
+            message=f"missing file {path.as_posix()!r}",
+        )
+    return resolved
+
+
+def _resolved_checkpoint(root: Path, relative: str, *, entry: str) -> Path:
+    try:
+        checkpoint = (root / relative).resolve()
+    except (ValueError, RuntimeError, OSError) as exc:
+        _fail(
+            entry=entry,
+            field="checkpoint",
+            message=f"cannot resolve path {relative!r}: {exc}",
+        )
+    try:
+        checkpoint.relative_to(root)
+    except ValueError:
+        _fail(
+            entry=entry,
+            field="checkpoint",
+            message=f"path {relative!r} escapes the bundle root",
+        )
+    return checkpoint
+
+
+def _require_checkpoint_file(
+    path: Path, *, entry: str, relative: str
+) -> None:
+    try:
+        present = path.is_file()
+    except OSError as exc:
+        _fail(
+            entry=entry,
+            field="checkpoint",
+            message=f"cannot read file {relative!r}: {exc}",
+        )
+    if not present:
+        _fail(
+            entry=entry,
+            field="checkpoint",
+            message=f"missing file {relative!r}",
+        )
+
+
+def _reaffirm(entry: AttestedEntry) -> AttestedEntry:
+    """Selection-time check: consume the bytes that currently match the digest."""
+    _require_checkpoint_file(
+        entry.checkpoint, entry=entry.id, relative=entry.checkpoint_relative
+    )
+    computed, payload = _consume_checkpoint(
+        entry.checkpoint,
+        entry=entry.id,
+        relative=entry.checkpoint_relative,
+    )
     if computed != entry.checkpoint_digest:
         _fail(
             entry=entry.id,
@@ -486,6 +573,7 @@ def _reaffirm(entry: AttestedEntry) -> None:
                 f"computed {computed})"
             ),
         )
+    return replace(entry, checkpoint_bytes=payload)
 
 
 def _require_relative_checkpoint(relative: str, *, entry: str) -> None:
@@ -504,6 +592,8 @@ def _unsafe_relative_reason(relative: str) -> str | None:
         return f"must not contain '..', got {relative!r}"
     if "\\" in relative:
         return f"must use POSIX separators, got {relative!r}"
+    if "\x00" in relative:
+        return f"must not contain NUL, got {relative!r}"
     return None
 
 

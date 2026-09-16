@@ -14,6 +14,7 @@ Run via the CLI::
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import sys
@@ -58,7 +59,7 @@ TAMPERED_MANIFEST = FIXTURE_ROOT / "tampered-checkpoint" / MANIFEST_FILENAME
 UNSUPPORTED_MANIFEST = FIXTURE_ROOT / "unsupported-version" / MANIFEST_FILENAME
 
 SELF_TEST_SECTIONS = 10
-EXPECTED_REQUIRE_CALLS = 15
+EXPECTED_REQUIRE_CALLS = 16
 EXPECTED_GUARD_CHECKS = 6
 
 
@@ -139,17 +140,26 @@ def valid_fixture_attests(stream) -> int:
         bank.ids() == ("fixture-ok",),
         "selection surface is only attested ids",
     )
-    return 6
+    _require(
+        f"sha256:{hashlib.sha256(entry.checkpoint_bytes).hexdigest()}"
+        == entry.checkpoint_digest,
+        "select returns the attested checkpoint bytes",
+    )
+    return 7
 
 
 def serialization_is_stable(stream) -> int:
     print("2. golden manifest matches dumps_manifest", file=stream)
-    raw = VALID_MANIFEST.read_text(encoding="utf-8")
+    raw_bytes = VALID_MANIFEST.read_bytes()
+    raw = raw_bytes.decode("utf-8")
     document = json.loads(raw)
     dumped = dumps_manifest(document)
-    _require(raw == dumped, "golden valid manifest is the stable serialization")
+    _require(
+        raw_bytes == dumped.encode("utf-8"),
+        "golden valid manifest is the stable serialization",
+    )
     _require(dumped.endswith("\n"), "stable dump has a trailing newline")
-    _require("\r" not in dumped, "stable dump is LF-only")
+    _require(b"\r" not in raw_bytes, "golden fixture is LF-only on disk")
     return 3
 
 
