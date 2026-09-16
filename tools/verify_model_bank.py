@@ -50,24 +50,30 @@ def format_bank_report(bank: ModelBank) -> str:
     )
     lines = [
         f"model-bank: attested {len(bank)}/{len(bank)} entries",
-        f"  source: {origin}",
+        f"  source: {_report_field(origin)}",
     ]
     for entry in bank.entries:
         lines.extend(
             [
-                f"  {entry.id}",
-                f"    checkpoint: {entry.checkpoint_relative}",
-                f"    computed digest: {entry.checkpoint_digest}",
-                f"    feature_map_id: {entry.feature_map_id}",
-                f"    output_contract_id: {entry.output_contract_id}",
-                f"    numeric_format: {entry.numeric_format}",
+                f"  {_report_field(entry.id)}",
+                f"    checkpoint: {_report_field(entry.checkpoint_relative)}",
+                f"    computed digest: {_report_field(entry.checkpoint_digest)}",
+                f"    feature_map_id: {_report_field(entry.feature_map_id)}",
+                f"    output_contract_id: {_report_field(entry.output_contract_id)}",
+                f"    numeric_format: {_report_field(entry.numeric_format)}",
             ]
         )
         if entry.training_dataset_digest is not None:
             lines.append(
-                f"    training_dataset_digest: {entry.training_dataset_digest}"
+                "    training_dataset_digest: "
+                f"{_report_field(entry.training_dataset_digest)}"
             )
     return "\n".join(lines)
+
+
+def _report_field(value: str) -> str:
+    """Render a manifest value as one ASCII line (escapes CR/LF/controls)."""
+    return value.encode("unicode_escape").decode("ascii")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -112,8 +118,8 @@ def main(argv: list[str] | None = None) -> int:
         print(format_bank_report(bank))
         if args.select is not None:
             entry = bank.select(args.select)
-            print(f"selected: {entry.id}")
-            print(f"computed digest: {entry.checkpoint_digest}")
+            print(f"selected: {_report_field(entry.id)}")
+            print(f"computed digest: {_report_field(entry.checkpoint_digest)}")
         return 0
     except SelfTestFailure as exc:
         print(f"\nSELF-TEST FAILED: {exc}", file=sys.stderr)

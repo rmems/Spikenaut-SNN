@@ -106,6 +106,37 @@ class ModelBankTests(unittest.TestCase):
             load_unattested_checkpoint("snn_model.json\x00")
         self.assertIn("cannot read", str(caught_ckpt.exception))
 
+    def test_deeply_nested_json_is_parse_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+            nested = '{"a":' * 10000 + "1" + "}" * 10000
+            manifest = dest / MANIFEST_FILENAME
+            manifest.write_text(nested, encoding="utf-8")
+            with self.assertRaises(BankParseError) as caught:
+                load_model_bank(manifest)
+            self.assertIn("JSON nesting exceeds parser limit", str(caught.exception))
+            checkpoint = dest / "nested.json"
+            checkpoint.write_text(nested, encoding="utf-8")
+            with self.assertRaises(BankParseError) as caught_ckpt:
+                load_unattested_checkpoint(checkpoint)
+            self.assertIn(
+                "JSON nesting exceeds parser limit", str(caught_ckpt.exception)
+            )
+
+    def test_control_character_token_is_attestation_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "ctrl"
+            shutil.copytree(VALID.parent, dest)
+            document = json.loads((dest / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+            document["models"][0]["id"] = "fixture\nok"
+            (dest / MANIFEST_FILENAME).write_text(
+                dumps_manifest(document), encoding="utf-8"
+            )
+            with self.assertRaises(BankAttestationError) as caught:
+                load_model_bank(dest / MANIFEST_FILENAME)
+            self.assertEqual(caught.exception.field, "id")
+            self.assertIn("control character", str(caught.exception))
+
     def test_duplicate_json_object_key_is_parse_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "dupkeys"
@@ -196,7 +227,10 @@ class ModelBankTests(unittest.TestCase):
                 load_model_bank(dest / MANIFEST_FILENAME)
             self.assertEqual(caught.exception.entry, "fixture-ok")
             self.assertEqual(caught.exception.field, "checkpoint")
-            self.assertIn("NUL", str(caught.exception))
+            self.assertRegex(
+                str(caught.exception),
+                r"NUL|control character",
+            )
 
     def test_symlink_loop_checkpoint_is_attestation_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -213,7 +247,11 @@ class ModelBankTests(unittest.TestCase):
                 load_model_bank(dest / MANIFEST_FILENAME)
             self.assertEqual(caught.exception.entry, "fixture-ok")
             self.assertEqual(caught.exception.field, "checkpoint")
-            self.assertIn("cannot resolve path", str(caught.exception))
+            # Python 3.11 raises during resolve(); 3.13+ may report missing file.
+            self.assertRegex(
+                str(caught.exception),
+                r"cannot resolve path|missing file",
+            )
 
     def test_unattested_checkpoint_rejects_invalid_utf8(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

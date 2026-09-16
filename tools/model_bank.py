@@ -16,7 +16,10 @@ Minimum attestation per entry
 * ``output_contract_id`` -- output-row / action-map identifier; the shipped
   value names the RM-1150 supervisor-v3 decision contract. This loader does
   not implement that decision.
-* ``numeric_format`` -- e.g. ``q8.8-fixed-point``
+* ``numeric_format`` -- consumption-grid identifier (the shipped bank uses
+  ``q8.8-fixed-point``, matching ``config.json`` ``weight_format``). The
+  checkpoint file may still be float JSON; the digest covers those bytes,
+  and Q8.8 encoding stays on the ``verify_q88`` path.
 * ``training_dataset_digest`` -- optional, same ``sha256:`` form
 
 Bank loading rejects a missing checkpoint, a digest mismatch, a duplicate
@@ -68,6 +71,7 @@ SCHEMA_VERSION = 1
 SUPPORTED_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION})
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+TOKEN_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 MSG_MISSING_FIELD = "missing required field"
 
 # Canonical identifiers this repository ships. Unknown-but-well-formed IDs
@@ -221,6 +225,12 @@ def _parse_json(text: str, *, source: Path) -> Any:
     except _DuplicateJsonKeyError as exc:
         raise BankParseError(
             f"model-bank: duplicate object key {exc.key!r} in {source}"
+        ) from exc
+    except RecursionError as exc:
+        # CPython 3.11 json.loads raises RecursionError around ~1000 nested
+        # objects/arrays; it is not JSONDecodeError.
+        raise BankParseError(
+            f"model-bank: JSON nesting exceeds parser limit in {source}: {exc}"
         ) from exc
     except ValueError as exc:
         # CPython raises a bare ValueError for an integer literal longer than
@@ -627,6 +637,20 @@ def _require_token(value: Any, *, entry: str, field: str) -> str:
             entry=entry,
             field=field,
             message=f"must be a non-empty string, got {value!r}",
+        )
+    if TOKEN_CONTROL_RE.search(value) is not None:
+        _fail(
+            entry=entry,
+            field=field,
+            message=f"must not contain a control character, got {value!r}",
+        )
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        _fail(
+            entry=entry,
+            field=field,
+            message=f"must be well-formed UTF-8, got {value!r}: {exc}",
         )
     return value
 
