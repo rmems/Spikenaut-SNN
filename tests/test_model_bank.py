@@ -214,7 +214,12 @@ class ModelBankTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(BankParseError) as caught:
                     dumps_manifest({"v": value})
-                self.assertIn("non-standard JSON number", str(caught.exception))
+                self.assertIn("cannot serialize manifest", str(caught.exception))
+
+    def test_dumps_manifest_rejects_non_json_values(self) -> None:
+        with self.assertRaises(BankParseError) as caught:
+            dumps_manifest({"v": {1}})
+        self.assertIn("cannot serialize manifest", str(caught.exception))
 
     def test_duplicate_json_object_key_is_parse_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

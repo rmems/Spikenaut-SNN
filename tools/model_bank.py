@@ -148,8 +148,8 @@ def dumps_manifest(document: Mapping[str, Any]) -> str:
     """Stable serialization of a model-bank document.
 
     See the module docstring. The golden fixture must round-trip through this
-    function unchanged. Non-standard ``NaN`` / ``Infinity`` values are
-    rejected so the serializer cannot emit JSON the loader would refuse.
+    function unchanged. Non-JSON values, including ``NaN`` / ``Infinity``,
+    are rejected so the serializer cannot emit JSON the loader would refuse.
     """
     try:
         return json.dumps(
@@ -159,9 +159,9 @@ def dumps_manifest(document: Mapping[str, Any]) -> str:
             ensure_ascii=True,
             allow_nan=False,
         ) + "\n"
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise BankParseError(
-            f"model-bank: cannot serialize non-standard JSON number: {exc}"
+            f"model-bank: cannot serialize manifest: {exc}"
         ) from exc
 
 
