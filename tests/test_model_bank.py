@@ -124,18 +124,27 @@ class ModelBankTests(unittest.TestCase):
             )
 
     def test_control_character_token_is_attestation_error(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = Path(tmp) / "ctrl"
-            shutil.copytree(VALID.parent, dest)
-            document = json.loads((dest / MANIFEST_FILENAME).read_text(encoding="utf-8"))
-            document["models"][0]["id"] = "fixture\nok"
-            (dest / MANIFEST_FILENAME).write_text(
-                dumps_manifest(document), encoding="utf-8"
-            )
-            with self.assertRaises(BankAttestationError) as caught:
-                load_model_bank(dest / MANIFEST_FILENAME)
-            self.assertEqual(caught.exception.field, "id")
-            self.assertIn("control character", str(caught.exception))
+        cases = (
+            ("LF", "fixture\nok"),
+            ("NEL", "fixture\u0085ok"),
+            ("CSI", "fixture\u009bok"),
+        )
+        for name, token in cases:
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    dest = Path(tmp) / name
+                    shutil.copytree(VALID.parent, dest)
+                    document = json.loads(
+                        (dest / MANIFEST_FILENAME).read_text(encoding="utf-8")
+                    )
+                    document["models"][0]["id"] = token
+                    (dest / MANIFEST_FILENAME).write_text(
+                        dumps_manifest(document), encoding="utf-8"
+                    )
+                    with self.assertRaises(BankAttestationError) as caught:
+                        load_model_bank(dest / MANIFEST_FILENAME)
+                    self.assertEqual(caught.exception.field, "id")
+                    self.assertIn("control character", str(caught.exception))
 
     def test_duplicate_json_object_key_is_parse_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

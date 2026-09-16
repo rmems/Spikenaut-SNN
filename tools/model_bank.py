@@ -57,6 +57,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,7 +72,6 @@ SCHEMA_VERSION = 1
 SUPPORTED_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION})
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-TOKEN_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 MSG_MISSING_FIELD = "missing required field"
 
 # Canonical identifiers this repository ships. Unknown-but-well-formed IDs
@@ -638,7 +638,7 @@ def _require_token(value: Any, *, entry: str, field: str) -> str:
             field=field,
             message=f"must be a non-empty string, got {value!r}",
         )
-    if TOKEN_CONTROL_RE.search(value) is not None:
+    if _contains_control(value):
         _fail(
             entry=entry,
             field=field,
@@ -653,6 +653,11 @@ def _require_token(value: Any, *, entry: str, field: str) -> str:
             message=f"must be well-formed UTF-8, got {value!r}: {exc}",
         )
     return value
+
+
+def _contains_control(value: str) -> bool:
+    """True if any character is Unicode category Cc (C0, DEL, or C1)."""
+    return any(unicodedata.category(character) == "Cc" for character in value)
 
 
 def _require_digest(value: Any, *, entry: str, field: str) -> str:
