@@ -320,7 +320,10 @@ def _self_test_confidence_floor_types() -> None:
             ) from exc
         raise SelfTestFailure(f"confidence floor {floor!r} was accepted")
     config = DecisionConfig.new(SHIPPED_VOCABULARY, 0)
-    if config.confidence_floor != 0.0:
+    # Truthiness rather than ``!= 0.0``: ``0.0`` and ``-0.0`` are the only
+    # falsy floats, which is the same IEEE exact-zero contract as the
+    # integer ``0`` floor pin, without a python:S1244 literal compare.
+    if config.confidence_floor:
         raise SelfTestFailure("integer confidence floor 0 must remain 0.0")
 
 

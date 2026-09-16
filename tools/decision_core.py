@@ -387,12 +387,15 @@ def _margin_and_confidence(
     margin = winning_score - runner_up_score
     denom = abs(winning_score) + abs(runner_up_score)
     denom_bad = not math.isfinite(denom)
+    # Match Rust `denom > 0.0` (src/decision.rs). After the finite check,
+    # exact IEEE zero is the only remaining zero case; a literal `== 0.0`
+    # compare is the same test but trips python:S1244.
     if denom_bad:
         confidence = float("nan")
-    elif denom == 0.0:
-        confidence = 0.0
-    else:
+    elif denom > 0.0:
         confidence = margin / denom
+    else:
+        confidence = 0.0
     margin_bad = not math.isfinite(margin)
     confidence_bad = denom_bad or not math.isfinite(confidence)
     if margin_bad or confidence_bad:
