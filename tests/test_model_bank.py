@@ -84,17 +84,27 @@ class ModelBankTests(unittest.TestCase):
             dest = Path(tmp) / "toctou"
             shutil.copytree(VALID.parent, dest)
             bank = load_model_bank(dest / MANIFEST_FILENAME)
-            entry = bank.select("fixture-ok")
-            consumed = entry.checkpoint_bytes
+            loaded = bank.entries[0]
+            consumed = loaded.checkpoint_bytes
             self.assertEqual(
                 f"sha256:{hashlib.sha256(consumed).hexdigest()}",
+                loaded.checkpoint_digest,
+            )
+            loaded.checkpoint.write_bytes(b"replaced-after-load\n")
+            entry = bank.select("fixture-ok")
+            self.assertEqual(entry.checkpoint_bytes, consumed)
+            self.assertEqual(
+                f"sha256:{hashlib.sha256(entry.checkpoint_bytes).hexdigest()}",
                 entry.checkpoint_digest,
             )
-            entry.checkpoint.write_bytes(b"replaced-after-select\n")
-            self.assertEqual(entry.checkpoint_bytes, consumed)
-            with self.assertRaises(BankAttestationError) as caught:
-                bank.select("fixture-ok")
-            self.assertEqual(caught.exception.field, "checkpoint_digest")
+
+    def test_nul_loader_paths_are_parse_errors(self) -> None:
+        with self.assertRaises(BankParseError) as caught_manifest:
+            load_model_bank("model_bank.json\x00")
+        self.assertIn("cannot read", str(caught_manifest.exception))
+        with self.assertRaises(BankParseError) as caught_ckpt:
+            load_unattested_checkpoint("snn_model.json\x00")
+        self.assertIn("cannot read", str(caught_ckpt.exception))
 
     def test_oversized_json_integer_is_parse_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

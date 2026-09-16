@@ -53,7 +53,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -144,7 +144,7 @@ def digest_file(path: Path) -> str:
     """
     try:
         digest, _payload = _read_checkpoint_bytes(path)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise BankAttestationError(
             f"model-bank field 'checkpoint': cannot read file "
             f"{path.as_posix()!r}: {exc}",
@@ -168,7 +168,7 @@ def _consume_checkpoint(
 ) -> tuple[str, bytes]:
     try:
         return _read_checkpoint_bytes(path)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         _fail(
             entry=entry,
             field="checkpoint",
@@ -179,13 +179,14 @@ def _consume_checkpoint(
 def _read_utf8(path: Path, *, kind: str) -> str:
     try:
         return path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise BankParseError(
-            f"model-bank: cannot read {kind} {path}: {exc}"
-        ) from exc
     except UnicodeDecodeError as exc:
         raise BankParseError(
             f"model-bank: {kind} {path} is not UTF-8: {exc}"
+        ) from exc
+    except (OSError, ValueError) as exc:
+        # pathlib raises ValueError for an embedded NUL in the path.
+        raise BankParseError(
+            f"model-bank: cannot read {kind} {path}: {exc}"
         ) from exc
 
 
@@ -233,16 +234,16 @@ class ModelBank:
         return tuple(entry.id for entry in self.entries)
 
     def select(self, model_id: str) -> AttestedEntry:
-        """Return one entry, consuming the checkpoint bytes that were hashed.
+        """Return one load-attested entry, consuming those checkpoint bytes.
 
         Only entries that passed load-time attestation are visible. An unknown
         ID is not a silent miss: it names the field. The returned
-        ``checkpoint_bytes`` are the bytes hashed at selection time, so a
-        later replacement of the file cannot change what the caller consumes.
+        ``checkpoint_bytes`` are the bytes hashed at load time, so a later
+        replacement of the file cannot change what the caller consumes.
         """
         for entry in self.entries:
             if entry.id == model_id:
-                return _reaffirm(entry)
+                return entry
         raise BankAttestationError(
             f"model-bank field 'id': not an attested entry: {model_id!r}",
             field="id",
@@ -269,9 +270,17 @@ def load_model_bank(manifest_path: Path | str) -> ModelBank:
         raise BankParseError(
             f"model-bank: top level must be an object, got {type(document).__name__}"
         )
-    root = path.parent.resolve()
+    try:
+        root = path.parent.resolve()
+        resolved_manifest = path.resolve()
+    except (ValueError, RuntimeError, OSError) as exc:
+        raise BankParseError(
+            f"model-bank: cannot resolve manifest {path}: {exc}"
+        ) from exc
     entries = _attest_document(document, root)
-    return ModelBank(manifest_path=path.resolve(), root=root, entries=entries)
+    return ModelBank(
+        manifest_path=resolved_manifest, root=root, entries=entries
+    )
 
 
 def load_shipped_merged_v2_bank() -> ModelBank:
@@ -540,7 +549,7 @@ def _require_checkpoint_file(
 ) -> None:
     try:
         present = path.is_file()
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         _fail(
             entry=entry,
             field="checkpoint",
@@ -552,28 +561,6 @@ def _require_checkpoint_file(
             field="checkpoint",
             message=f"missing file {relative!r}",
         )
-
-
-def _reaffirm(entry: AttestedEntry) -> AttestedEntry:
-    """Selection-time check: consume the bytes that currently match the digest."""
-    _require_checkpoint_file(
-        entry.checkpoint, entry=entry.id, relative=entry.checkpoint_relative
-    )
-    computed, payload = _consume_checkpoint(
-        entry.checkpoint,
-        entry=entry.id,
-        relative=entry.checkpoint_relative,
-    )
-    if computed != entry.checkpoint_digest:
-        _fail(
-            entry=entry.id,
-            field="checkpoint_digest",
-            message=(
-                f"mismatch (declared {entry.checkpoint_digest}, "
-                f"computed {computed})"
-            ),
-        )
-    return replace(entry, checkpoint_bytes=payload)
 
 
 def _require_relative_checkpoint(relative: str, *, entry: str) -> None:
