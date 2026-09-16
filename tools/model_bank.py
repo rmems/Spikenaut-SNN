@@ -24,9 +24,10 @@ Minimum attestation per entry
 
 Bank loading rejects a missing checkpoint, a digest mismatch, a duplicate
 model ID, an empty ``models`` array, an unsupported ``schema_version``, a
-missing required contract ID, and a JSON object with a duplicate key.
-Duplicate keys would otherwise last-win under ``json.loads`` and attest a
-different value than another parser. Errors name the bad entry and field.
+missing required contract ID, a JSON object with a duplicate key, and the
+non-standard constants ``NaN`` / ``Infinity`` / ``-Infinity``. Duplicate
+keys would otherwise last-win under ``json.loads`` and attest a different
+value than another parser. Errors name the bad entry and field.
 
 Verification is path-independent: moving a valid bundle without changing
 bytes still passes, because paths are relative to the manifest and the
@@ -135,6 +136,14 @@ class _DuplicateJsonKeyError(ValueError):
         self.key = key
 
 
+class _NonstandardJsonConstantError(ValueError):
+    """CPython ``json.loads`` would accept NaN/Infinity by default."""
+
+    def __init__(self, token: str) -> None:
+        super().__init__(f"non-standard JSON constant {token!r}")
+        self.token = token
+
+
 def dumps_manifest(document: Mapping[str, Any]) -> str:
     """Stable serialization of a model-bank document.
 
@@ -215,9 +224,17 @@ def _reject_duplicate_object_keys(
     return seen
 
 
+def _reject_nonstandard_json_constant(token: str) -> None:
+    raise _NonstandardJsonConstantError(token)
+
+
 def _parse_json(text: str, *, source: Path) -> Any:
     try:
-        return json.loads(text, object_pairs_hook=_reject_duplicate_object_keys)
+        return json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_object_keys,
+            parse_constant=_reject_nonstandard_json_constant,
+        )
     except json.JSONDecodeError as exc:
         raise BankParseError(
             f"model-bank: invalid JSON in {source}: {exc}"
@@ -225,6 +242,10 @@ def _parse_json(text: str, *, source: Path) -> Any:
     except _DuplicateJsonKeyError as exc:
         raise BankParseError(
             f"model-bank: duplicate object key {exc.key!r} in {source}"
+        ) from exc
+    except _NonstandardJsonConstantError as exc:
+        raise BankParseError(
+            f"model-bank: non-standard JSON constant {exc.token!r} in {source}"
         ) from exc
     except RecursionError as exc:
         # CPython 3.11 json.loads raises RecursionError around ~1000 nested
@@ -447,7 +468,7 @@ def _reject_unknown_keys(
 ) -> None:
     extra = set(mapping) - allowed
     if extra:
-        names = ", ".join(sorted(extra))
+        names = ", ".join(sorted(_escape_error_text(name) for name in extra))
         _fail(
             entry=entry,
             field=min(extra),
@@ -668,6 +689,11 @@ def _require_token(value: Any, *, entry: str, field: str) -> str:
 def _contains_control(value: str) -> bool:
     """True if any character is Unicode category Cc (C0, DEL, or C1)."""
     return any(unicodedata.category(character) == "Cc" for character in value)
+
+
+def _escape_error_text(value: str) -> str:
+    """ASCII-only form of an untrusted string for error messages."""
+    return value.encode("unicode_escape").decode("ascii")
 
 
 def _require_digest(value: Any, *, entry: str, field: str) -> str:

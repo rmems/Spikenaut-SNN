@@ -125,10 +125,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nSELF-TEST FAILED: {exc}", file=sys.stderr)
         return 1
     except BankAttestationError as exc:
-        print(f"FAIL: {exc}", file=sys.stderr)
+        print(f"FAIL: {_report_field(str(exc))}", file=sys.stderr)
         return 1
     except BankParseError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_report_field(str(exc))}", file=sys.stderr)
         return 2
 
 

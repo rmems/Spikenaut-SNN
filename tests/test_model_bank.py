@@ -14,11 +14,13 @@ Standard library only; pytest is an optional runner.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import shutil
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 from tools.model_bank import (
@@ -35,6 +37,7 @@ from tools.model_bank import (
     load_unattested_checkpoint,
     wrap_legacy_checkpoint,
 )
+from tools.verify_model_bank import main
 
 FIXTURE_ROOT = REPO_ROOT / "tools" / "fixtures" / "model_bank"
 VALID = FIXTURE_ROOT / "valid" / MANIFEST_FILENAME
@@ -156,6 +159,55 @@ class ModelBankTests(unittest.TestCase):
                         load_model_bank(dest / MANIFEST_FILENAME)
                     self.assertEqual(caught.exception.field, "id")
                     self.assertIn("control character", str(caught.exception))
+
+    def test_unknown_control_key_is_escaped_on_cli(self) -> None:
+        cases = (
+            ("ESC", "extra\u001b[2J", "\\x1b"),
+            ("LF", "extra\nforged-status", "\\n"),
+        )
+        for name, key, escaped in cases:
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    dest = Path(tmp) / name
+                    shutil.copytree(VALID.parent, dest)
+                    document = json.loads(
+                        (dest / MANIFEST_FILENAME).read_text(encoding="utf-8")
+                    )
+                    document[key] = True
+                    (dest / MANIFEST_FILENAME).write_text(
+                        dumps_manifest(document), encoding="utf-8"
+                    )
+                    stderr = io.StringIO()
+                    with redirect_stderr(stderr):
+                        code = main([str(dest / MANIFEST_FILENAME)])
+                    self.assertEqual(code, 1)
+                    text = stderr.getvalue()
+                    self.assertNotIn("\x1b", text)
+                    self.assertNotIn("\nforged-status", text)
+                    self.assertIn(escaped, text)
+                    self.assertIn("unsupported extra field", text)
+
+    def test_nonstandard_json_constants_are_parse_errors(self) -> None:
+        for token in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(token=token):
+                with tempfile.TemporaryDirectory() as tmp:
+                    dest = Path(tmp)
+                    manifest = dest / MANIFEST_FILENAME
+                    manifest.write_text(
+                        f'{{"schema_version": {token}, "models": []}}',
+                        encoding="utf-8",
+                    )
+                    with self.assertRaises(BankParseError) as caught:
+                        load_model_bank(manifest)
+                    self.assertIn("non-standard JSON constant", str(caught.exception))
+                    self.assertIn(token, str(caught.exception))
+                    checkpoint = dest / "const.json"
+                    checkpoint.write_text(f'{{"v": {token}}}', encoding="utf-8")
+                    with self.assertRaises(BankParseError) as caught_ckpt:
+                        load_unattested_checkpoint(checkpoint)
+                    self.assertIn(
+                        "non-standard JSON constant", str(caught_ckpt.exception)
+                    )
 
     def test_duplicate_json_object_key_is_parse_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
