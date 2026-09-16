@@ -82,7 +82,7 @@ class DecisionConfig:
     ) -> DecisionConfig:
         labels = tuple(vocabulary)
         _validate_config(labels, confidence_floor)
-        return cls(labels, confidence_floor, abstain_on_tie)
+        return cls(labels, float(confidence_floor), abstain_on_tie)
 
     @classmethod
     def shipped(cls) -> DecisionConfig:
@@ -238,12 +238,38 @@ def _validate_config(vocabulary: Sequence[str], confidence_floor: float) -> None
                 label=label,
             )
         seen.append(label)
-    if not math.isfinite(confidence_floor) or not 0.0 <= confidence_floor <= 1.0:
+    _require_confidence_floor(confidence_floor)
+
+
+def _require_confidence_floor(value: object) -> float:
+    """Refuse non-reals, booleans, and values outside finite ``[0, 1]``.
+
+    ``bool`` subclasses ``int``, so ``True`` would otherwise become floor
+    ``1.0``. A string or ``None`` makes ``math.isfinite`` raise
+    ``TypeError``, and ``10**1000`` raises ``OverflowError``. Rust's API
+    is ``f64``, so those must be ``invalid_confidence_floor``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise DecisionError(
             ERROR_INVALID_CONFIDENCE_FLOOR,
-            f"confidence floor {confidence_floor} is not a finite value in [0, 1]",
-            value=confidence_floor,
+            f"confidence floor {value!r} is not a finite value in [0, 1]",
+            value=value,
         )
+    try:
+        number = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise DecisionError(
+            ERROR_INVALID_CONFIDENCE_FLOOR,
+            "confidence floor is not representable as a finite float",
+            value=value,
+        ) from exc
+    if not math.isfinite(number) or not 0.0 <= number <= 1.0:
+        raise DecisionError(
+            ERROR_INVALID_CONFIDENCE_FLOOR,
+            f"confidence floor {number} is not a finite value in [0, 1]",
+            value=number,
+        )
+    return number
 
 
 def _validate_row(row: Sequence[float], expected: int) -> tuple[float, ...]:

@@ -16,6 +16,7 @@ from pathlib import Path
 
 try:
     from .decision_core import (
+        ERROR_INVALID_CONFIDENCE_FLOOR,
         ERROR_INVALID_LABEL,
         ERROR_INVALID_SCORE,
         KIND_PROPOSE,
@@ -38,6 +39,7 @@ try:
     from .q88_core import MEM_OUTPUT, ParseError, SelfTestFailure, parse_mem
 except ImportError:
     from decision_core import (
+        ERROR_INVALID_CONFIDENCE_FLOOR,
         ERROR_INVALID_LABEL,
         ERROR_INVALID_SCORE,
         KIND_PROPOSE,
@@ -300,6 +302,28 @@ def _self_test_vocabulary_types() -> None:
     raise SelfTestFailure("non-string vocabulary was accepted")
 
 
+def _self_test_confidence_floor_types() -> None:
+    for floor in ("0.5", None, True, 10**1000):
+        try:
+            DecisionConfig.new(SHIPPED_VOCABULARY, floor)
+        except DecisionError as exc:
+            if exc.code != ERROR_INVALID_CONFIDENCE_FLOOR:
+                raise SelfTestFailure(
+                    f"confidence floor {floor!r} raised {exc.code}, "
+                    f"expected {ERROR_INVALID_CONFIDENCE_FLOOR}"
+                ) from exc
+            continue
+        except Exception as exc:
+            raise SelfTestFailure(
+                f"confidence floor {floor!r} raised {type(exc).__name__}, "
+                "expected DecisionError"
+            ) from exc
+        raise SelfTestFailure(f"confidence floor {floor!r} was accepted")
+    config = DecisionConfig.new(SHIPPED_VOCABULARY, 0)
+    if config.confidence_floor != 0.0:
+        raise SelfTestFailure("integer confidence floor 0 must remain 0.0")
+
+
 def _self_test_json_mem_parity() -> None:
     model = load_shipped_model()
     entries = parse_mem(MEM_OUTPUT)
@@ -345,6 +369,7 @@ def run_self_test() -> int:
         _self_test_boolean_scores()
         _self_test_unrepresentable_scores()
         _self_test_vocabulary_types()
+        _self_test_confidence_floor_types()
         _self_test_json_mem_parity()
     except SelfTestFailure as exc:
         print(f"FAIL self-test: {exc}")
