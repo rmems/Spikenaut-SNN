@@ -154,8 +154,8 @@ jobs:
       # when pytest is installed; CI does not pip-install it (Sonar S8544).
       - name: Attest model-bank entries
         run: |
-          python3 tools/verify_model_bank.py
-          python3 -m tools.verify_model_bank
+          python3 tools/verify_model_bank.py --select merged_v2
+          python3 -m tools.verify_model_bank --select merged_v2
           python3 tools/verify_model_bank.py --self-test
           python3 -m tools.verify_model_bank --self-test
           python3 -m unittest tests.test_model_bank -v

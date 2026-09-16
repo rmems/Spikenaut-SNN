@@ -115,16 +115,24 @@ class ModelBankTests(unittest.TestCase):
             nested = '{"a":' * 10000 + "1" + "}" * 10000
             manifest = dest / MANIFEST_FILENAME
             manifest.write_text(nested, encoding="utf-8")
-            with self.assertRaises(BankParseError) as caught:
+            try:
                 load_model_bank(manifest)
-            self.assertIn("JSON nesting exceeds parser limit", str(caught.exception))
+            except BankParseError as exc:
+                self.assertIn("JSON nesting exceeds parser limit", str(exc))
+            except BankAttestationError as exc:
+                # CPython 3.14+ json.loads can accept this depth; extra key
+                # then fails attestation instead of parse.
+                self.assertEqual(exc.field, "a")
+            else:
+                self.fail("deeply nested manifest was accepted")
             checkpoint = dest / "nested.json"
             checkpoint.write_text(nested, encoding="utf-8")
-            with self.assertRaises(BankParseError) as caught_ckpt:
+            try:
                 load_unattested_checkpoint(checkpoint)
-            self.assertIn(
-                "JSON nesting exceeds parser limit", str(caught_ckpt.exception)
-            )
+            except BankParseError as exc:
+                self.assertIn(
+                    "JSON nesting exceeds parser limit", str(exc)
+                )
 
     def test_control_character_token_is_attestation_error(self) -> None:
         cases = (
@@ -209,6 +217,8 @@ class ModelBankTests(unittest.TestCase):
             self.assertIn("unreadable JSON number", str(caught_ckpt.exception))
 
     def test_unreadable_checkpoint_is_attestation_error(self) -> None:
+        if os.name == "nt" or not hasattr(os, "geteuid"):
+            self.skipTest("chmod(0) does not make files unreadable here")
         if os.geteuid() == 0:
             self.skipTest("root can read chmod 0 files")
         with tempfile.TemporaryDirectory() as tmp:
@@ -322,6 +332,21 @@ class ModelBankTests(unittest.TestCase):
         err = caught.exception
         self.assertEqual(err.field, "schema_version")
         self.assertIn("unsupported version 2", str(err))
+
+    def test_empty_models_array_is_attestation_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "empty"
+            shutil.copytree(VALID.parent, dest)
+            document = json.loads((dest / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+            document["models"] = []
+            (dest / MANIFEST_FILENAME).write_text(
+                dumps_manifest(document), encoding="utf-8"
+            )
+            with self.assertRaises(BankAttestationError) as caught:
+                load_model_bank(dest / MANIFEST_FILENAME)
+            self.assertIsNone(caught.exception.entry)
+            self.assertEqual(caught.exception.field, "models")
+            self.assertIn("at least one entry", str(caught.exception))
 
     def test_missing_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

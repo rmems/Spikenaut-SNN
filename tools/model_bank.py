@@ -23,10 +23,10 @@ Minimum attestation per entry
 * ``training_dataset_digest`` -- optional, same ``sha256:`` form
 
 Bank loading rejects a missing checkpoint, a digest mismatch, a duplicate
-model ID, an unsupported ``schema_version``, a missing required contract
-ID, and a JSON object with a duplicate key. Duplicate keys would otherwise
-last-win under ``json.loads`` and attest a different value than another
-parser. Errors name the bad entry and field.
+model ID, an empty ``models`` array, an unsupported ``schema_version``, a
+missing required contract ID, and a JSON object with a duplicate key.
+Duplicate keys would otherwise last-win under ``json.loads`` and attest a
+different value than another parser. Errors name the bad entry and field.
 
 Verification is path-independent: moving a valid bundle without changing
 bytes still passes, because paths are relative to the manifest and the
@@ -408,6 +408,8 @@ def _attest_document(
             field="models",
             message=f"must be an array, got {type(models).__name__}",
         )
+    if not models:
+        _fail(field="models", message="must contain at least one entry")
     attested: list[AttestedEntry] = []
     seen: dict[str, int] = {}
     for index, raw in enumerate(models):
