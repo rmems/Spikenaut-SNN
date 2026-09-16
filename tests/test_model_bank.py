@@ -101,7 +101,10 @@ class ModelBankTests(unittest.TestCase):
     def test_nul_loader_paths_are_parse_errors(self) -> None:
         with self.assertRaises(BankParseError) as caught_manifest:
             load_model_bank("model_bank.json\x00")
-        self.assertIn("cannot read", str(caught_manifest.exception))
+        # resolve() runs first; pathlib raises ValueError for an embedded NUL.
+        self.assertRegex(
+            str(caught_manifest.exception), r"cannot read|cannot resolve"
+        )
         with self.assertRaises(BankParseError) as caught_ckpt:
             load_unattested_checkpoint("snn_model.json\x00")
         self.assertIn("cannot read", str(caught_ckpt.exception))
@@ -239,6 +242,26 @@ class ModelBankTests(unittest.TestCase):
             self.assertRegex(
                 str(caught.exception),
                 r"NUL|control character",
+            )
+
+    def test_manifest_symlink_loads_resolved_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            dest = tmp_path / "real"
+            shutil.copytree(VALID.parent, dest)
+            other = tmp_path / "other"
+            other.mkdir()
+            link = other / MANIFEST_FILENAME
+            link.symlink_to(dest / MANIFEST_FILENAME)
+            bank = load_model_bank(link)
+            entry = bank.select("fixture-ok")
+            self.assertEqual(entry.checkpoint_digest, FIXTURE_DIGEST)
+            self.assertEqual(bank.manifest_path, (dest / MANIFEST_FILENAME).resolve())
+            self.assertEqual(bank.root, dest.resolve())
+            self.assertEqual(entry.checkpoint.parent, (dest / "checkpoints").resolve())
+            self.assertEqual(
+                f"sha256:{hashlib.sha256(entry.checkpoint_bytes).hexdigest()}",
+                FIXTURE_DIGEST,
             )
 
     def test_symlink_loop_checkpoint_is_attestation_error(self) -> None:

@@ -294,24 +294,32 @@ class ModelBank:
 def load_model_bank(manifest_path: Path | str) -> ModelBank:
     """Load and attest every entry in ``manifest_path``.
 
+    Checkpoint paths are relative to the resolved manifest file. A symlink
+    to the JSON still loads the bundle next to the opened file rather than
+    next to the link.
+
     # Errors
 
     * :class:`BankParseError` if the file cannot be read or is not JSON
     * :class:`BankAttestationError` if any entry fails attestation
     """
     path = Path(manifest_path)
-    document = _parse_json(_read_utf8(path, kind="manifest"), source=path)
-    if not isinstance(document, dict):
-        raise BankParseError(
-            f"model-bank: top level must be an object, got {type(document).__name__}"
-        )
     try:
-        root = path.parent.resolve()
+        # Resolve the file first so the bytes we parse and the bundle root
+        # that owns checkpoint paths come from the same opened target.
         resolved_manifest = path.resolve()
     except (ValueError, RuntimeError, OSError) as exc:
         raise BankParseError(
             f"model-bank: cannot resolve manifest {path}: {exc}"
         ) from exc
+    root = resolved_manifest.parent
+    document = _parse_json(
+        _read_utf8(resolved_manifest, kind="manifest"), source=resolved_manifest
+    )
+    if not isinstance(document, dict):
+        raise BankParseError(
+            f"model-bank: top level must be an object, got {type(document).__name__}"
+        )
     entries = _attest_document(document, root)
     return ModelBank(
         manifest_path=resolved_manifest, root=root, entries=entries
