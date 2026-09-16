@@ -11,10 +11,20 @@ from __future__ import annotations
 
 import json
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 try:
-    from .decision_core import SHIPPED_VOCABULARY
+    from .decision_core import (
+        ERROR_INVALID_SCORE,
+        KIND_PROPOSE,
+        NEURON_COUNT,
+        OUTPUT_WEIGHT_COUNT,
+        SHIPPED_VOCABULARY,
+        DecisionError,
+        replay_output_row,
+        score_readout,
+    )
     from .decision_pin import (
         _PINNED_METADATA,
         assert_output_json_mem_parity,
@@ -25,7 +35,16 @@ try:
     )
     from .q88_core import MEM_OUTPUT, ParseError, SelfTestFailure, parse_mem
 except ImportError:
-    from decision_core import SHIPPED_VOCABULARY
+    from decision_core import (
+        ERROR_INVALID_SCORE,
+        KIND_PROPOSE,
+        NEURON_COUNT,
+        OUTPUT_WEIGHT_COUNT,
+        SHIPPED_VOCABULARY,
+        DecisionError,
+        replay_output_row,
+        score_readout,
+    )
     from decision_pin import (
         _PINNED_METADATA,
         assert_output_json_mem_parity,
@@ -147,13 +166,103 @@ def _self_test_model_parse_error() -> None:
         try:
             load_pin(huge)
         except ParseError:
-            return
+            pass
         except Exception as exc:
             raise SelfTestFailure(
                 f"load_pin oversized JSON integer raised {type(exc).__name__}, "
                 "expected ParseError"
             ) from exc
-        raise SelfTestFailure("load_pin accepted an oversized JSON integer")
+        else:
+            raise SelfTestFailure("load_pin accepted an oversized JSON integer")
+
+        deep = tmp_path / "deep.json"
+        deep.write_text(_json_text_that_raises_recursion_error(), encoding="utf-8")
+        try:
+            load_shipped_model(deep)
+        except ParseError:
+            pass
+        except Exception as exc:
+            raise SelfTestFailure(
+                f"deeply nested JSON raised {type(exc).__name__}, "
+                "expected ParseError"
+            ) from exc
+        else:
+            raise SelfTestFailure("deeply nested JSON was accepted")
+        try:
+            load_pin(deep)
+        except ParseError:
+            return
+        except Exception as exc:
+            raise SelfTestFailure(
+                f"load_pin deeply nested JSON raised {type(exc).__name__}, "
+                "expected ParseError"
+            ) from exc
+        raise SelfTestFailure("load_pin accepted deeply nested JSON")
+
+
+def _json_text_that_raises_recursion_error() -> str:
+    """A JSON document ``json.loads`` refuses with RecursionError.
+
+    CPython's decoder limit is not ``sys.getrecursionlimit()``. On 3.12 the
+    C scanner accepts about 10k nested arrays; on 3.11 the documented case
+    is about 1k. Search rather than hard-coding a depth that would parse
+    (and then fail only as "expected an object").
+    """
+    depth = 512
+    last = 0
+    while depth <= 1_000_000:
+        text = "[" * depth + "0" + "]" * depth
+        try:
+            json.loads(text)
+        except RecursionError:
+            return text
+        last = depth
+        depth *= 2
+    raise SelfTestFailure(
+        f"json.loads accepted nested arrays through depth {last}; "
+        "could not construct a RecursionError payload"
+    )
+
+
+def _expect_invalid_score(action: Callable[[], object], *, what: str) -> None:
+    try:
+        action()
+    except DecisionError as exc:
+        if exc.code != ERROR_INVALID_SCORE:
+            raise SelfTestFailure(
+                f"{what} raised {exc.code}, expected {ERROR_INVALID_SCORE}"
+            ) from exc
+        return
+    except Exception as exc:
+        raise SelfTestFailure(
+            f"{what} raised {type(exc).__name__}, expected DecisionError"
+        ) from exc
+    raise SelfTestFailure(f"{what} were proposed")
+
+
+def _self_test_boolean_scores() -> None:
+    _expect_invalid_score(
+        lambda: replay_output_row([True, False, False]),
+        what="boolean scores",
+    )
+    _expect_invalid_score(
+        lambda: replay_output_row([0.9, True, 0.1]),
+        what="mixed boolean scores",
+    )
+    weights = [0.0] * OUTPUT_WEIGHT_COUNT
+    weights[0] = True
+    _expect_invalid_score(
+        lambda: score_readout(weights, [False] * NEURON_COUNT),
+        what="boolean readout weights",
+    )
+    decision = replay_output_row([1, 0, 0])
+    if (
+        decision.kind != KIND_PROPOSE
+        or decision.diagnostics.winning_action != "comfort"
+    ):
+        raise SelfTestFailure(
+            "integer scores 1/0/0 must still propose comfort"
+        )
 
 
 def _self_test_json_mem_parity() -> None:
@@ -198,6 +307,7 @@ def run_self_test() -> int:
         _self_test_metadata(reference)
         _self_test_cases(reference)
         _self_test_model_parse_error()
+        _self_test_boolean_scores()
         _self_test_json_mem_parity()
     except SelfTestFailure as exc:
         print(f"FAIL self-test: {exc}")

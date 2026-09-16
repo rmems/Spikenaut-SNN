@@ -53,6 +53,7 @@ ERROR_INVALID_LABEL = "invalid_label"
 ERROR_DUPLICATE_LABEL = "duplicate_label"
 ERROR_INVALID_CONFIDENCE_FLOOR = "invalid_confidence_floor"
 ERROR_DERIVED_NON_FINITE = "derived_non_finite"
+ERROR_INVALID_SCORE = "invalid_score"
 
 
 class DecisionError(ValueError):
@@ -177,6 +178,7 @@ def score_readout(
             got=len(spikes),
             expected=NEURON_COUNT,
         )
+    _require_real_numbers(neuron_major)
     _refuse_non_finite(neuron_major)
     scores = [0.0] * OUTPUT_WIDTH
     for neuron, spiked in enumerate(spikes):
@@ -248,8 +250,27 @@ def _validate_row(row: Sequence[float], expected: int) -> tuple[float, ...]:
             got=len(row),
             expected=expected,
         )
+    _require_real_numbers(row)
     _refuse_non_finite(row)
     return tuple(float(value) for value in row)
+
+
+def _require_real_numbers(values: Sequence[object]) -> None:
+    """Refuse JSON/Python booleans and other non-reals.
+
+    ``bool`` subclasses ``int``, so ``math.isfinite(True)`` is true and
+    ``float(True)`` is ``1.0``. ``replay_output_row([True, False, False])``
+    would otherwise propose ``comfort`` with confidence 1. Rust has no
+    boolean score type, so that would also break the cross-language input
+    contract.
+    """
+    for index, value in enumerate(values):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise DecisionError(
+                ERROR_INVALID_SCORE,
+                f"output score at index {index} is not a real number",
+                index=index,
+            )
 
 
 def _refuse_non_finite(values: Sequence[float]) -> None:

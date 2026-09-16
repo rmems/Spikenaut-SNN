@@ -160,13 +160,18 @@ def _load_json_object(path: Path) -> dict:
     """Decode a JSON object, wrapping decoder failures as ``ParseError``.
 
     CPython 3.11+ raises a bare ``ValueError`` (not ``JSONDecodeError``) for
-    an integer literal longer than ``sys.get_int_max_str_digits()``. That
+    an integer literal longer than ``sys.get_int_max_str_digits()``, and a
+    ``RecursionError`` for a document nested past the decoder limit. Both
     must take the documented status-2 path, same as ``q88_core``.
     """
     try:
         payload = json.loads(read_utf8_text(path))
     except json.JSONDecodeError as exc:
         raise ParseError(f"{path.name}: {exc}") from exc
+    except RecursionError as exc:
+        raise ParseError(
+            f"{path.name}: JSON nesting exceeds decoder limit ({exc})"
+        ) from exc
     except ValueError as exc:
         raise ParseError(f"{path.name}: unreadable JSON number: {exc}") from exc
     if not isinstance(payload, dict):
@@ -177,9 +182,9 @@ def _load_json_object(path: Path) -> dict:
 def load_shipped_model(path: Path = SHIPPED_MODEL) -> dict:
     """Load ``snn_model.json`` as an object, or raise ``ParseError``.
 
-    Missing, unreadable, invalid-UTF-8, malformed JSON, and CPython
-    oversized JSON integers must exit the documented status-2 path.
-    ``decision_parity.main`` only catches ``ParseError``.
+    Missing, unreadable, invalid-UTF-8, malformed JSON, CPython oversized
+    JSON integers, and decoder ``RecursionError`` must exit the documented
+    status-2 path. ``decision_parity.main`` only catches ``ParseError``.
     """
     if not path.is_file():
         raise ParseError(f"missing shipped sidecar: {path}")
