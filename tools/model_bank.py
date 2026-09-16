@@ -148,14 +148,21 @@ def dumps_manifest(document: Mapping[str, Any]) -> str:
     """Stable serialization of a model-bank document.
 
     See the module docstring. The golden fixture must round-trip through this
-    function unchanged.
+    function unchanged. Non-standard ``NaN`` / ``Infinity`` values are
+    rejected so the serializer cannot emit JSON the loader would refuse.
     """
-    return json.dumps(
-        document,
-        indent=2,
-        sort_keys=True,
-        ensure_ascii=True,
-    ) + "\n"
+    try:
+        return json.dumps(
+            document,
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=True,
+            allow_nan=False,
+        ) + "\n"
+    except ValueError as exc:
+        raise BankParseError(
+            f"model-bank: cannot serialize non-standard JSON number: {exc}"
+        ) from exc
 
 
 def digest_file(path: Path) -> str:

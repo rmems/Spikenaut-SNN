@@ -209,6 +209,13 @@ class ModelBankTests(unittest.TestCase):
                         "non-standard JSON constant", str(caught_ckpt.exception)
                     )
 
+    def test_dumps_manifest_rejects_nonstandard_constants(self) -> None:
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                with self.assertRaises(BankParseError) as caught:
+                    dumps_manifest({"v": value})
+                self.assertIn("non-standard JSON number", str(caught.exception))
+
     def test_duplicate_json_object_key_is_parse_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "dupkeys"
