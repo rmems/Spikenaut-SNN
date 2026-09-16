@@ -221,6 +221,17 @@ class ModelBankTests(unittest.TestCase):
             dumps_manifest({"v": {1}})
         self.assertIn("cannot serialize manifest", str(caught.exception))
 
+    def test_dumps_manifest_rejects_excessive_nesting(self) -> None:
+        value: object = 0
+        for _ in range(10000):
+            value = {"nested": value}
+        try:
+            dumps_manifest({"v": value})
+        except BankParseError as exc:
+            self.assertIn("cannot serialize manifest", str(exc))
+        except RecursionError:
+            self.fail("RecursionError leaked from dumps_manifest")
+
     def test_duplicate_json_object_key_is_parse_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "dupkeys"

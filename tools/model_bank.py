@@ -159,7 +159,7 @@ def dumps_manifest(document: Mapping[str, Any]) -> str:
             ensure_ascii=True,
             allow_nan=False,
         ) + "\n"
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, RecursionError) as exc:
         raise BankParseError(
             f"model-bank: cannot serialize manifest: {exc}"
         ) from exc
