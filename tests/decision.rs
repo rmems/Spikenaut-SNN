@@ -480,6 +480,14 @@ fn malformed_rows_do_not_propose() {
         }
         other => panic!("expected DerivedNonFinite, got {other:?}"),
     }
+    let err = replay_output_row(&[f64::MAX, f64::MAX / 2.0, 0.0]).unwrap_err();
+    match err {
+        DecisionError::DerivedNonFinite { margin, confidence } => {
+            assert!(!margin);
+            assert!(confidence);
+        }
+        other => panic!("expected DerivedNonFinite on overflowing denom, got {other:?}"),
+    }
 }
 
 fn read_output_mem() -> Vec<f64> {

@@ -308,18 +308,27 @@ def _margin_and_confidence(
 ) -> tuple[float, float]:
     """Margin and confidence, or fail closed if either overflows.
 
-    Finite scores can still overflow: ``[f64.MAX, -f64.MAX, -f64.MAX]``
-    yields Inf margin and NaN confidence. ``NaN < floor`` is false, so a
-    proposal would leak non-finite diagnostics. Reject those derived
-    values instead of substituting a number.
+    Finite scores can still overflow. ``[f64.MAX, -f64.MAX, -f64.MAX]``
+    yields Inf margin and NaN confidence. ``[f64.MAX, f64.MAX / 2, 0]``
+    keeps a finite margin while ``|winner| + |runner|`` overflows to Inf,
+    so the naive ratio becomes 0.0 and a positive floor would abstain.
+    ``NaN < floor`` is false, so either leak would propose or abstain with
+    the wrong diagnostics. Refuse a non-finite margin, denominator, or
+    confidence instead of substituting a number.
     """
     if runner_up_score is None:
         return 0.0, 1.0
     margin = winning_score - runner_up_score
     denom = abs(winning_score) + abs(runner_up_score)
-    confidence = 0.0 if denom == 0.0 else margin / denom
+    denom_bad = not math.isfinite(denom)
+    if denom_bad:
+        confidence = float("nan")
+    elif denom == 0.0:
+        confidence = 0.0
+    else:
+        confidence = margin / denom
     margin_bad = not math.isfinite(margin)
-    confidence_bad = not math.isfinite(confidence)
+    confidence_bad = denom_bad or not math.isfinite(confidence)
     if margin_bad or confidence_bad:
         raise DecisionError(
             ERROR_DERIVED_NON_FINITE,

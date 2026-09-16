@@ -19,6 +19,7 @@ try:
         _PINNED_METADATA,
         assert_output_json_mem_parity,
         build_pin,
+        load_pin,
         load_shipped_model,
         pin_failures,
     )
@@ -29,6 +30,7 @@ except ImportError:
         _PINNED_METADATA,
         assert_output_json_mem_parity,
         build_pin,
+        load_pin,
         load_shipped_model,
         pin_failures,
     )
@@ -113,18 +115,45 @@ def _self_test_cases(reference: dict) -> None:
 
 def _self_test_model_parse_error() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        bad = Path(tmp) / "snn_model.json"
+        tmp_path = Path(tmp)
+        bad = tmp_path / "snn_model.json"
         bad.write_text("{", encoding="utf-8")
         try:
             load_shipped_model(bad)
         except ParseError:
-            return
+            pass
         except Exception as exc:
             raise SelfTestFailure(
                 f"malformed model JSON raised {type(exc).__name__}, "
                 "expected ParseError"
             ) from exc
-        raise SelfTestFailure("malformed model JSON was accepted")
+        else:
+            raise SelfTestFailure("malformed model JSON was accepted")
+
+        huge = tmp_path / "huge_int.json"
+        huge.write_text('{"n_outputs": 1' + "0" * 5000 + "}", encoding="utf-8")
+        try:
+            load_shipped_model(huge)
+        except ParseError:
+            pass
+        except Exception as exc:
+            raise SelfTestFailure(
+                f"oversized JSON integer raised {type(exc).__name__}, "
+                "expected ParseError"
+            ) from exc
+        else:
+            raise SelfTestFailure("oversized JSON integer was accepted")
+
+        try:
+            load_pin(huge)
+        except ParseError:
+            return
+        except Exception as exc:
+            raise SelfTestFailure(
+                f"load_pin oversized JSON integer raised {type(exc).__name__}, "
+                "expected ParseError"
+            ) from exc
+        raise SelfTestFailure("load_pin accepted an oversized JSON integer")
 
 
 def _self_test_json_mem_parity() -> None:

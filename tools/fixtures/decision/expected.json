@@ -701,6 +701,60 @@
       "confidence": true
     },
     {
+      "name": "overflow_denominator",
+      "row_bits": [
+        "7fefffffffffffff",
+        "7fdfffffffffffff",
+        "0000000000000000"
+      ],
+      "row": [
+        1.7976931348623157e+308,
+        8.988465674311579e+307,
+        0.0
+      ],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.0,
+        "abstain_on_tie": false
+      },
+      "ok": false,
+      "error": "derived_non_finite",
+      "message": "derived confidence is not finite",
+      "margin": false,
+      "confidence": true
+    },
+    {
+      "name": "overflow_denominator_floor",
+      "row_bits": [
+        "7fefffffffffffff",
+        "7fdfffffffffffff",
+        "0000000000000000"
+      ],
+      "row": [
+        1.7976931348623157e+308,
+        8.988465674311579e+307,
+        0.0
+      ],
+      "config": {
+        "vocabulary": [
+          "comfort",
+          "temp",
+          "power"
+        ],
+        "confidence_floor": 0.5,
+        "abstain_on_tie": false
+      },
+      "ok": false,
+      "error": "derived_non_finite",
+      "message": "derived confidence is not finite",
+      "margin": false,
+      "confidence": true
+    },
+    {
       "name": "checkpoint_neuron0_spike",
       "row_bits": [
         "3fd8000000000000",

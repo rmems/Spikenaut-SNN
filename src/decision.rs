@@ -49,10 +49,12 @@
 //! - **Abstention**: confidence strictly below the configured floor, or an
 //!   opted-in tie. The would-be winner stays in the diagnostics.
 //! - **Fail closed**: empty row, width mismatch, any `NaN` / `±Inf` in the
-//!   input, and a finite row whose derived margin or confidence overflows
-//!   to `NaN` / `±Inf` all return [`DecisionError`]. Nothing is substituted,
-//!   and no action is proposed. Same for an invalid config (empty or
-//!   duplicate vocabulary, empty label, non-finite floor outside `[0, 1]`).
+//!   input, a finite row whose derived margin or confidence overflows
+//!   to `NaN` / `±Inf`, and a finite margin whose `|winner| + |runner_up|`
+//!   denominator overflows all return [`DecisionError`]. Nothing is
+//!   substituted, and no action is proposed. Same for an invalid config
+//!   (empty or duplicate vocabulary, empty label, non-finite floor
+//!   outside `[0, 1]`).
 //!
 //! Diagnostics copy the finite scores and the winning index/label. They do
 //! not borrow membrane, weights, or any other mutable model state.
@@ -603,9 +605,20 @@ fn margin_and_confidence(
     };
     let margin = winning_score - runner;
     let denom = winning_score.abs() + runner.abs();
-    let confidence = if denom > 0.0 { margin / denom } else { 0.0 };
+    // Same-sign extremes such as `[f64::MAX, f64::MAX / 2.0]` keep a finite
+    // margin while `|winner| + |runner|` overflows to Inf. `margin / Inf`
+    // is 0.0, which a positive floor would treat as a low-confidence
+    // abstention. Refuse a non-finite denominator instead of substituting.
+    let denom_bad = !denom.is_finite();
+    let confidence = if denom_bad {
+        f64::NAN
+    } else if denom > 0.0 {
+        margin / denom
+    } else {
+        0.0
+    };
     let margin_bad = !margin.is_finite();
-    let confidence_bad = !confidence.is_finite();
+    let confidence_bad = denom_bad || !confidence.is_finite();
     if margin_bad || confidence_bad {
         return Err(DecisionError::DerivedNonFinite {
             margin: margin_bad,
@@ -663,6 +676,25 @@ mod tests {
                 assert!(confidence);
             }
             other => panic!("expected DerivedNonFinite, got {other:?}"),
+        }
+        let err = replay_output_row(&[f64::MAX, f64::MAX / 2.0, 0.0]).unwrap_err();
+        match err {
+            DecisionError::DerivedNonFinite { margin, confidence } => {
+                assert!(!margin);
+                assert!(confidence);
+            }
+            other => panic!("expected DerivedNonFinite on overflowing denom, got {other:?}"),
+        }
+        let floor = DecisionConfig::new(SHIPPED_VOCABULARY, 0.5, false).expect("floor 0.5");
+        let err = decide(&[f64::MAX, f64::MAX / 2.0, 0.0], &floor).unwrap_err();
+        match err {
+            DecisionError::DerivedNonFinite { margin, confidence } => {
+                assert!(!margin);
+                assert!(confidence);
+            }
+            other => panic!(
+                "overflowing denom must not become a low-confidence abstention, got {other:?}"
+            ),
         }
         let ok = replay_output_row(&[f64::MAX, 0.0, 0.0]).expect("MAX vs 0 stays finite");
         assert_eq!(ok.kind, DecisionKind::Propose);

@@ -156,23 +156,34 @@ def _shipped_readout() -> list[float]:
     return [decode_q88(entry.word) for entry in entries]
 
 
-def load_shipped_model(path: Path = SHIPPED_MODEL) -> dict:
-    """Load ``snn_model.json`` as an object, or raise ``ParseError``.
+def _load_json_object(path: Path) -> dict:
+    """Decode a JSON object, wrapping decoder failures as ``ParseError``.
 
-    Missing, unreadable, invalid-UTF-8, and malformed JSON must exit the
-    documented status-2 path. ``decision_parity.main`` only catches
-    ``ParseError``; a raw ``OSError`` / ``UnicodeDecodeError`` /
-    ``JSONDecodeError`` would traceback instead.
+    CPython 3.11+ raises a bare ``ValueError`` (not ``JSONDecodeError``) for
+    an integer literal longer than ``sys.get_int_max_str_digits()``. That
+    must take the documented status-2 path, same as ``q88_core``.
     """
-    if not path.is_file():
-        raise ParseError(f"missing shipped sidecar: {path}")
     try:
         payload = json.loads(read_utf8_text(path))
     except json.JSONDecodeError as exc:
         raise ParseError(f"{path.name}: {exc}") from exc
+    except ValueError as exc:
+        raise ParseError(f"{path.name}: unreadable JSON number: {exc}") from exc
     if not isinstance(payload, dict):
         raise ParseError(f"{path.name}: expected an object")
     return payload
+
+
+def load_shipped_model(path: Path = SHIPPED_MODEL) -> dict:
+    """Load ``snn_model.json`` as an object, or raise ``ParseError``.
+
+    Missing, unreadable, invalid-UTF-8, malformed JSON, and CPython
+    oversized JSON integers must exit the documented status-2 path.
+    ``decision_parity.main`` only catches ``ParseError``.
+    """
+    if not path.is_file():
+        raise ParseError(f"missing shipped sidecar: {path}")
+    return _load_json_object(path)
 
 
 def assert_output_json_mem_parity(model: dict, mem_entries: list) -> None:
@@ -340,6 +351,19 @@ def named_cases() -> list[dict]:
             "overflow_confidence",
             [_F64_MAX, -_F64_MAX, -_F64_MAX],
         ),
+        _finite_case(
+            "overflow_denominator",
+            [_F64_MAX, _F64_MAX / 2.0, 0.0],
+        ),
+        _finite_case(
+            "overflow_denominator_floor",
+            [_F64_MAX, _F64_MAX / 2.0, 0.0],
+            {
+                "vocabulary": list(SHIPPED_VOCABULARY),
+                "confidence_floor": 0.5,
+                "abstain_on_tie": False,
+            },
+        ),
     ]
     cases.extend(_checkpoint_cases())
     return cases
@@ -380,13 +404,9 @@ def write_pin(path: Path = EXPECTED_DECISION) -> dict:
 
 
 def load_pin(path: Path = EXPECTED_DECISION) -> dict:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ParseError(f"{path}: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise ParseError(f"{path.name}: expected an object")
-    return payload
+    if not path.is_file():
+        raise ParseError(f"missing expected pin: {path}")
+    return _load_json_object(path)
 
 
 def pin_failures(reference: dict, pinned: dict) -> list[str]:
