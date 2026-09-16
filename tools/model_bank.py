@@ -20,8 +20,10 @@ Minimum attestation per entry
 * ``training_dataset_digest`` -- optional, same ``sha256:`` form
 
 Bank loading rejects a missing checkpoint, a digest mismatch, a duplicate
-model ID, an unsupported ``schema_version``, and a missing required contract
-ID. Errors name the bad entry and field.
+model ID, an unsupported ``schema_version``, a missing required contract
+ID, and a JSON object with a duplicate key. Duplicate keys would otherwise
+last-win under ``json.loads`` and attest a different value than another
+parser. Errors name the bad entry and field.
 
 Verification is path-independent: moving a valid bundle without changing
 bytes still passes, because paths are relative to the manifest and the
@@ -121,6 +123,14 @@ class BankAttestationError(BankError):
         self.field = field
 
 
+class _DuplicateJsonKeyError(ValueError):
+    """JSON object repeated a key. CPython ``json.loads`` would last-win."""
+
+    def __init__(self, key: str) -> None:
+        super().__init__(f"duplicate object key {key!r}")
+        self.key = key
+
+
 def dumps_manifest(document: Mapping[str, Any]) -> str:
     """Stable serialization of a model-bank document.
 
@@ -190,12 +200,27 @@ def _read_utf8(path: Path, *, kind: str) -> str:
         ) from exc
 
 
+def _reject_duplicate_object_keys(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    seen: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise _DuplicateJsonKeyError(key)
+        seen[key] = value
+    return seen
+
+
 def _parse_json(text: str, *, source: Path) -> Any:
     try:
-        return json.loads(text)
+        return json.loads(text, object_pairs_hook=_reject_duplicate_object_keys)
     except json.JSONDecodeError as exc:
         raise BankParseError(
             f"model-bank: invalid JSON in {source}: {exc}"
+        ) from exc
+    except _DuplicateJsonKeyError as exc:
+        raise BankParseError(
+            f"model-bank: duplicate object key {exc.key!r} in {source}"
         ) from exc
     except ValueError as exc:
         # CPython raises a bare ValueError for an integer literal longer than

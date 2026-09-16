@@ -106,6 +106,46 @@ class ModelBankTests(unittest.TestCase):
             load_unattested_checkpoint("snn_model.json\x00")
         self.assertIn("cannot read", str(caught_ckpt.exception))
 
+    def test_duplicate_json_object_key_is_parse_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "dupkeys"
+            shutil.copytree(VALID.parent, dest)
+            # First digest mismatches; second matches. CPython last-wins would
+            # attest the matching digest and hide the conflicting key.
+            poisoned = (
+                "{\n"
+                '  "models": [\n'
+                "    {\n"
+                '      "checkpoint": "checkpoints/ok.bin",\n'
+                '      "checkpoint_digest":'
+                ' "sha256:' + ("0" * 64) + '",\n'
+                '      "checkpoint_digest": "' + FIXTURE_DIGEST + '",\n'
+                '      "feature_map_id":'
+                f' "{FEATURE_MAP_LIVE_EXP_025}",\n'
+                '      "id": "fixture-ok",\n'
+                '      "numeric_format":'
+                f' "{NUMERIC_FORMAT_Q88}",\n'
+                '      "output_contract_id":'
+                f' "{OUTPUT_CONTRACT_SUPERVISOR_V3_RM1150}"\n'
+                "    }\n"
+                "  ],\n"
+                '  "schema_version": 1\n'
+                "}\n"
+            )
+            (dest / MANIFEST_FILENAME).write_text(poisoned, encoding="utf-8")
+            with self.assertRaises(BankParseError) as caught:
+                load_model_bank(dest / MANIFEST_FILENAME)
+            self.assertIn("duplicate object key", str(caught.exception))
+            self.assertIn("checkpoint_digest", str(caught.exception))
+            checkpoint = dest / "dup.json"
+            checkpoint.write_text(
+                '{"neurons": [], "neurons": []}\n', encoding="utf-8"
+            )
+            with self.assertRaises(BankParseError) as caught_ckpt:
+                load_unattested_checkpoint(checkpoint)
+            self.assertIn("duplicate object key", str(caught_ckpt.exception))
+            self.assertIn("neurons", str(caught_ckpt.exception))
+
     def test_oversized_json_integer_is_parse_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp)

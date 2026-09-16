@@ -14,5 +14,5 @@ assets/fpga_hardware_cat.jpg filter=lfs diff=lfs merge=lfs -text
 # the raw-byte digest, so this is the pin, not only defense in depth. The
 # golden manifests are compared to dumps_manifest byte-for-byte (LF-only).
 snn_model.json text eol=lf
-ok.bin text eol=lf
+tools/fixtures/model_bank/*/checkpoints/ok.bin text eol=lf
 model_bank.json text eol=lf
