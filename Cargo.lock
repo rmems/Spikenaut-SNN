@@ -181,6 +181,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "plasticity-lab"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c94f234f4e2ceba10fbb74b3af72572068e8f818471da9f578ec981b91c24b7"
+dependencies = [
+ "neuromod",
+ "rand",
+ "serde",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -285,6 +297,7 @@ dependencies = [
  "limbic-critic",
  "neuromod",
  "nir-rs",
+ "plasticity-lab",
  "synaptic-wiring",
 ]
 

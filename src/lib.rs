@@ -36,9 +36,10 @@
 //! [`CHANNEL_MAP`]: encode::CHANNEL_MAP
 //! [`LIVE_COLUMNS`]: encode::LIVE_COLUMNS
 //!
-//! Its seven direct dependencies are deliberate: [`nir_rs`],
+//! Its eight direct dependencies are deliberate: [`nir_rs`],
 //! [`axon_encoder`], [`kinetic_signals`], [`neuromod`], `limbic-critic`,
-//! `synaptic-wiring`, and `corpus-ipc`, all from crates.io.
+//! `synaptic-wiring`, `corpus-ipc`, and the optional `plasticity-lab`, all from
+//! crates.io.
 //! The bound is the claim, not the number: `tests/nir_graph.rs` asserts the
 //! manifest's exact *runtime* dependency set, so adopting a crate this library
 //! links against fails that test until the adoption is deliberate. Dev- and
@@ -57,8 +58,10 @@
 //! `neuromod` 0.6 experiments: a caller-seeded non-negative R-STDP network and
 //! a sparse GIF layer. [`critic`] supplies checked TD modulators, [`wiring`]
 //! supplies a deterministic 12:4 Dale recurrent proposal, and [`ipc`] builds
-//! validated versioned messages without transport. None executes or rewrites
-//! the shipped signed bank, Distill, FPGA, or training loops.
+//! validated versioned messages without transport. With the `training` feature,
+//! `training` runs `plasticity-lab` only over that synthetic network. None of
+//! these paths executes or rewrites the shipped signed bank, Distill, or FPGA
+//! artifacts.
 //!
 //! The graph [`load_default_lif_graph`] returns is the shipped `merged_v2`
 //! artifact ([`model::MERGED_V2_PROVENANCE`]): 16-neuron LIF, exp-025 Dale
@@ -124,6 +127,8 @@ pub mod kinetic;
 pub mod model;
 pub mod neuromod_host;
 pub mod stim;
+#[cfg(feature = "training")]
+pub mod training;
 pub mod wiring;
 
 pub use critic::{HostCritic, SupervisorObservation};
@@ -146,6 +151,8 @@ pub use kinetic::{
     KineticFeatures, KineticPipeline, LiveKineticFrontEnd,
 };
 pub use model::{MERGED_V2_PROVENANCE, ModelError, Neuron, SnnModel, is_q8_8, quantize_q8_8};
-pub use neuromod_host::{HostGifLayer, HostLif, HostNetwork};
+pub use neuromod_host::{HOST_NETWORK_INITIAL_WEIGHT, HostGifLayer, HostLif, HostNetwork};
 pub use stim::{LiveStimAdapter, NO_STIMULUS, UNUSED_AXONS};
+#[cfg(feature = "training")]
+pub use training::HostTrainingSession;
 pub use wiring::{DaleMeshConfig, ExperimentalDaleMesh};

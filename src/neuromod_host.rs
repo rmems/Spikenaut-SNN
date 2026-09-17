@@ -138,6 +138,13 @@ impl HostNetwork {
         &mut self.network
     }
 
+    /// Borrow the network and its persistent RNG together for crate-owned
+    /// orchestration layers that must preserve the seeded replay stream.
+    #[cfg(feature = "training")]
+    pub(crate) fn training_parts(&mut self) -> (&mut SpikingNetwork, &mut StdRng) {
+        (&mut self.network, &mut self.rng)
+    }
+
     /// Reset dynamic state, learned weights, traces, and the RNG to the seed.
     pub fn reset(&mut self) {
         let config = self.network.stdp_config;

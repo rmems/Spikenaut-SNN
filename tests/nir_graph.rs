@@ -568,9 +568,10 @@ fn nir_rs_resolves_from_crates_io() {
             "limbic-critic",
             "neuromod",
             "nir-rs",
+            "plasticity-lab",
             "synaptic-wiring",
         ],
-        "`[dependencies]` must declare the seven reviewed registry crates, found: {names:?}",
+        "`[dependencies]` must declare the eight reviewed registry crates, found: {names:?}",
     );
 
     let lock_path: PathBuf = root.join("Cargo.lock");
