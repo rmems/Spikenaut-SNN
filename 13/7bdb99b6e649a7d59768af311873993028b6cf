@@ -1,0 +1,56 @@
+tests/neuromod_06.rs
+  s_353b11f7e8c155::t_ec65a0c17aaec2 1-4,6-139
+tests/neuromod_host.rs
+  s_353b11f7e8c155::t_f34bdd2dc73d0c 39-41,56-57,59-60
+tools/check_model_card.py
+  s_353b11f7e8c155::t_c73871aece9c2f 123-126,131
+tests/wiring_bridge.rs
+  s_353b11f7e8c155::t_36da97deff01b6 1-4,7-93,109-110
+  s_353b11f7e8c155::t_790dc2dbc417be 5-6,94-108
+tests/ipc_bridge.rs
+  s_353b11f7e8c155::t_d6ba5ffd33302e 1-140
+src/ipc.rs
+  s_353b11f7e8c155::t_6333d9cd981add 1-150
+tests/critic_bridge.rs
+  s_353b11f7e8c155::t_790dc2dbc417be 5-6,94-108
+  s_353b11f7e8c155::t_3aa22d054d4ed5 1-4,7-93,109
+src/wiring.rs
+  s_353b11f7e8c155::t_5223c1df7bf8a2 1-75,77-116
+src/lib.rs
+  s_353b11f7e8c155::t_6333d9cd981add 121,140-142
+  s_353b11f7e8c155::t_1af74d1d95f381 118
+  s_353b11f7e8c155::t_750c8e3fbc0b95 149
+  s_353b11f7e8c155::t_7faec50474fc5c 39-41,56-61
+  s_353b11f7e8c155::t_5223c1df7bf8a2 127,151
+src/neuromod_host.rs
+  s_353b11f7e8c155::t_750c8e3fbc0b95 3,5-9,12-15,20,23-37,65,89-103,105-186
+  s_353b11f7e8c155::t_59a8d4665790f3 21-22,104,211
+src/critic.rs
+  s_353b11f7e8c155::t_1af74d1d95f381 1-8,10-21,25-69,75-89
+  s_353b11f7e8c155::t_193da5f64809b3 9,22-24,70-74
+tests/nir_graph.rs
+  s_353b11f7e8c155::t_7faec50474fc5c 558-559,564-573,682-683
+Cargo.toml
+  s_353b11f7e8c155::t_5223c1df7bf8a2 35-37,48
+  s_353b11f7e8c155::t_0d2b46a59fc321 25-27,46
+  s_353b11f7e8c155::t_1af74d1d95f381 32-34,45
+  s_353b11f7e8c155::t_6333d9cd981add 38-40,43
+README.md
+  s_353b11f7e8c155::t_7faec50474fc5c 325-332,339-341,343,448-451,471
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "137bdb99b6e649a7d59768af311873993028b6cf",
+  "prompts": {},
+  "sessions": {
+    "s_353b11f7e8c155": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0ae6a-c05e-77c2-bed9-8ad2ea069ba8",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Raul Cardenas Montoya <montoyaraul34@gmail.com>"
+    }
+  }
+}

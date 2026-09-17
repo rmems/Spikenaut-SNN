@@ -1,0 +1,47 @@
+tests/telemetry_encoding.rs
+  s_353b11f7e8c155::t_1bb7731e00fdc7 667-668
+tools/check_model_card.py
+  s_353b11f7e8c155::t_1bb7731e00fdc7 59,172-208
+src/training.rs
+  s_353b11f7e8c155::t_1bb7731e00fdc7 11-12
+.github/workflows/ci.yml
+  s_353b11f7e8c155::t_1bb7731e00fdc7 63,68-74,80
+tests/plasticity_training.rs
+  s_353b11f7e8c155::t_198ca83b1dfbdc 7-9,85-136
+src/model.rs
+  s_353b11f7e8c155::t_b08d912d0b17b2 119,632
+tests/silicon_export.rs
+  s_353b11f7e8c155::t_da80ada2dd06a1 14-17
+  s_353b11f7e8c155::t_a6ea949f18d3c6 1-13,18-52,54-68
+src/silicon.rs
+  s_353b11f7e8c155::t_b08d912d0b17b2 1-262
+rust-toolchain.toml
+  s_353b11f7e8c155::t_1bb7731e00fdc7 3-6
+README.md
+  s_353b11f7e8c155::t_ed02e73da8cd60 333-334,372-397,407,415,456,511
+src/json.rs
+  s_353b11f7e8c155::t_1bb7731e00fdc7 5-7
+src/lib.rs
+  s_353b11f7e8c155::t_b08d912d0b17b2 132,159-162
+  s_353b11f7e8c155::t_1bb7731e00fdc7 39,41-42,64-66,116-118,165-167
+tests/nir_graph.rs
+  s_353b11f7e8c155::t_1bb7731e00fdc7 572,575,596-601,603-619
+Cargo.toml
+  s_353b11f7e8c155::t_b08d912d0b17b2 48-50,59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "811bb8c43bd9e661bf12697f8162b1ffa33bc341",
+  "prompts": {},
+  "sessions": {
+    "s_353b11f7e8c155": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0ae6a-c05e-77c2-bed9-8ad2ea069ba8",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Raul Cardenas Montoya <montoyaraul34@gmail.com>"
+    }
+  }
+}
