@@ -12,10 +12,11 @@ use std::fmt;
 
 use corpus_ipc::{
     EnvelopeError, IpcMessage, NeuromodulatorSnapshot, SpikeBatch, SpikeEvent, StimulusBatch,
-    Validate, ValidationError, decode_ipc_message_json, encode_ipc_message_json,
+    Validate, ValidationError, WireEnvelope, encode_ipc_message_json,
 };
 
 use crate::encode::CHANNEL_COUNT;
+use crate::neuromod_host::HOST_NETWORK_NEURONS;
 
 /// Correlation and timestamp fields shared by stimulus and spike batches.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,8 +34,7 @@ pub struct IpcBatchContext {
 pub enum IpcBridgeError {
     /// A typed corpus payload violated its validation contract.
     Validation(ValidationError),
-    /// A host neuron index could not be represented by the wire's `u16`
-    /// channel field.
+    /// A neuron index is outside the 16-neuron host network.
     ChannelOutOfRange {
         /// The unrepresentable host index.
         channel: usize,
@@ -48,7 +48,10 @@ impl fmt::Display for IpcBridgeError {
         match self {
             Self::Validation(error) => write!(formatter, "invalid IPC payload: {error}"),
             Self::ChannelOutOfRange { channel } => {
-                write!(formatter, "IPC spike channel {channel} does not fit in u16")
+                write!(
+                    formatter,
+                    "IPC spike channel {channel} is outside host range 0..{HOST_NETWORK_NEURONS}"
+                )
             }
             Self::Envelope(error) => write!(formatter, "invalid IPC envelope: {error}"),
         }
@@ -108,6 +111,9 @@ pub fn spike_message(
     let spikes = fired
         .iter()
         .map(|&channel| {
+            if channel >= HOST_NETWORK_NEURONS {
+                return Err(IpcBridgeError::ChannelOutOfRange { channel });
+            }
             let channel = u16::try_from(channel)
                 .map_err(|_| IpcBridgeError::ChannelOutOfRange { channel })?;
             Ok(SpikeEvent {
@@ -139,12 +145,18 @@ pub fn neuromodulator_message(
     Ok(IpcMessage::Neuromodulators(snapshot))
 }
 
-/// Encode one message in the current versioned JSON wire envelope.
+/// Validate and encode one message in the current versioned JSON wire envelope.
 pub fn encode_ipc_message(message: &IpcMessage) -> Result<Vec<u8>, IpcBridgeError> {
+    message.validate()?;
     Ok(encode_ipc_message_json(message)?)
 }
 
-/// Decode and validate one versioned JSON wire envelope.
+/// Strictly decode and validate one versioned JSON wire envelope.
+///
+/// Legacy unversioned payloads accepted by `corpus-ipc`'s compatibility
+/// decoder are deliberately rejected at this boundary.
 pub fn decode_ipc_message(bytes: &[u8]) -> Result<IpcMessage, IpcBridgeError> {
-    Ok(decode_ipc_message_json(bytes)?)
+    let message = WireEnvelope::<IpcMessage>::decode_json(bytes)?.into_payload();
+    message.validate()?;
+    Ok(message)
 }

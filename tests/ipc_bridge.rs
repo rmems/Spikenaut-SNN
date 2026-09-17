@@ -87,11 +87,20 @@ fn fired_neurons_become_checked_unit_strength_spike_events() {
 }
 
 #[test]
-fn a_spike_channel_that_does_not_fit_u16_is_not_truncated() {
+fn a_large_spike_channel_is_not_truncated() {
     let channel = usize::from(u16::MAX) + 1;
     assert!(matches!(
         spike_message(&context(), 0, &[channel]),
         Err(IpcBridgeError::ChannelOutOfRange { channel: bad }) if bad == channel
+    ));
+}
+
+#[test]
+fn a_spike_channel_outside_the_host_network_is_rejected() {
+    assert!(spike_message(&context(), 0, &[15]).is_ok());
+    assert!(matches!(
+        spike_message(&context(), 0, &[16]),
+        Err(IpcBridgeError::ChannelOutOfRange { channel: 16 })
     ));
 }
 
@@ -118,6 +127,49 @@ fn explicit_ipc_neuromodulators_validate_and_round_trip() {
         neuromodulator_message(invalid),
         Err(IpcBridgeError::Validation(_))
     ));
+}
+
+#[test]
+fn generic_encoding_revalidates_directly_constructed_messages() {
+    let invalid = IpcMessage::Neuromodulators(NeuromodulatorSnapshot {
+        tick: 1,
+        dopamine: 0.0,
+        cortisol: 1.1,
+        acetylcholine: 0.0,
+        tempo: 1.0,
+    });
+    assert!(matches!(
+        encode_ipc_message(&invalid),
+        Err(IpcBridgeError::Validation(_))
+    ));
+}
+
+#[test]
+fn strict_decoder_rejects_legacy_unversioned_messages() {
+    let legacy_unit = br#""Ping""#;
+    let legacy_object = br#"{"Neuromodulators":{"tick":9,"dopamine":0.4,"cortisol":0.2,"acetylcholine":0.7,"tempo":1.25}}"#;
+
+    assert!(matches!(
+        decode_ipc_message(legacy_unit),
+        Err(IpcBridgeError::Envelope(_))
+    ));
+    assert!(matches!(
+        decode_ipc_message(legacy_object),
+        Err(IpcBridgeError::Envelope(_))
+    ));
+}
+
+#[test]
+fn strict_decoder_rejects_unsupported_envelope_versions() {
+    for bytes in [
+        br#"{"wire_version":0,"payload":"Ping"}"#.as_slice(),
+        br#"{"wire_version":2,"payload":"Ping"}"#.as_slice(),
+    ] {
+        assert!(matches!(
+            decode_ipc_message(bytes),
+            Err(IpcBridgeError::Envelope(_))
+        ));
+    }
 }
 
 #[test]

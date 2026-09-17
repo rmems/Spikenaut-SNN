@@ -94,6 +94,22 @@ fn non_finite_observation_reports_its_field() {
 }
 
 #[test]
+fn multiple_non_finite_fields_report_the_first_observation_channel() {
+    let mut critic = HostCritic::new(0.2).unwrap();
+    let all_bad = observation(f32::NAN, f32::INFINITY, f32::NAN, f32::NEG_INFINITY);
+    assert_eq!(
+        critic.assess(&all_bad).unwrap_err().field(),
+        CriticField::Objective
+    );
+
+    let auxiliary_bad = observation(0.0, f32::INFINITY, f32::NAN, f32::NEG_INFINITY);
+    assert_eq!(
+        critic.assess(&auxiliary_bad).unwrap_err().field(),
+        CriticField::Volatility
+    );
+}
+
+#[test]
 fn limbic_critic_resolves_from_the_registry_at_zero_three() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let lock = std::fs::read_to_string(root.join("Cargo.lock")).expect("read Cargo.lock");

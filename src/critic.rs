@@ -67,10 +67,19 @@ impl HostCritic {
         &mut self,
         observation: &SupervisorObservation,
     ) -> Result<NeuroModulators, CriticError> {
-        if let Some(error) =
-            CriticError::from_non_finite(CriticField::Surprise, observation.surprise)
-        {
-            return Err(error);
+        // Preflight every host observation channel in its documented order.
+        // TDCritic validates objective, volatility, and stress itself, but it
+        // intentionally ignores surprise; checking the complete sample here
+        // keeps multi-error reporting deterministic without advancing state.
+        for (field, value) in [
+            (CriticField::Objective, observation.objective),
+            (CriticField::Volatility, observation.volatility),
+            (CriticField::Surprise, observation.surprise),
+            (CriticField::Stress, observation.stress),
+        ] {
+            if let Some(error) = CriticError::from_non_finite(field, value) {
+                return Err(error);
+            }
         }
         let values = self.critic.try_assess(observation)?;
         Ok(NeuroModulators {

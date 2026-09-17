@@ -56,7 +56,7 @@ README = REPO_ROOT / "README.md"
 
 # Guards against a manifest silently emptied or padded by a bad edit. Bump
 # deliberately when a claim is added or retired.
-EXPECTED_CLAIMS = 9
+EXPECTED_CLAIMS = 12
 
 # Historical 1.6 KB is allowed only on a line that also carries this
 # annotation. The spec-table row is forbidden even when annotated.
@@ -129,6 +129,44 @@ CLAIMS: tuple[Claim, ...] = (
             "Published, but **not** a dependency",
             "| LIF engine, learning rules, neuromodulators | crates.io dependency |",
             "| LIF engine, learning rules, neuromodulators | **Declared**",
+        ),
+    ),
+    Claim(
+        name="limbic-critic-is-a-declared-dependency",
+        why=(
+            "Cargo.toml declares limbic-critic from crates.io. The model card "
+            "must name its checked TD adapter and preserve signed dopamine."
+        ),
+        required=(
+            "[`limbic-critic`]",
+            "adapter | **Declared** from crates.io",
+            "preserves signed TD dopamine",
+        ),
+    ),
+    Claim(
+        name="synaptic-wiring-is-a-declared-experiment",
+        why=(
+            "Cargo.toml declares synaptic-wiring from crates.io, but its mesh "
+            "is a parallel recurrent experiment rather than the shipped bank."
+        ),
+        required=(
+            "[`synaptic-wiring`]",
+            "delayed propagation | **Declared** from crates.io",
+            "parallel 16-neuron 12:4 recurrent proposal only",
+        ),
+    ),
+    Claim(
+        name="corpus-ipc-is-typed-and-transport-free",
+        why=(
+            "Cargo.toml declares corpus-ipc with default features disabled. "
+            "The card must not imply a running transport or an automatic "
+            "mapping between different modulator vocabularies."
+        ),
+        required=(
+            "[`corpus-ipc`]",
+            "wire messages | **Declared** from crates.io with transport features disabled",
+            "no ZMQ/server",
+            "no invented mapping",
         ),
     ),
     Claim(

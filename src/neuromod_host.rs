@@ -140,7 +140,9 @@ impl HostNetwork {
 
     /// Reset dynamic state, learned weights, traces, and the RNG to the seed.
     pub fn reset(&mut self) {
+        let config = self.network.stdp_config;
         *self = Self::new(self.seed);
+        self.network.set_rm_stdp_config(config);
     }
 }
 
