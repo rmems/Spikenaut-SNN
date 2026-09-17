@@ -322,17 +322,25 @@ src/                               # Rust, `spikenaut-snn`
                                    # 5-15 at zero); host-side only, FPGA
                                    # parity not blocked; does not replace
                                    # axon-encoder
-├── neuromod_host.rs               # Host-side neuromod 0.5 LifNeuron
-                                   # adapter; does not rewrite weights
+├── neuromod_host.rs               # Host-side neuromod 0.6 experiments:
+                                   # LifNeuron compatibility, seeded
+                                   # non-negative R-STDP network, sparse GIF
+├── critic.rs                      # Checked limbic-critic TD adapter
+├── wiring.rs                      # Deterministic 12:4 Dale recurrent
+                                   # topology experiment; not the bank matrix
+├── ipc.rs                         # Validated corpus-ipc messages;
+                                   # typed JSON only, no transport
 └── json.rs                        # Strict reader, so the dependency list
                                    # stays at what Cargo.toml declares
 ```
 
 The artifacts are the product; the code exists to check them and to hand them
 to consumers in a standard form. The Rust crate still does not run the
-network — `Neuron::membrane_potential` is decoded and never advanced.
+**shipped exp-025 bank** — `Neuron::membrane_potential` is decoded and never
+advanced. `HostNetwork` and `HostGifLayer` are explicitly separate experiments
+with synthetic non-negative weights / GIF dynamics; neither is the bank.
 `stim::LiveStimAdapter` builds the input the network would eat; it does not
-step it.
+step the shipped weights.
 `tools/measure_hamming.py` is the documented exception: it publishes
 float-vs-Q8.8 Hamming on a holdout via a standard-library **keep-LIF**
 stepper in `tools/hamming_core.py`
@@ -437,10 +445,11 @@ Spikenaut-SNN is a weights and model repository that now also carries a thin Rus
 | [`nir-rs`](https://crates.io/crates/nir-rs) 0.4.3 | NIR graph interchange | **Declared** in `Cargo.toml`, resolved from crates.io — [#8](https://github.com/rmems/Spikenaut-SNN/issues/8) |
 | [`kinetic-signals`](https://crates.io/crates/kinetic-signals) 0.4.0 | Causal temporal features (Hurst / Hawkes / surprise / volatility / entropy / EMA-SMA / Z-score / moments) | **Declared** in `Cargo.toml`, resolved from crates.io — host-side preprocessing **upstream of** `axon-encoder`; does not replace it. The kinetic path now encodes against the live 5-col contract (`LiveKineticFrontEnd` → `LiveTelemetryEncoder`, axons 0–4, axons 5–15 at zero), host-side only. FPGA parity is not blocked: software and FPGA should see the same encoded sequence. RAW / KINETIC / HYBRID ablation remains open — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14) |
 | [`axon-encoder`](https://crates.io/crates/axon-encoder) 0.4.0 | Telemetry → spike encoding | **Declared** in `Cargo.toml`, resolved from crates.io — downstream of `kinetic-signals` — [#9](https://github.com/rmems/Spikenaut-SNN/issues/9) |
-| [`neuromod`](https://crates.io/crates/neuromod) 0.5.2 | LIF engine, learning rules, neuromodulators | **Declared** from crates.io — host-side `LifNeuron` adapter only; does not rewrite weights, Distill, FPGA, or training — [#5](https://github.com/rmems/Spikenaut-SNN/issues/5) |
+| [`neuromod`](https://crates.io/crates/neuromod) 0.6.0 | LIF engine, seeded stepping, R-STDP, neuromodulators, sparse GIF | **Declared** from crates.io — `HostLif` compatibility plus parallel `HostNetwork` / `HostGifLayer` experiments; their synthetic non-negative weights are not exp-025 and do not rewrite Distill or FPGA artifacts — [#5](https://github.com/rmems/Spikenaut-SNN/issues/5) |
+| [`limbic-critic`](https://crates.io/crates/limbic-critic) 0.3.0 | Checked TD critic → neuromodulator adapter | **Declared** from crates.io — `HostCritic` uses `try_assess`, preserves signed TD dopamine, and keeps domain reward collection outside — [#10](https://github.com/rmems/Spikenaut-SNN/issues/10) |
+| [`synaptic-wiring`](https://crates.io/crates/synaptic-wiring) 0.3.0 | Deterministic topology, Dale polarity, delayed propagation | **Declared** from crates.io — parallel 16-neuron 12:4 recurrent proposal only; it does not reinterpret the shipped dense input matrix or change `.mem` layout — [#16](https://github.com/rmems/Spikenaut-SNN/issues/16) |
+| [`corpus-ipc`](https://crates.io/crates/corpus-ipc) 0.1.0 | Versioned stimulus, spike, and modulator wire messages | **Declared** from crates.io with transport features disabled — validated typed JSON only; no ZMQ/server, and no invented mapping between the two crates' different modulator vocabularies |
 | `silicon-bridge` | Q8.8 `.mem` export | Dependency once published — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
-| `synaptic-mesh` | Dale 80:20 polarity, 16-channel router | Dependency once published — [#16](https://github.com/rmems/Spikenaut-SNN/issues/16) |
-| `limbic-critic` | TD critic → neuromodulator adapter | Optional dependency once published — [#10](https://github.com/rmems/Spikenaut-SNN/issues/10) |
 | `plasticity-lab` | Reproducible training loops | Only once it actually writes weight deltas — [#17](https://github.com/rmems/Spikenaut-SNN/issues/17) |
 | `brainstem-daemon` | 1 kHz headless inference host | **Peer process, not a dependency** — [#11](https://github.com/rmems/Spikenaut-SNN/issues/11) |
 | `thalamic-relay` | NVML supervisor, 85 °C / 350 W brake | **Peer process, not a dependency** — [#12](https://github.com/rmems/Spikenaut-SNN/issues/12) |
@@ -459,7 +468,7 @@ As of the right now the weights are a mess, merged_v2 is where I am going to con
 
 ## Related
 
-- **Limen-Neural** — [github.com/Limen-Neural](https://github.com/Limen-Neural) (runtime and learning-rule crates: `neuromod`, `nir-rs`, `axon-encoder`, `synaptic-mesh`, `plasticity-lab`, `brainstem-daemon`). The FPGA-export and training repos named elsewhere in this document — `silicon-bridge`, `silicon-hdl`, `kinetic-signals`, `limbic-critic`, `thalamic-relay`, `SynapticDistill.jl` — have moved to [github.com/rmems](https://github.com/rmems); the old org paths only 301-redirect.
+- **Limen-Neural** — [github.com/Limen-Neural](https://github.com/Limen-Neural) (runtime and learning-rule crates include `neuromod`, `nir-rs`, `axon-encoder`, `synaptic-wiring`, `limbic-critic`, `corpus-ipc`, `plasticity-lab`, and `brainstem-daemon`). The FPGA-export and training peers named elsewhere remain separate repositories.
 - **Telemetry** — [rmems/Spikenaut-SNN-Telemetry](https://huggingface.co/datasets/rmems/Spikenaut-SNN-Telemetry)
 - **Q8.8 export** — [silicon-bridge](https://github.com/rmems/silicon-bridge)
 - **Research program** — [Artificial Interoception / Neuromorphic Supervisor](https://github.com/rmems/Spikenaut-SNN/issues/7)

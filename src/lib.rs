@@ -36,8 +36,9 @@
 //! [`CHANNEL_MAP`]: encode::CHANNEL_MAP
 //! [`LIVE_COLUMNS`]: encode::LIVE_COLUMNS
 //!
-//! Its dependency list is deliberately minimal -- currently [`nir_rs`],
-//! [`axon_encoder`], [`kinetic_signals`], and [`neuromod`], all from crates.io.
+//! Its seven direct dependencies are deliberate: [`nir_rs`],
+//! [`axon_encoder`], [`kinetic_signals`], [`neuromod`], `limbic-critic`,
+//! `synaptic-wiring`, and `corpus-ipc`, all from crates.io.
 //! The bound is the claim, not the number: `tests/nir_graph.rs` asserts the
 //! manifest's exact *runtime* dependency set, so adopting a crate this library
 //! links against fails that test until the adoption is deliberate. Dev- and
@@ -52,10 +53,12 @@
 //! features come back as audit data; which of them — if any — earns an axon is
 //! the RAW / KINETIC / HYBRID ablation, which stays open.
 //!
-//! [`neuromod_host`] is a thin host-side adapter over published `neuromod`
-//! 0.5.x `LifNeuron`. It constructs and steps a real crates.io type so the
-//! dependency is load-bearing. It does not rewrite shipped weights, Distill,
-//! FPGA, or training loops.
+//! [`neuromod_host`] preserves the thin `LifNeuron` adapter and adds parallel
+//! `neuromod` 0.6 experiments: a caller-seeded non-negative R-STDP network and
+//! a sparse GIF layer. [`critic`] supplies checked TD modulators, [`wiring`]
+//! supplies a deterministic 12:4 Dale recurrent proposal, and [`ipc`] builds
+//! validated versioned messages without transport. None executes or rewrites
+//! the shipped signed bank, Distill, FPGA, or training loops.
 //!
 //! The graph [`load_default_lif_graph`] returns is the shipped `merged_v2`
 //! artifact ([`model::MERGED_V2_PROVENANCE`]): 16-neuron LIF, exp-025 Dale
@@ -112,14 +115,18 @@
 
 #![warn(missing_docs)]
 
+pub mod critic;
 pub mod encode;
 pub mod graph;
+pub mod ipc;
 pub mod json;
 pub mod kinetic;
 pub mod model;
 pub mod neuromod_host;
 pub mod stim;
+pub mod wiring;
 
+pub use critic::{HostCritic, SupervisorObservation};
 pub use encode::{
     CHANNEL_COUNT, LIVE_COLUMNS, LIVE_LEGAL_COLUMNS, LiveMapMismatch, LiveTelemetryEncoder,
     NonFiniteFrame, NonFiniteLiveFrame, SpikeModalityMismatch,
@@ -130,10 +137,15 @@ pub use graph::{
     Provenance, build_lif_graph, build_lif_graph_with_provenance, load_default_lif_graph,
     resistance_from_decay,
 };
+pub use ipc::{
+    IpcBatchContext, IpcBridgeError, decode_ipc_message, encode_ipc_message,
+    neuromodulator_message, spike_message, stimulus_message,
+};
 pub use kinetic::{
     ClockMismatch, KINETIC_DT_SECONDS, KINETIC_SIGNALS_CRATE_VERSION, KineticError,
     KineticFeatures, KineticPipeline, LiveKineticFrontEnd,
 };
 pub use model::{MERGED_V2_PROVENANCE, ModelError, Neuron, SnnModel, is_q8_8, quantize_q8_8};
-pub use neuromod_host::HostLif;
+pub use neuromod_host::{HostGifLayer, HostLif, HostNetwork};
 pub use stim::{LiveStimAdapter, NO_STIMULUS, UNUSED_AXONS};
+pub use wiring::{DaleMeshConfig, ExperimentalDaleMesh};

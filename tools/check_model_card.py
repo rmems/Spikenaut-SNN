@@ -120,11 +120,15 @@ CLAIMS: tuple[Claim, ...] = (
         ),
         required=(
             "[`neuromod`]",
-            "| LIF engine, learning rules, neuromodulators | **Declared**",
+            (
+                "| LIF engine, seeded stepping, R-STDP, neuromodulators, "
+                "sparse GIF | **Declared**"
+            ),
         ),
         forbidden=(
             "Published, but **not** a dependency",
             "| LIF engine, learning rules, neuromodulators | crates.io dependency |",
+            "| LIF engine, learning rules, neuromodulators | **Declared**",
         ),
     ),
     Claim(

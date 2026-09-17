@@ -555,15 +555,22 @@ fn nir_rs_resolves_from_crates_io() {
             "no dependency in any table may be pinned with `{forbidden}`, found in:\n{dependencies}",
         );
     }
-    // The allowed set is exact, so a third dependency (issue #9 added
-    // `axon-encoder`) or a rename still fails here. Sorted, so the manifest's
-    // declaration order is not part of the contract.
+    // The allowed set is exact, so an undeclared addition or a rename still
+    // fails here. Sorted, so declaration order is not part of the contract.
     let mut names = runtime.clone();
     names.sort_unstable();
     assert_eq!(
         names,
-        ["axon-encoder", "kinetic-signals", "neuromod", "nir-rs"],
-        "`[dependencies]` must declare exactly axon-encoder, kinetic-signals, neuromod and nir-rs, found: {names:?}",
+        [
+            "axon-encoder",
+            "corpus-ipc",
+            "kinetic-signals",
+            "limbic-critic",
+            "neuromod",
+            "nir-rs",
+            "synaptic-wiring",
+        ],
+        "`[dependencies]` must declare the seven reviewed registry crates, found: {names:?}",
     );
 
     let lock_path: PathBuf = root.join("Cargo.lock");
@@ -672,9 +679,8 @@ fn off_grid_public_parameters_are_rejected() {
 /// This does not police the prose, and should not be read as if it did. A row
 /// that implies a dependency without using the marker reads as a
 /// non-dependency here and passes. The marker is what this test makes
-/// load-bearing; the wording around it is review's job. `neuromod` is now a
-/// **Declared** crates.io dependency (issue #5); a row that dropped the
-/// marker would fail the set equality below.
+/// load-bearing; the wording around it is review's job. A row that drops the
+/// marker fails the set equality below.
 #[test]
 fn the_readme_dependency_table_agrees_with_the_manifest() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
