@@ -52,8 +52,10 @@ ERROR_EMPTY_VOCABULARY = "empty_vocabulary"
 ERROR_INVALID_LABEL = "invalid_label"
 ERROR_DUPLICATE_LABEL = "duplicate_label"
 ERROR_INVALID_CONFIDENCE_FLOOR = "invalid_confidence_floor"
+ERROR_INVALID_ABSTAIN_ON_TIE = "invalid_abstain_on_tie"
 ERROR_DERIVED_NON_FINITE = "derived_non_finite"
 ERROR_INVALID_SCORE = "invalid_score"
+ERROR_INVALID_SPIKE = "invalid_spike"
 
 
 class DecisionError(ValueError):
@@ -81,8 +83,8 @@ class DecisionConfig:
         abstain_on_tie: bool = False,
     ) -> DecisionConfig:
         labels = tuple(vocabulary)
-        _validate_config(labels, confidence_floor)
-        return cls(labels, float(confidence_floor), abstain_on_tie)
+        floor, flag = _validate_config(labels, confidence_floor, abstain_on_tie)
+        return cls(labels, floor, flag)
 
     @classmethod
     def shipped(cls) -> DecisionConfig:
@@ -114,7 +116,9 @@ class Decision:
 
 def decide(row: Sequence[float], config: DecisionConfig) -> Decision:
     """Generic conversion. Replay of the shipped bank uses ``replay_output_row``."""
-    _validate_config(config.vocabulary, config.confidence_floor)
+    _floor, abstain_on_tie = _validate_config(
+        config.vocabulary, config.confidence_floor, config.abstain_on_tie
+    )
     scores = _validate_row(row, config.width())
     winning_index, runner_up_index, tied = _pick_winner(scores)
     winning_score = scores[winning_index]
@@ -131,7 +135,7 @@ def decide(row: Sequence[float], config: DecisionConfig) -> Decision:
         tied=tied,
         scores=scores,
     )
-    if tied and config.abstain_on_tie:
+    if tied and abstain_on_tie:
         return Decision(KIND_ABSTAIN, REASON_TIE, diagnostics)
     if confidence < config.confidence_floor:
         return Decision(KIND_ABSTAIN, REASON_LOW_CONFIDENCE, diagnostics)
@@ -180,13 +184,15 @@ def score_readout(
         )
     weights = _coerce_real_numbers(neuron_major)
     _refuse_non_finite(weights)
+    flags = _require_spike_flags(spikes)
     scores = [0.0] * OUTPUT_WIDTH
-    for neuron, spiked in enumerate(spikes):
+    for neuron, spiked in enumerate(flags):
         if not spiked:
             continue
         base = neuron * OUTPUT_WIDTH
         for channel in range(OUTPUT_WIDTH):
             scores[channel] += weights[base + channel]
+    _refuse_non_finite(scores)
     return tuple(scores)
 
 
@@ -214,7 +220,11 @@ def error_as_dict(exc: DecisionError) -> dict:
     return payload
 
 
-def _validate_config(vocabulary: Sequence[str], confidence_floor: float) -> None:
+def _validate_config(
+    vocabulary: Sequence[object],
+    confidence_floor: object,
+    abstain_on_tie: object,
+) -> tuple[float, bool]:
     if len(vocabulary) == 0:
         raise DecisionError(ERROR_EMPTY_VOCABULARY, "decision vocabulary is empty")
     seen: list[str] = []
@@ -238,7 +248,34 @@ def _validate_config(vocabulary: Sequence[str], confidence_floor: float) -> None
                 label=label,
             )
         seen.append(label)
-    _require_confidence_floor(confidence_floor)
+    floor = _require_confidence_floor(confidence_floor)
+    flag = _require_abstain_on_tie(abstain_on_tie)
+    return floor, flag
+
+
+def _require_abstain_on_tie(value: object) -> bool:
+    """Refuse non-bools. ``\"false\"`` is truthy and would abstain on ties."""
+    if not isinstance(value, bool):
+        raise DecisionError(
+            ERROR_INVALID_ABSTAIN_ON_TIE,
+            f"abstain_on_tie {value!r} is not a boolean",
+            value=value,
+        )
+    return value
+
+
+def _require_spike_flags(values: Sequence[object]) -> tuple[bool, ...]:
+    """Refuse non-bools. ``\"false\"`` or ``2`` would otherwise count as spikes."""
+    flags: list[bool] = []
+    for index, value in enumerate(values):
+        if not isinstance(value, bool):
+            raise DecisionError(
+                ERROR_INVALID_SPIKE,
+                f"spike flag at index {index} is not a boolean",
+                index=index,
+            )
+        flags.append(value)
+    return tuple(flags)
 
 
 def _require_confidence_floor(value: object) -> float:

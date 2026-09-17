@@ -488,6 +488,18 @@ fn malformed_rows_do_not_propose() {
         }
         other => panic!("expected DerivedNonFinite on overflowing denom, got {other:?}"),
     }
+    let mut weights = vec![0.0; OUTPUT_WEIGHT_COUNT];
+    weights[0] = f64::MAX;
+    weights[OUTPUT_WIDTH] = f64::MAX;
+    let neuron_count = OUTPUT_WEIGHT_COUNT / OUTPUT_WIDTH;
+    let mut spikes = vec![false; neuron_count];
+    spikes[0] = true;
+    spikes[1] = true;
+    let err = score_readout(&weights, &spikes).unwrap_err();
+    match err {
+        DecisionError::NonFinite { indices } => assert_eq!(indices, [0]),
+        other => panic!("expected NonFinite on overflowing readout, got {other:?}"),
+    }
 }
 
 fn read_output_mem() -> Vec<f64> {

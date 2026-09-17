@@ -50,8 +50,9 @@
 //!   opted-in tie. The would-be winner stays in the diagnostics.
 //! - **Fail closed**: empty row, width mismatch, any `NaN` / `±Inf` in the
 //!   input, a finite row whose derived margin or confidence overflows
-//!   to `NaN` / `±Inf`, and a finite margin whose `|winner| + |runner_up|`
-//!   denominator overflows all return [`DecisionError`]. Nothing is
+//!   to `NaN` / `±Inf`, a finite margin whose `|winner| + |runner_up|`
+//!   denominator overflows, and a readout whose accumulated channel
+//!   sums overflow all return [`DecisionError`]. Nothing is
 //!   substituted, and no action is proposed. Same for an invalid config
 //!   (empty or duplicate vocabulary, empty label, non-finite floor
 //!   outside `[0, 1]`).
@@ -465,7 +466,8 @@ pub fn replay_tick(neuron_major: &[f64], spikes: &[bool]) -> Result<Decision, De
 /// # Errors
 ///
 /// Empty weights, a length other than [`OUTPUT_WEIGHT_COUNT`], a spike
-/// vector other than [`NEURON_COUNT`] long, or any non-finite weight.
+/// vector other than [`NEURON_COUNT`] long, any non-finite weight, or a
+/// finite image whose accumulated channel sums overflow to `NaN` / `±Inf`.
 pub fn score_readout(
     neuron_major: &[f64],
     spikes: &[bool],
@@ -496,6 +498,7 @@ pub fn score_readout(
             *score += neuron_major[base + channel];
         }
     }
+    refuse_non_finite(&scores)?;
     Ok(scores)
 }
 
@@ -701,5 +704,25 @@ mod tests {
         assert_eq!(ok.diagnostics.winning_index, 0);
         assert_eq!(ok.diagnostics.confidence, 1.0);
         assert!(ok.diagnostics.margin.is_finite());
+    }
+
+    #[test]
+    fn overflow_readout_fails_closed() {
+        let mut weights = [0.0; OUTPUT_WEIGHT_COUNT];
+        weights[0] = f64::MAX;
+        weights[OUTPUT_WIDTH] = f64::MAX;
+        let mut spikes = [false; NEURON_COUNT];
+        spikes[0] = true;
+        spikes[1] = true;
+        let err = score_readout(&weights, &spikes).unwrap_err();
+        match err {
+            DecisionError::NonFinite { indices } => assert_eq!(indices, [0]),
+            other => panic!("expected NonFinite on overflowing readout, got {other:?}"),
+        }
+        let replayed = replay_tick(&weights, &spikes).unwrap_err();
+        match replayed {
+            DecisionError::NonFinite { indices } => assert_eq!(indices, [0]),
+            other => panic!("replay_tick must fail closed on overflowing readout, got {other:?}"),
+        }
     }
 }

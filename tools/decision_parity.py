@@ -85,10 +85,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.self_test:
-        return run_self_test()
-
     try:
+        if args.self_test:
+            return run_self_test()
         reference = build_pin()
         if args.write:
             write_pin()

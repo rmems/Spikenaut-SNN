@@ -16,15 +16,20 @@ from pathlib import Path
 
 try:
     from .decision_core import (
+        ERROR_INVALID_ABSTAIN_ON_TIE,
         ERROR_INVALID_CONFIDENCE_FLOOR,
         ERROR_INVALID_LABEL,
         ERROR_INVALID_SCORE,
+        ERROR_INVALID_SPIKE,
+        ERROR_NON_FINITE,
         KIND_PROPOSE,
         NEURON_COUNT,
         OUTPUT_WEIGHT_COUNT,
+        OUTPUT_WIDTH,
         SHIPPED_VOCABULARY,
         DecisionConfig,
         DecisionError,
+        decide,
         replay_output_row,
         score_readout,
     )
@@ -39,15 +44,20 @@ try:
     from .q88_core import MEM_OUTPUT, ParseError, SelfTestFailure, parse_mem
 except ImportError:
     from decision_core import (
+        ERROR_INVALID_ABSTAIN_ON_TIE,
         ERROR_INVALID_CONFIDENCE_FLOOR,
         ERROR_INVALID_LABEL,
         ERROR_INVALID_SCORE,
+        ERROR_INVALID_SPIKE,
+        ERROR_NON_FINITE,
         KIND_PROPOSE,
         NEURON_COUNT,
         OUTPUT_WEIGHT_COUNT,
+        OUTPUT_WIDTH,
         SHIPPED_VOCABULARY,
         DecisionConfig,
         DecisionError,
+        decide,
         replay_output_row,
         score_readout,
     )
@@ -327,6 +337,88 @@ def _self_test_confidence_floor_types() -> None:
         raise SelfTestFailure("integer confidence floor 0 must remain 0.0")
 
 
+def _expect_code(
+    action: Callable[[], object], *, code: str, what: str
+) -> None:
+    try:
+        action()
+    except DecisionError as exc:
+        if exc.code != code:
+            raise SelfTestFailure(
+                f"{what} raised {exc.code}, expected {code}"
+            ) from exc
+        return
+    except Exception as exc:
+        raise SelfTestFailure(
+            f"{what} raised {type(exc).__name__}, expected DecisionError"
+        ) from exc
+    raise SelfTestFailure(f"{what} was accepted")
+
+
+def _self_test_abstain_on_tie_types() -> None:
+    for flag in ("false", None, 1, 0):
+        _expect_code(
+            lambda flag=flag: DecisionConfig.new(SHIPPED_VOCABULARY, 0.0, flag),
+            code=ERROR_INVALID_ABSTAIN_ON_TIE,
+            what=f"abstain_on_tie {flag!r}",
+        )
+    proposing = DecisionConfig.new(SHIPPED_VOCABULARY, 0.0, False)
+    abstaining = DecisionConfig.new(SHIPPED_VOCABULARY, 0.0, True)
+    tied = [0.4, 0.4, 0.4]
+    proposed = decide(tied, proposing)
+    if proposed.kind != KIND_PROPOSE:
+        raise SelfTestFailure("abstain_on_tie False must still propose a tie")
+    held = decide(tied, abstaining)
+    if held.kind != "abstain":
+        raise SelfTestFailure("abstain_on_tie True must abstain on a tie")
+    leaked = DecisionConfig(SHIPPED_VOCABULARY, 0.0, "false")  # type: ignore[arg-type]
+    _expect_code(
+        lambda: decide(tied, leaked),
+        code=ERROR_INVALID_ABSTAIN_ON_TIE,
+        what="dataclass abstain_on_tie 'false'",
+    )
+
+
+def _self_test_spike_types() -> None:
+    weights = [0.0] * OUTPUT_WEIGHT_COUNT
+    weights[0] = 1.0
+    silent = [False] * NEURON_COUNT
+    _expect_code(
+        lambda: score_readout(weights, ["false"] * NEURON_COUNT),
+        code=ERROR_INVALID_SPIKE,
+        what="string spike flags",
+    )
+    _expect_code(
+        lambda: score_readout(weights, [1] * NEURON_COUNT),
+        code=ERROR_INVALID_SPIKE,
+        what="integer spike flags",
+    )
+    active = [True] + silent[1:]
+    row = score_readout(weights, active)
+    if row != (1.0, 0.0, 0.0):
+        raise SelfTestFailure(f"boolean True spike must score (1,0,0), got {row}")
+
+
+def _self_test_overflow_readout() -> None:
+    weights = [0.0] * OUTPUT_WEIGHT_COUNT
+    weights[0] = 1.7976931348623157e308
+    weights[OUTPUT_WIDTH] = 1.7976931348623157e308
+    spikes = [True, True] + [False] * (NEURON_COUNT - 2)
+    try:
+        score_readout(weights, spikes)
+    except DecisionError as exc:
+        if exc.code != ERROR_NON_FINITE:
+            raise SelfTestFailure(
+                f"overflowing readout raised {exc.code}, expected {ERROR_NON_FINITE}"
+            ) from exc
+        return
+    except Exception as exc:
+        raise SelfTestFailure(
+            f"overflowing readout raised {type(exc).__name__}, expected DecisionError"
+        ) from exc
+    raise SelfTestFailure("overflowing readout returned a finite row")
+
+
 def _self_test_json_mem_parity() -> None:
     model = load_shipped_model()
     entries = parse_mem(MEM_OUTPUT)
@@ -364,8 +456,8 @@ def _self_test_json_mem_parity() -> None:
 
 
 def run_self_test() -> int:
-    reference = build_pin()
     try:
+        reference = build_pin()
         _self_test_metadata(reference)
         _self_test_cases(reference)
         _self_test_model_parse_error()
@@ -373,6 +465,9 @@ def run_self_test() -> int:
         _self_test_unrepresentable_scores()
         _self_test_vocabulary_types()
         _self_test_confidence_floor_types()
+        _self_test_abstain_on_tie_types()
+        _self_test_spike_types()
+        _self_test_overflow_readout()
         _self_test_json_mem_parity()
     except SelfTestFailure as exc:
         print(f"FAIL self-test: {exc}")
