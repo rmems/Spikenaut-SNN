@@ -129,11 +129,36 @@ pub fn export_shipped_fpga_image() -> Result<ShippedFpgaImage, SiliconExportErro
     let model = SnnModel::load_default()?;
     let (readout_n_by_k, inhibitory) = shipped_readout()?;
     let neurons = model.len();
-    let outputs = readout_n_by_k
+    let outputs = readout_width(&readout_n_by_k)?;
+    let (thresholds, weights, decay_rates) = model_parameters(&model);
+    let readout_k_by_n = transpose_for_exporter(&readout_n_by_k, neurons, outputs);
+
+    let mut exporter = FpgaParameterExporter::from_params(thresholds, weights, decay_rates);
+    exporter.set_output_weights(readout_k_by_n);
+    let parameters = exporter.try_export()?;
+    let encoded_k_by_n = parameters
+        .output_weights
+        .ok_or_else(|| schema("silicon-bridge omitted the required readout block"))?;
+
+    Ok(ShippedFpgaImage {
+        thresholds: parameters.thresholds,
+        weights: parameters.weights,
+        decay_rates: parameters.decay_rates,
+        output_weights: restore_neuron_major(&encoded_k_by_n, neurons, outputs),
+        inhibitory,
+    })
+}
+
+type FloatParameters = (Vec<f32>, Vec<Vec<f32>>, Vec<f32>);
+
+fn readout_width(readout: &[Vec<f32>]) -> Result<usize, SiliconExportError> {
+    readout
         .first()
         .map(Vec::len)
-        .ok_or_else(|| schema("the shipped readout has no neuron rows"))?;
+        .ok_or_else(|| schema("the shipped readout has no neuron rows"))
+}
 
+fn model_parameters(model: &SnnModel) -> FloatParameters {
     let thresholds = model
         .neurons
         .iter()
@@ -149,103 +174,123 @@ pub fn export_shipped_fpga_image() -> Result<ShippedFpgaImage, SiliconExportErro
         .iter()
         .map(|neuron| neuron.decay_rate as f32)
         .collect();
+    (thresholds, weights, decay_rates)
+}
 
-    let mut readout_k_by_n = vec![vec![0.0_f32; neurons]; outputs];
-    for (neuron, row) in readout_n_by_k.iter().enumerate() {
+fn transpose_for_exporter(
+    neuron_major: &[Vec<f32>],
+    neurons: usize,
+    outputs: usize,
+) -> Vec<Vec<f32>> {
+    let mut exporter_order = vec![vec![0.0_f32; neurons]; outputs];
+    for (neuron, row) in neuron_major.iter().enumerate() {
         for (output, &value) in row.iter().enumerate() {
-            readout_k_by_n[output][neuron] = value;
+            exporter_order[output][neuron] = value;
         }
     }
+    exporter_order
+}
 
-    let mut exporter = FpgaParameterExporter::from_params(thresholds, weights, decay_rates);
-    exporter.set_output_weights(readout_k_by_n);
-    let parameters = exporter.try_export()?;
-    let encoded_k_by_n = parameters
-        .output_weights
-        .ok_or_else(|| schema("silicon-bridge omitted the required readout block"))?;
-
-    let mut output_weights = Vec::with_capacity(neurons * outputs);
+fn restore_neuron_major(exporter_order: &[i16], neurons: usize, outputs: usize) -> Vec<i16> {
+    let mut neuron_major = Vec::with_capacity(neurons * outputs);
     for neuron in 0..neurons {
         for output in 0..outputs {
-            output_weights.push(encoded_k_by_n[output * neurons + neuron]);
+            neuron_major.push(exporter_order[output * neurons + neuron]);
         }
     }
-
-    Ok(ShippedFpgaImage {
-        thresholds: parameters.thresholds,
-        weights: parameters.weights,
-        decay_rates: parameters.decay_rates,
-        output_weights,
-        inhibitory,
-    })
+    neuron_major
 }
 
 fn shipped_readout() -> Result<(Vec<Vec<f32>>, Vec<bool>), SiliconExportError> {
     let document = crate::json::parse(SHIPPED_MODEL_JSON).map_err(ModelError::from)?;
-    let outputs_value = document
-        .get("n_outputs")
-        .and_then(Json::as_f64)
-        .ok_or_else(|| schema("top-level `n_outputs` is missing or is not a number"))?;
-    if !outputs_value.is_finite()
-        || outputs_value <= 0.0
-        || outputs_value.fract() != 0.0
-        || outputs_value > usize::MAX as f64
-    {
-        return Err(schema(format!(
-            "top-level `n_outputs` must be a positive integer, got {outputs_value}"
-        )));
-    }
-    let outputs = outputs_value as usize;
+    let outputs = shipped_output_count(&document)?;
     let neurons = document
         .get("neurons")
         .and_then(Json::as_array)
         .ok_or_else(|| schema("top-level `neurons` is missing or is not an array"))?;
+    neurons
+        .iter()
+        .enumerate()
+        .map(|(neuron, entry)| shipped_neuron_sidecar(entry, neuron, outputs))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|sidecars| sidecars.into_iter().unzip())
+}
 
-    let mut readout = Vec::with_capacity(neurons.len());
-    let mut inhibitory = Vec::with_capacity(neurons.len());
-    for (neuron, entry) in neurons.iter().enumerate() {
-        let values = entry
-            .get("output_weights")
-            .and_then(Json::as_array)
-            .ok_or_else(|| {
-                schema(format!(
-                    "neuron {neuron} field `output_weights` is missing or is not an array"
-                ))
-            })?;
-        if values.len() != outputs {
-            return Err(schema(format!(
-                "neuron {neuron} has {} output weights, expected {outputs}",
-                values.len()
-            )));
-        }
-        let row = values
-            .iter()
-            .enumerate()
-            .map(|(output, value)| {
-                let value = value.as_f64().ok_or_else(|| {
-                    schema(format!(
-                        "neuron {neuron} output weight {output} is a {}, expected a number",
-                        value.type_name()
-                    ))
-                })?;
-                q8_8_field(&format!("neuron {neuron} output weight {output}"), value)
-                    .map(|snapped| snapped as f32)
-                    .map_err(SiliconExportError::from)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        readout.push(row);
-
-        let flag = entry
-            .get("inhibitory")
-            .and_then(Json::as_bool)
-            .ok_or_else(|| {
-                schema(format!(
-                    "neuron {neuron} field `inhibitory` is missing or is not a boolean"
-                ))
-            })?;
-        inhibitory.push(flag);
+fn shipped_output_count(document: &Json) -> Result<usize, SiliconExportError> {
+    let value = document
+        .get("n_outputs")
+        .and_then(Json::as_f64)
+        .ok_or_else(|| schema("top-level `n_outputs` is missing or is not a number"))?;
+    if !value.is_finite() || value <= 0.0 || value.fract() != 0.0 || value > usize::MAX as f64 {
+        return Err(schema(format!(
+            "top-level `n_outputs` must be a positive integer, got {value}"
+        )));
     }
-    Ok((readout, inhibitory))
+    Ok(value as usize)
+}
+
+fn shipped_neuron_sidecar(
+    entry: &Json,
+    neuron: usize,
+    outputs: usize,
+) -> Result<(Vec<f32>, bool), SiliconExportError> {
+    Ok((
+        shipped_output_weights(entry, neuron, outputs)?,
+        shipped_inhibitory_flag(entry, neuron)?,
+    ))
+}
+
+fn shipped_output_weights(
+    entry: &Json,
+    neuron: usize,
+    outputs: usize,
+) -> Result<Vec<f32>, SiliconExportError> {
+    let values = entry
+        .get("output_weights")
+        .and_then(Json::as_array)
+        .ok_or_else(|| {
+            schema(format!(
+                "neuron {neuron} field `output_weights` is missing or is not an array"
+            ))
+        })?;
+    if values.len() != outputs {
+        return Err(schema(format!(
+            "neuron {neuron} has {} output weights, expected {outputs}",
+            values.len()
+        )));
+    }
+    values
+        .iter()
+        .enumerate()
+        .map(|(output, value)| shipped_output_weight(value, neuron, output))
+        .collect()
+}
+
+fn shipped_output_weight(
+    value: &Json,
+    neuron: usize,
+    output: usize,
+) -> Result<f32, SiliconExportError> {
+    let value = value.as_f64().ok_or_else(|| {
+        schema(format!(
+            "neuron {neuron} output weight {output} is a {}, expected a number",
+            value.type_name()
+        ))
+    })?;
+    q8_8_field(&format!("neuron {neuron} output weight {output}"), value)
+        .map(|snapped| snapped as f32)
+        .map_err(SiliconExportError::from)
+}
+
+fn shipped_inhibitory_flag(entry: &Json, neuron: usize) -> Result<bool, SiliconExportError> {
+    entry
+        .get("inhibitory")
+        .and_then(Json::as_bool)
+        .ok_or_else(|| {
+            schema(format!(
+                "neuron {neuron} field `inhibitory` is missing or is not a boolean"
+            ))
+        })
 }
 
 fn words_to_mem(words: &[i16]) -> String {
@@ -259,4 +304,26 @@ fn words_to_mem(words: &[i16]) -> String {
 
 fn schema(message: impl Into<String>) -> SiliconExportError {
     SiliconExportError::Model(ModelError::Schema(message.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{restore_neuron_major, transpose_for_exporter};
+
+    #[test]
+    fn readout_layout_round_trips_through_exporter_order() {
+        let neuron_major = vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]];
+
+        let exporter_order = transpose_for_exporter(&neuron_major, 3, 2);
+        assert_eq!(
+            exporter_order,
+            vec![vec![1.0, 3.0, 5.0], vec![2.0, 4.0, 6.0]]
+        );
+
+        let encoded_exporter_order = vec![1_i16, 3, 5, 2, 4, 6];
+        assert_eq!(
+            restore_neuron_major(&encoded_exporter_order, 3, 2),
+            vec![1_i16, 2, 3, 4, 5, 6]
+        );
+    }
 }
