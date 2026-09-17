@@ -8,9 +8,8 @@
 //! artifact-producing sidecar until an explicit parity path exists.
 
 use neuromod::SpikingNetwork;
-use plasticity_lab::{
-    PlasticityTrainer, TrainerError, TrainingConfig, TrainingExample, TrainingSummary,
-};
+use plasticity_lab::PlasticityTrainer;
+pub use plasticity_lab::{TrainerError, TrainingConfig, TrainingExample, TrainingSummary};
 
 use crate::HostNetwork;
 

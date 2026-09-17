@@ -60,18 +60,24 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       # --locked so a dependency cannot resolve to something Cargo.lock does
       # not name. Issues #8 and #9 both require crates.io resolution and the
       # suite asserts it; this keeps CI from papering over a drifted lockfile.
-      - name: Test
+      - name: Test default features
+        run: cargo test --locked
+
+      - name: Check without default features
+        run: cargo check --locked --no-default-features
+
+      - name: Test all features
         run: cargo test --locked --all-features
 
       - name: Docs
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --locked --no-deps --all-features
 
   python:
     name: Python

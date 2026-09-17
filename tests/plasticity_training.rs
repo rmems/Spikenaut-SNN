@@ -4,8 +4,9 @@
 
 #![cfg(feature = "training")]
 
-use plasticity_lab::{TrainingConfig, TrainingExample};
-use spikenaut_snn::{HOST_NETWORK_INITIAL_WEIGHT, HostTrainingSession};
+use spikenaut_snn::{
+    HOST_NETWORK_INITIAL_WEIGHT, HostTrainingSession, TrainerError, TrainingConfig, TrainingExample,
+};
 
 fn rewarded_batch() -> Vec<TrainingExample> {
     vec![
@@ -77,6 +78,62 @@ fn reset_replays_the_same_seeded_training_session() {
     session.reset();
 
     let replay_summary = session.run_session(&batch).unwrap();
+    assert_eq!(replay_summary, first_summary);
+    assert_eq!(weights(&session), first_weights);
+}
+
+#[test]
+fn a_rejected_batch_is_atomic_and_does_not_advance_the_rng() {
+    let seed = 0xa70c;
+    let mut rejected = HostTrainingSession::new(seed, TrainingConfig::default());
+    let initial_weights = weights(&rejected);
+    let invalid = vec![
+        TrainingExample {
+            stimuli: vec![0.5; 16],
+            reward: 1.0,
+        },
+        TrainingExample {
+            stimuli: vec![0.5; 15],
+            reward: 1.0,
+        },
+    ];
+
+    let error = rejected.run_session(&invalid).unwrap_err();
+    assert!(
+        matches!(error, TrainerError::InvalidSample { index: 1, .. }),
+        "the later malformed example must fail batch admission: {error}"
+    );
+    assert_eq!(rejected.network().global_step, 0);
+    assert_eq!(weights(&rejected), initial_weights);
+
+    let mut fresh = HostTrainingSession::new(seed, TrainingConfig::default());
+    let rejected_then_valid = rejected.run_session(&rewarded_batch()).unwrap();
+    let fresh_valid = fresh.run_session(&rewarded_batch()).unwrap();
+    assert_eq!(rejected_then_valid, fresh_valid);
+    assert_eq!(weights(&rejected), weights(&fresh));
+    assert_eq!(
+        rejected.network().input_spike_times,
+        fresh.network().input_spike_times
+    );
+    assert_eq!(
+        rejected.network().predictive_state,
+        fresh.network().predictive_state
+    );
+}
+
+#[test]
+fn reset_preserves_a_non_default_training_configuration() {
+    let config = TrainingConfig {
+        use_reward_modulation: false,
+    };
+    let mut session = HostTrainingSession::new(0xc0ffee, config);
+    let batch = rewarded_batch();
+
+    let first_summary = session.run_session(&batch).unwrap();
+    let first_weights = weights(&session);
+    session.reset();
+    let replay_summary = session.run_session(&batch).unwrap();
+
     assert_eq!(replay_summary, first_summary);
     assert_eq!(weights(&session), first_weights);
 }

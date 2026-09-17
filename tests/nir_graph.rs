@@ -569,9 +569,10 @@ fn nir_rs_resolves_from_crates_io() {
             "neuromod",
             "nir-rs",
             "plasticity-lab",
+            "silicon-bridge",
             "synaptic-wiring",
         ],
-        "`[dependencies]` must declare the eight reviewed registry crates, found: {names:?}",
+        "`[dependencies]` must declare the nine reviewed registry crates, found: {names:?}",
     );
 
     let lock_path: PathBuf = root.join("Cargo.lock");
@@ -589,6 +590,33 @@ fn nir_rs_resolves_from_crates_io() {
     assert!(
         entry.contains("version = \"0.4."),
         "nir-rs must resolve to 0.4.x, got:\n{entry}",
+    );
+}
+
+/// The host trainer is intentionally opt-in. Both sides of that statement are
+/// manifest contracts: no default feature may enable it, and the dependency
+/// must remain optional behind the named feature.
+#[test]
+fn plasticity_training_remains_optional_and_off_by_default() {
+    let manifest =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+            .expect("read Cargo.toml");
+
+    assert!(
+        manifest.lines().any(|line| line.trim() == "default = []"),
+        "the default feature set must stay empty",
+    );
+    assert!(
+        manifest
+            .lines()
+            .any(|line| line.trim() == "training = [\"dep:plasticity-lab\"]"),
+        "the training feature must enable plasticity-lab explicitly",
+    );
+    assert!(
+        manifest.lines().any(|line| {
+            line.trim() == "plasticity-lab = { version = \"0.2\", optional = true }"
+        }),
+        "plasticity-lab must remain an optional 0.2 dependency",
     );
 }
 

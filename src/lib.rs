@@ -36,10 +36,10 @@
 //! [`CHANNEL_MAP`]: encode::CHANNEL_MAP
 //! [`LIVE_COLUMNS`]: encode::LIVE_COLUMNS
 //!
-//! Its eight direct dependencies are deliberate: [`nir_rs`],
+//! Its nine direct dependencies are deliberate: [`nir_rs`],
 //! [`axon_encoder`], [`kinetic_signals`], [`neuromod`], `limbic-critic`,
-//! `synaptic-wiring`, `corpus-ipc`, and the optional `plasticity-lab`, all from
-//! crates.io.
+//! `synaptic-wiring`, `corpus-ipc`, `silicon-bridge`, and the optional
+//! `plasticity-lab`, all from crates.io.
 //! The bound is the claim, not the number: `tests/nir_graph.rs` asserts the
 //! manifest's exact *runtime* dependency set, so adopting a crate this library
 //! links against fails that test until the adoption is deliberate. Dev- and
@@ -61,7 +61,9 @@
 //! validated versioned messages without transport. With the `training` feature,
 //! `training` runs `plasticity-lab` only over that synthetic network. None of
 //! these paths executes or rewrites the shipped signed bank, Distill, or FPGA
-//! artifacts.
+//! artifacts. [`silicon`] is the distinct deployment boundary: it runs the
+//! shipped bank through `silicon-bridge`'s checked signed Q8.8 path and adapts
+//! the crate's `K × N` readout order back to the FPGA vault's `N × K` order.
 //!
 //! The graph [`load_default_lif_graph`] returns is the shipped `merged_v2`
 //! artifact ([`model::MERGED_V2_PROVENANCE`]): 16-neuron LIF, exp-025 Dale
@@ -111,8 +113,9 @@
 //! `.mem` artifacts.
 //!
 //! Writing `.nir` files (the `nir-rs` `hdf5` feature links the system libhdf5)
-//! and the output-layer weights in `parameters_output_weights.mem` belong to
-//! their own tickets.
+//! remains out of scope. [`export_shipped_fpga_image`] now regenerates every
+//! signed Q8.8 parameter image in memory; it does not run a board or define the
+//! three output classes.
 //!
 //! [nir]: https://neuroir.org/
 
@@ -126,6 +129,7 @@ pub mod json;
 pub mod kinetic;
 pub mod model;
 pub mod neuromod_host;
+pub mod silicon;
 pub mod stim;
 #[cfg(feature = "training")]
 pub mod training;
@@ -152,7 +156,13 @@ pub use kinetic::{
 };
 pub use model::{MERGED_V2_PROVENANCE, ModelError, Neuron, SnnModel, is_q8_8, quantize_q8_8};
 pub use neuromod_host::{HOST_NETWORK_INITIAL_WEIGHT, HostGifLayer, HostLif, HostNetwork};
+pub use silicon::{
+    FPGA_MEM_FILENAMES, FpgaMemFile, ShippedFpgaImage, SiliconExportError,
+    export_shipped_fpga_image,
+};
 pub use stim::{LiveStimAdapter, NO_STIMULUS, UNUSED_AXONS};
 #[cfg(feature = "training")]
-pub use training::HostTrainingSession;
+pub use training::{
+    HostTrainingSession, TrainerError, TrainingConfig, TrainingExample, TrainingSummary,
+};
 pub use wiring::{DaleMeshConfig, ExperimentalDaleMesh};

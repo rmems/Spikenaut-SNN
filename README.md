@@ -330,6 +330,8 @@ src/                               # Rust, `spikenaut-snn`
                                    # topology experiment; not the bank matrix
 ├── ipc.rs                         # Validated corpus-ipc messages;
                                    # typed JSON only, no transport
+├── silicon.rs                     # Checked silicon-bridge 0.3 signed Q8.8
+                                   # export; KxN exporter to NxK HDL adapter
 ├── training.rs                    # Optional plasticity-lab 0.2 session over
                                    # the synthetic seeded HostNetwork only
 └── json.rs                        # Strict reader, so the dependency list
@@ -367,6 +369,32 @@ reg [15:0] weight_ram [0:255];
 initial $readmemh("dataset/merged_v2/parameters_weights.mem", weight_ram);
 ```
 
+### Checked FPGA parameter export
+
+[`silicon-bridge`](https://crates.io/crates/silicon-bridge) 0.3.0 now validates
+and encodes the full shipped bank through its rejecting **Checked signed Q8.8**
+path. `export_shipped_fpga_image()` returns all four memory images without
+overwriting the vault:
+
+```rust
+use spikenaut_snn::{FPGA_MEM_FILENAMES, export_shipped_fpga_image};
+
+let image = export_shipped_fpga_image()?;
+let files = image.mem_files();
+assert_eq!(files.each_ref().map(|file| file.name), FPGA_MEM_FILENAMES);
+assert_eq!(image.weights[6 * 16] as u16, 0xFF00); // signed -1.0 survives
+# Ok::<(), spikenaut_snn::SiliconExportError>(())
+```
+
+The crate validates readout weights as KxN (outputs by neurons), while the
+checked-in vault and silicon-hdl `OutputLayer` consume NxK (neuron by output).
+The adapter performs both transposes explicitly; its contract test regenerates
+all 336 words and matches the four committed `.mem` files byte-for-byte. The
+dependency uses default features disabled, so the optional UART feature stays
+disabled. This deterministic export does not prove live UART or FPGA parity;
+the connected-board protocol and software-vs-hardware outputs remain separate
+evidence gates.
+
 ### Optional host training experiment
 
 The `training` Cargo feature adopts [`plasticity-lab`](https://crates.io/crates/plasticity-lab)
@@ -376,8 +404,7 @@ returns the published `TrainingSummary`, including the exact per-weight deltas
 that were applied:
 
 ```rust
-use plasticity_lab::{TrainingConfig, TrainingExample};
-use spikenaut_snn::HostTrainingSession;
+use spikenaut_snn::{HostTrainingSession, TrainingConfig, TrainingExample};
 
 let mut session = HostTrainingSession::new(99, TrainingConfig::default());
 let summary = session.run_session(&[
@@ -385,7 +412,7 @@ let summary = session.run_session(&[
     TrainingExample { stimuli: vec![0.0; 16], reward: 10.0 },
 ])?;
 assert!(summary.weight_drifts.iter().flatten().any(|&delta| delta != 0.0));
-# Ok::<(), plasticity_lab::TrainerError>(())
+# Ok::<(), spikenaut_snn::TrainerError>(())
 ```
 
 Run it with `cargo test --locked --features training`. The feature is off by
@@ -426,7 +453,7 @@ A replacement corpus, `qubic_ticks_snn.jsonl` (~27,430 records), and a data adap
 - **Outgoing Dale, no recurrence.** Hidden weights are mixed-sign; sidecar `inhibitory` marks neurons 12–15 on the readout (12:4). That is not incoming-Dale recurrence and not K-WTA in the NIR graph — train-time K-WTA is sidecar metadata (`k_wta: 4`). The gap that remains is **recurrent** memory, not temporal state as such: each LIF still keeps a decaying membrane. [#3](https://github.com/rmems/Spikenaut-SNN/issues/3)
 - **FPGA spike/action/membrane parity vs software is not done.** Phase C live smoke ([silicon-hdl#68](https://github.com/rmems/silicon-hdl/issues/68), CLOSED) is **PASS**: PROGRAM_OK + `step_en` ~heartbeat after BTNC in SW15 status mode on Basys. That is not FPGA parity, not a Dale inhibitory proof on board, and not a measurement of the power/LUT rows below. Spike agreement, action agreement, membrane-potential error, and quantization error against the software model have not been measured. [#6](https://github.com/rmems/Spikenaut-SNN/issues/6) stays open.
 - **Float-vs-Q8.8 Hamming is published as a measurement, not a gate.** `tools/measure_hamming.py` reports per-tick Hamming (%) and mean bits for `k=none` and `k=4` with the full protocol (weights, encoder, episodes, seed). exp-025 scratch (this bank): k=none **14.960%**, k=4 **49.095%**, json↔mem hidden **0/256**. exp-024 claimed `k=none` 13.187% / 0.1608 bits and `k=4` 56.188% / 1.697 bits on the exp-023 PASS Distill knobs scratch (seed 123 / 5 ep), legal 5-ch train-scaled encoder, frozen minmax lineage `74acdd0f`, v3 test `gpu-000170..198` (n=117653). The in-repo harness run is a method fixture, not a reproduction of either scratch. A pass threshold is deferred to [#20](https://github.com/rmems/Spikenaut-SNN/issues/20). [#39](https://github.com/rmems/Spikenaut-SNN/issues/39), [#4](https://github.com/rmems/Spikenaut-SNN/issues/4)
-- **Unsigned `.mem` export still zero-clamps negatives.** `silicon-bridge`'s `encode_q88` / `encode_q88_unsigned` on the `$readmemh` `.mem` parameter-export path still clamp negatives to 0 (`u16`). Using that path blindly would destroy signed inhibitory weights (hidden and `parameters_output_weights.mem`). A separate `encode_q88_signed` (`i16`) exists for UART/host stimuli; it is not a substitute for signed weight `.mem` export. [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) is still the crates.io pin and signed-export ticket.
+- **Checked export is not hardware parity.** `silicon-bridge` 0.3.0 now rejects malformed or out-of-range parameters and preserves signed hidden/readout words; the in-repo adapter reproduces all four committed `.mem` files byte-for-byte. Its UART feature stays disabled here, and an exact parameter image does not establish spike/action/membrane agreement on the connected FPGA. [#15](https://github.com/rmems/Spikenaut-SNN/issues/15), [#6](https://github.com/rmems/Spikenaut-SNN/issues/6)
 - **The output layer has a JSON source and still has no decision contract.** The 48 signed values in `parameters_output_weights.mem` match per-neuron `output_weights` in `snn_model.json` (neuron-major). `tools/verify_q88.py` still pins the `.mem` by canonical sha256 and gold hex. Nothing here defines what the three rows mean. [#4](https://github.com/rmems/Spikenaut-SNN/issues/4), [#20](https://github.com/rmems/Spikenaut-SNN/issues/20)
 - **Tier A stream-READY is not axon fill.** After [gaming-telemetry#27](https://github.com/rmems/gaming-telemetry/pull/27), axon **6** (`memory_used_mb`) is **READY** to stream; each of `pcie_tx_kbps` and `pcie_rx_kbps` is independently **READY** to stream (axon **7** is **stream-candidate / projection TBD** and stays unused (0) until a named Stage-1 EXP); axon **8** (`fan_speed_perc`) is **CONDITIONAL READY** (variance-gated). Axons **5** (`gpu_util_pct`) and **9** (`cpu_util_pct`) stay **BLOCKED** (collector schema absent — do not invent them, and do not substitute encoder/decoder util). Live bank remains exp-025 axons 0-4; unused 5-15 stay 0 until a named Stage-1 EXP. Schema / acceptance on [#20](https://github.com/rmems/Spikenaut-SNN/issues/20) stay open.
 - **Upstream dataset hygiene.** Sibling telemetry datasets still carry dead columns, schema drift, mixed timestamp formats, synthetic tail records, and stuck values. [#2](https://github.com/rmems/Spikenaut-SNN/issues/2), [#3](https://github.com/rmems/Spikenaut-SNN/issues/3)
@@ -481,7 +508,7 @@ Spikenaut-SNN is a weights and model repository that now also carries a thin Rus
 | [`limbic-critic`](https://crates.io/crates/limbic-critic) 0.3.0 | Checked TD critic → neuromodulator adapter | **Declared** from crates.io — `HostCritic` uses `try_assess`, preserves signed TD dopamine, and keeps domain reward collection outside — [#10](https://github.com/rmems/Spikenaut-SNN/issues/10) |
 | [`synaptic-wiring`](https://crates.io/crates/synaptic-wiring) 0.3.0 | Deterministic topology, Dale polarity, delayed propagation | **Declared** from crates.io — parallel 16-neuron 12:4 recurrent proposal only; it does not reinterpret the shipped dense input matrix or change `.mem` layout — [#16](https://github.com/rmems/Spikenaut-SNN/issues/16) |
 | [`corpus-ipc`](https://crates.io/crates/corpus-ipc) 0.1.0 | Versioned stimulus, spike, and modulator wire messages | **Declared** from crates.io with transport features disabled — validated typed JSON only; no ZMQ/server, and no invented mapping between the two crates' different modulator vocabularies |
-| `silicon-bridge` | Q8.8 `.mem` export | Dependency once published — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
+| [`silicon-bridge`](https://crates.io/crates/silicon-bridge) 0.3.0 | Checked signed Q8.8 `.mem` export | **Declared** from crates.io with default features disabled — `export_shipped_fpga_image` rejects invalid shapes/ranges, preserves signed hidden and readout words, and explicitly adapts KxN exporter order to NxK silicon-hdl order; all four vault images match byte-for-byte. The UART feature stays disabled, and this does not prove live UART or FPGA parity — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
 | [`plasticity-lab`](https://crates.io/crates/plasticity-lab) 0.2.0 | Reproducible reward-modulated training sessions | **Declared** from crates.io as optional feature `training` — `HostTrainingSession` uses the synthetic seeded `HostNetwork`, proves real in-memory weight deltas, and does not export or overwrite exp-025 artifacts — [#17](https://github.com/rmems/Spikenaut-SNN/issues/17) |
 | `brainstem-daemon` | 1 kHz headless inference host | **Peer process, not a dependency** — [#11](https://github.com/rmems/Spikenaut-SNN/issues/11) |
 | `thalamic-relay` | NVML supervisor, 85 °C / 350 W brake | **Peer process, not a dependency** — [#12](https://github.com/rmems/Spikenaut-SNN/issues/12) |

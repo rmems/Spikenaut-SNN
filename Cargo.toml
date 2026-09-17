@@ -45,6 +45,9 @@ training = ["dep:plasticity-lab"]
 #
 # plasticity-lab: optional host-side training/session orchestration over the
 # synthetic neuromod network. It never rewrites the shipped exp-025 artifacts.
+#
+# silicon-bridge: checked signed Q8.8 parameter encoding only. Its optional
+# UART feature stays disabled; live board transport remains a separate gate.
 [dependencies]
 axon-encoder = "0.4"
 corpus-ipc = { version = "0.1", default-features = false }
@@ -53,4 +56,5 @@ limbic-critic = "0.3"
 neuromod = "0.6"
 nir-rs = "0.4.3"
 plasticity-lab = { version = "0.2", optional = true }
+silicon-bridge = { version = "0.3", default-features = false }
 synaptic-wiring = "0.3"

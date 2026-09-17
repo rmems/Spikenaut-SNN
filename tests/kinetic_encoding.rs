@@ -361,10 +361,6 @@ fn kinetic_signals_resolves_from_crates_io() {
         !entry.contains("neuromod") && !entry.contains("silicon-bridge"),
         "kinetic-signals itself must not depend on neuromod or silicon-bridge, got:\n{entry}",
     );
-    assert!(
-        !lock.contains("name = \"silicon-bridge\""),
-        "silicon-bridge must stay out of the dependency tree",
-    );
 }
 
 fn replay_live(

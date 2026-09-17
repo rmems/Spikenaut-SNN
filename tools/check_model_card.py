@@ -56,7 +56,7 @@ README = REPO_ROOT / "README.md"
 
 # Guards against a manifest silently emptied or padded by a bad edit. Bump
 # deliberately when a claim is added or retired.
-EXPECTED_CLAIMS = 12
+EXPECTED_CLAIMS = 14
 
 # Historical 1.6 KB is allowed only on a line that also carries this
 # annotation. The spec-table row is forbidden even when annotated.
@@ -168,6 +168,44 @@ CLAIMS: tuple[Claim, ...] = (
             "no ZMQ/server",
             "no invented mapping",
         ),
+    ),
+    Claim(
+        name="plasticity-lab-is-optional-host-training",
+        why=(
+            "The optional trainer applies real deltas only to the synthetic "
+            "host network. It is not an exp-025 checkpoint exporter or a "
+            "replacement for the Julia sidecar."
+        ),
+        required=(
+            "[`plasticity-lab`]",
+            "0.2.0",
+            "optional feature `training`",
+            "synthetic seeded `HostNetwork`",
+            "real in-memory weight deltas",
+            "does not export or overwrite exp-025 artifacts",
+            "Julia Distill sidecar remains the only artifact-producing trainer",
+        ),
+    ),
+    Claim(
+        name="silicon-bridge-is-checked-signed-export",
+        why=(
+            "The registry exporter now validates and encodes the shipped bank, "
+            "including signed hidden and readout words, while the explicit "
+            "readout transpose preserves the HDL address contract. UART and "
+            "live parity remain separate evidence."
+        ),
+        required=(
+            "[`silicon-bridge`]",
+            "0.3.0",
+            "Checked signed Q8.8",
+            "**Declared** from crates.io with default features disabled",
+            "KxN",
+            "NxK",
+            "byte-for-byte",
+            "UART feature stays disabled",
+            "does not prove live UART or FPGA parity",
+        ),
+        forbidden=("Dependency once published",),
     ),
     Claim(
         name="moved-repositories",
