@@ -216,8 +216,7 @@ CLAIMS: tuple[Claim, ...] = (
             "0.3.0",
             "Checked signed Q8.8",
             "**Declared** from crates.io with default features disabled",
-            "KxN",
-            "NxK",
+            "adapts KxN exporter order to NxK silicon-hdl order",
             "byte-for-byte",
             "UART feature stays disabled",
             "does not prove live UART or FPGA parity",
@@ -226,6 +225,7 @@ CLAIMS: tuple[Claim, ...] = (
             "Dependency once published",
             "silicon-bridge UART is enabled",
             "silicon-bridge establishes live UART and FPGA parity",
+            "adapts NxK exporter order to KxN silicon-hdl order",
         ),
     ),
     Claim(
@@ -484,6 +484,7 @@ _CONTRADICTION_PROBES: dict[str, tuple[str, ...]] = {
     "silicon-bridge-is-checked-signed-export": (
         "silicon-bridge UART is enabled",
         "silicon-bridge establishes live UART and FPGA parity",
+        "adapts NxK exporter order to KxN silicon-hdl order",
     ),
 }
 
