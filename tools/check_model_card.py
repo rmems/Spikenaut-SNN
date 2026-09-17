@@ -142,6 +142,10 @@ CLAIMS: tuple[Claim, ...] = (
             "adapter | **Declared** from crates.io",
             "preserves signed TD dopamine",
         ),
+        forbidden=(
+            "limbic-critic is not a dependency",
+            "limbic-critic discards negative TD dopamine",
+        ),
     ),
     Claim(
         name="synaptic-wiring-is-a-declared-experiment",
@@ -153,6 +157,10 @@ CLAIMS: tuple[Claim, ...] = (
             "[`synaptic-wiring`]",
             "delayed propagation | **Declared** from crates.io",
             "parallel 16-neuron 12:4 recurrent proposal only",
+        ),
+        forbidden=(
+            "synaptic-wiring replaces the shipped dense input matrix",
+            "synaptic-wiring changes the .mem layout",
         ),
     ),
     Claim(
@@ -167,6 +175,11 @@ CLAIMS: tuple[Claim, ...] = (
             "wire messages | **Declared** from crates.io with transport features disabled",
             "no ZMQ/server",
             "no invented mapping",
+        ),
+        forbidden=(
+            "corpus-ipc transport features are enabled",
+            "corpus-ipc runs a ZMQ server",
+            "corpus-ipc automatically maps modulator vocabularies",
         ),
     ),
     Claim(
@@ -184,6 +197,10 @@ CLAIMS: tuple[Claim, ...] = (
             "real in-memory weight deltas",
             "does not export or overwrite exp-025 artifacts",
             "Julia Distill sidecar remains the only artifact-producing trainer",
+        ),
+        forbidden=(
+            "plasticity-lab overwrites exp-025 artifacts",
+            "plasticity-lab replaces the Julia Distill sidecar",
         ),
     ),
     Claim(
@@ -205,7 +222,11 @@ CLAIMS: tuple[Claim, ...] = (
             "UART feature stays disabled",
             "does not prove live UART or FPGA parity",
         ),
-        forbidden=("Dependency once published",),
+        forbidden=(
+            "Dependency once published",
+            "silicon-bridge UART is enabled",
+            "silicon-bridge establishes live UART and FPGA parity",
+        ),
     ),
     Claim(
         name="moved-repositories",
@@ -442,6 +463,30 @@ _TIER_A_SIGNAL_NAMES: tuple[str, ...] = (
 
 _TIER_A_CLAIM = "tier-a-stream-ready-not-axon-fill"
 
+_CONTRADICTION_PROBES: dict[str, tuple[str, ...]] = {
+    "limbic-critic-is-a-declared-dependency": (
+        "limbic-critic is not a dependency",
+        "limbic-critic discards negative TD dopamine",
+    ),
+    "synaptic-wiring-is-a-declared-experiment": (
+        "synaptic-wiring replaces the shipped dense input matrix",
+        "synaptic-wiring changes the .mem layout",
+    ),
+    "corpus-ipc-is-typed-and-transport-free": (
+        "corpus-ipc transport features are enabled",
+        "corpus-ipc runs a ZMQ server",
+        "corpus-ipc automatically maps modulator vocabularies",
+    ),
+    "plasticity-lab-is-optional-host-training": (
+        "plasticity-lab overwrites exp-025 artifacts",
+        "plasticity-lab replaces the Julia Distill sidecar",
+    ),
+    "silicon-bridge-is-checked-signed-export": (
+        "silicon-bridge UART is enabled",
+        "silicon-bridge establishes live UART and FPGA parity",
+    ),
+}
+
 # ASCII hyphens only -- tools/*.py must stay cp1252-safe (verify_q88 --self-test).
 _REVERSED_TIER_A_BOARD: tuple[tuple[str, str], ...] = (
     ("`memory_used_mb` | **READY**", "`memory_used_mb` | **BLOCKED**"),
@@ -484,6 +529,20 @@ def _reversed_board_fails(good: str) -> bool:
             file=sys.stderr,
         )
         return False
+    return True
+
+
+def _contradiction_probes_fail(good: str) -> bool:
+    """True when every explicit false claim trips its owning manifest claim."""
+    for claim, probes in _CONTRADICTION_PROBES.items():
+        for probe in probes:
+            names = {failure.claim for failure in check(f"{good}\n{probe}\n")}
+            if claim not in names:
+                print(
+                    f"self-test: contradiction {probe!r} did not trip {claim}",
+                    file=sys.stderr,
+                )
+                return False
     return True
 
 
@@ -540,6 +599,9 @@ def self_test() -> bool:
     if not _reversed_board_fails(good):
         return False
 
+    if not _contradiction_probes_fail(good):
+        return False
+
     # Wrong counts must refuse rather than pass. Their complaint is the
     # expected result here, so keep it off the console -- a self-test that
     # prints FAIL while succeeding trains readers to ignore the word.
@@ -554,7 +616,7 @@ def self_test() -> bool:
 
     print(
         f"self-test: {checked} claims each fail when broken; "
-        "reversed Tier A board fails; exact manifest count enforced."
+        "contradictions and reversed Tier A board fail; exact manifest count enforced."
     )
     return True
 
