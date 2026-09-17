@@ -1,0 +1,20 @@
+src/silicon.rs
+  s_353b11f7e8c155::t_da87dbf61c4cac 308-329
+  s_353b11f7e8c155::t_a10219cd687615 132-155,158-159,161,177-178,180-186,188,191-192,195,198,201,206-220,224,226,229-230,232-241,243-260,262-293
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a64d0bf46302543d62aa4bfa98ad01d2f2e9fa80",
+  "prompts": {},
+  "sessions": {
+    "s_353b11f7e8c155": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0ae6a-c05e-77c2-bed9-8ad2ea069ba8",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Raul Cardenas Montoya <montoyaraul34@gmail.com>"
+    }
+  }
+}
