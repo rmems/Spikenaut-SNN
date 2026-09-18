@@ -50,223 +50,141 @@ path. ``wrap_legacy_checkpoint`` and ``load_unattested_checkpoint`` wrap that
 layout so existing callers do not have to write a manifest before they can
 keep loading one file. Prefer ``load_model_bank`` when selecting a model.
 
+Layout
+------
+* ``model_bank_const`` -- shipped identifiers, schema keys, bundle paths
+* ``model_bank_errors`` -- parse/attestation exceptions
+* ``model_bank_json`` -- stable dump and fail-closed parse
+* ``model_bank_io`` -- checkpoint digest, resolve, consume
+* ``model_bank_fields`` -- token, digest, schema, extra-key checks
+* this module -- attested types, load, select, wrap
+
 Standard library only.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
-import re
-import unicodedata
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-MANIFEST_FILENAME = "model_bank.json"
-SHIPPED_MANIFEST = REPO_ROOT / "dataset" / "merged_v2" / MANIFEST_FILENAME
-SHIPPED_CHECKPOINT = REPO_ROOT / "dataset" / "merged_v2" / "snn_model.json"
+try:  # package import: `python3 -m tools.verify_model_bank`
+    from .model_bank_const import (
+        DIGEST_RE,
+        ENTRY_KEYS,
+        ENTRY_OPTIONAL,
+        ENTRY_REQUIRED,
+        FEATURE_MAP_LIVE_EXP_025,
+        HUB_V3_JSONL_DIGEST,
+        MANIFEST_FILENAME,
+        MANIFEST_KEYS,
+        MSG_MISSING_FIELD,
+        NUMERIC_FORMAT_Q88,
+        OUTPUT_CONTRACT_SUPERVISOR_V3_RM1150,
+        REPO_ROOT,
+        SCHEMA_VERSION,
+        SHIPPED_CHECKPOINT,
+        SHIPPED_MANIFEST,
+        SUPPORTED_SCHEMA_VERSIONS,
+    )
+    from .model_bank_errors import (
+        BankAttestationError,
+        BankError,
+        BankParseError,
+        _MISSING,
+        _fail,
+    )
+    from .model_bank_fields import (
+        _optional_digest,
+        _reject_unknown_keys,
+        _require_contract_id,
+        _require_digest,
+        _require_schema_version,
+        _require_token,
+    )
+    from .model_bank_io import (
+        _consume_checkpoint,
+        _legacy_checkpoint,
+        _require_checkpoint_file,
+        _require_relative_checkpoint,
+        _resolved_checkpoint,
+        digest_file,
+    )
+    from .model_bank_json import _parse_json, _read_utf8, dumps_manifest
+except ImportError:  # direct script: `python3 tools/verify_model_bank.py`
+    from model_bank_const import (
+        DIGEST_RE,
+        ENTRY_KEYS,
+        ENTRY_OPTIONAL,
+        ENTRY_REQUIRED,
+        FEATURE_MAP_LIVE_EXP_025,
+        HUB_V3_JSONL_DIGEST,
+        MANIFEST_FILENAME,
+        MANIFEST_KEYS,
+        MSG_MISSING_FIELD,
+        NUMERIC_FORMAT_Q88,
+        OUTPUT_CONTRACT_SUPERVISOR_V3_RM1150,
+        REPO_ROOT,
+        SCHEMA_VERSION,
+        SHIPPED_CHECKPOINT,
+        SHIPPED_MANIFEST,
+        SUPPORTED_SCHEMA_VERSIONS,
+    )
+    from model_bank_errors import (
+        BankAttestationError,
+        BankError,
+        BankParseError,
+        _MISSING,
+        _fail,
+    )
+    from model_bank_fields import (
+        _optional_digest,
+        _reject_unknown_keys,
+        _require_contract_id,
+        _require_digest,
+        _require_schema_version,
+        _require_token,
+    )
+    from model_bank_io import (
+        _consume_checkpoint,
+        _legacy_checkpoint,
+        _require_checkpoint_file,
+        _require_relative_checkpoint,
+        _resolved_checkpoint,
+        digest_file,
+    )
+    from model_bank_json import _parse_json, _read_utf8, dumps_manifest
 
-SCHEMA_VERSION = 1
-SUPPORTED_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION})
-
-DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-MSG_MISSING_FIELD = "missing required field"
-
-# Canonical identifiers this repository ships. Unknown-but-well-formed IDs
-# still attest -- the bank is not a registry -- but missing/empty values do not.
-FEATURE_MAP_LIVE_EXP_025 = "spikenaut.feature-map.live-exp-025.v1"
-OUTPUT_CONTRACT_SUPERVISOR_V3_RM1150 = (
-    "spikenaut.output-contract.supervisor-v3.rm-1150"
+__all__ = (
+    "DIGEST_RE",
+    "ENTRY_KEYS",
+    "ENTRY_OPTIONAL",
+    "ENTRY_REQUIRED",
+    "FEATURE_MAP_LIVE_EXP_025",
+    "HUB_V3_JSONL_DIGEST",
+    "MANIFEST_FILENAME",
+    "MANIFEST_KEYS",
+    "MSG_MISSING_FIELD",
+    "NUMERIC_FORMAT_Q88",
+    "OUTPUT_CONTRACT_SUPERVISOR_V3_RM1150",
+    "REPO_ROOT",
+    "SCHEMA_VERSION",
+    "SHIPPED_CHECKPOINT",
+    "SHIPPED_MANIFEST",
+    "SUPPORTED_SCHEMA_VERSIONS",
+    "AttestedEntry",
+    "BankAttestationError",
+    "BankError",
+    "BankParseError",
+    "ModelBank",
+    "digest_file",
+    "dumps_manifest",
+    "load_model_bank",
+    "load_shipped_merged_v2_bank",
+    "load_unattested_checkpoint",
+    "wrap_legacy_checkpoint",
 )
-NUMERIC_FORMAT_Q88 = "q8.8-fixed-point"
-HUB_V3_JSONL_DIGEST = (
-    "sha256:26d7d7442605a32b11330f53f55e621750f31e775465209991f73f94a6c72c09"
-)
-
-MANIFEST_KEYS = frozenset({"schema_version", "models"})
-ENTRY_REQUIRED = (
-    "id",
-    "checkpoint",
-    "checkpoint_digest",
-    "feature_map_id",
-    "output_contract_id",
-    "numeric_format",
-)
-ENTRY_OPTIONAL = ("training_dataset_digest",)
-ENTRY_KEYS = frozenset(ENTRY_REQUIRED + ENTRY_OPTIONAL)
-
-
-class BankError(Exception):
-    """A model-bank manifest could not be used."""
-
-
-class BankParseError(BankError):
-    """The manifest could not be read as the schema this loader expects.
-
-    Mapped to process exit code 2: nothing was attested.
-    """
-
-
-class BankAttestationError(BankError):
-    """An entry or field failed attestation.
-
-    Mapped to process exit code 1: the bank was read and rejected.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        entry: str | None = None,
-        field: str | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.entry = entry
-        self.field = field
-
-
-class _DuplicateJsonKeyError(ValueError):
-    """JSON object repeated a key. CPython ``json.loads`` would last-win."""
-
-    def __init__(self, key: str) -> None:
-        super().__init__(f"duplicate object key {key!r}")
-        self.key = key
-
-
-class _NonstandardJsonConstantError(ValueError):
-    """CPython ``json.loads`` would accept NaN/Infinity by default."""
-
-    def __init__(self, token: str) -> None:
-        super().__init__(f"non-standard JSON constant {token!r}")
-        self.token = token
-
-
-def dumps_manifest(document: Mapping[str, Any]) -> str:
-    """Stable serialization of a model-bank document.
-
-    See the module docstring. The golden fixture must round-trip through this
-    function unchanged. Non-JSON values, including ``NaN`` / ``Infinity``,
-    are rejected so the serializer cannot emit JSON the loader would refuse.
-    """
-    try:
-        return json.dumps(
-            document,
-            indent=2,
-            sort_keys=True,
-            ensure_ascii=True,
-            allow_nan=False,
-        ) + "\n"
-    except (TypeError, ValueError, RecursionError) as exc:
-        raise BankParseError(
-            f"model-bank: cannot serialize manifest: {exc}"
-        ) from exc
-
-
-def digest_file(path: Path) -> str:
-    """``sha256:`` digest of the file's bytes.
-
-    The path itself is not hashed, so copying the file to a new directory
-    without changing contents yields the same digest. I/O failures become
-    :class:`BankAttestationError` so callers never see a raw ``OSError``.
-    """
-    try:
-        digest, _payload = _read_checkpoint_bytes(path)
-    except (OSError, ValueError) as exc:
-        raise BankAttestationError(
-            f"model-bank field 'checkpoint': cannot read file "
-            f"{path.as_posix()!r}: {exc}",
-            field="checkpoint",
-        ) from exc
-    return digest
-
-
-def _hash_bytes(data: bytes) -> str:
-    return f"sha256:{hashlib.sha256(data).hexdigest()}"
-
-
-def _read_checkpoint_bytes(path: Path) -> tuple[str, bytes]:
-    with path.open("rb") as handle:
-        data = handle.read()
-    return _hash_bytes(data), data
-
-
-def _consume_checkpoint(
-    path: Path, *, entry: str, relative: str
-) -> tuple[str, bytes]:
-    try:
-        return _read_checkpoint_bytes(path)
-    except (OSError, ValueError) as exc:
-        _fail(
-            entry=entry,
-            field="checkpoint",
-            message=f"cannot read file {relative!r}: {exc}",
-        )
-
-
-def _read_utf8(path: Path, *, kind: str) -> str:
-    try:
-        return path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise BankParseError(
-            f"model-bank: {kind} {path} is not UTF-8: {exc}"
-        ) from exc
-    except (OSError, ValueError) as exc:
-        # pathlib raises ValueError for an embedded NUL in the path.
-        raise BankParseError(
-            f"model-bank: cannot read {kind} {path}: {exc}"
-        ) from exc
-
-
-def _reject_duplicate_object_keys(
-    pairs: list[tuple[str, Any]],
-) -> dict[str, Any]:
-    seen: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in seen:
-            raise _DuplicateJsonKeyError(key)
-        seen[key] = value
-    return seen
-
-
-def _reject_nonstandard_json_constant(token: str) -> None:
-    raise _NonstandardJsonConstantError(token)
-
-
-def _parse_json(text: str, *, source: Path) -> Any:
-    try:
-        return json.loads(
-            text,
-            object_pairs_hook=_reject_duplicate_object_keys,
-            parse_constant=_reject_nonstandard_json_constant,
-        )
-    except json.JSONDecodeError as exc:
-        raise BankParseError(
-            f"model-bank: invalid JSON in {source}: {exc}"
-        ) from exc
-    except _DuplicateJsonKeyError as exc:
-        raise BankParseError(
-            f"model-bank: duplicate object key {exc.key!r} in {source}"
-        ) from exc
-    except _NonstandardJsonConstantError as exc:
-        raise BankParseError(
-            f"model-bank: non-standard JSON constant {exc.token!r} in {source}"
-        ) from exc
-    except RecursionError as exc:
-        # CPython 3.11 json.loads raises RecursionError around ~1000 nested
-        # objects/arrays; it is not JSONDecodeError.
-        raise BankParseError(
-            f"model-bank: JSON nesting exceeds parser limit in {source}: {exc}"
-        ) from exc
-    except ValueError as exc:
-        # CPython raises a bare ValueError for an integer literal longer than
-        # sys.get_int_max_str_digits() (4300 by default on 3.11+). It is not a
-        # JSONDecodeError, so it would escape the CLI as a traceback.
-        raise BankParseError(
-            f"model-bank: unreadable JSON number in {source}: {exc}"
-        ) from exc
 
 
 @dataclass(frozen=True)
@@ -447,42 +365,6 @@ def _attest_document(
     return tuple(attested)
 
 
-def _require_schema_version(version: Any) -> None:
-    if version is _MISSING:
-        _fail(field="schema_version", message=MSG_MISSING_FIELD)
-    if not _is_int_version(version):
-        _fail(
-            field="schema_version",
-            message=f"must be an integer, got {type(version).__name__}",
-        )
-    if version not in SUPPORTED_SCHEMA_VERSIONS:
-        supported = ", ".join(str(v) for v in sorted(SUPPORTED_SCHEMA_VERSIONS))
-        _fail(
-            field="schema_version",
-            message=f"unsupported version {version} (supported: {supported})",
-        )
-
-
-def _is_int_version(version: Any) -> bool:
-    return isinstance(version, int) and not isinstance(version, bool)
-
-
-def _reject_unknown_keys(
-    mapping: Mapping[str, Any],
-    allowed: frozenset[str],
-    *,
-    entry: str | None = None,
-) -> None:
-    extra = set(mapping) - allowed
-    if extra:
-        names = ", ".join(sorted(_escape_error_text(name) for name in extra))
-        _fail(
-            entry=entry,
-            field=min(extra),
-            message=f"unsupported extra field(s): {names}",
-        )
-
-
 def _attest_entry(
     raw: Any,
     index: int,
@@ -531,15 +413,6 @@ def _attest_entry(
     )
 
 
-def _optional_digest(raw: Mapping[str, Any], model_id: str) -> str | None:
-    dataset_raw = raw.get("training_dataset_digest", _MISSING)
-    if dataset_raw is _MISSING:
-        return None
-    return _require_digest(
-        dataset_raw, entry=model_id, field="training_dataset_digest"
-    )
-
-
 def _attest_checkpoint(
     raw: Mapping[str, Any], model_id: str, root: Path
 ) -> tuple[str, Path, str, bytes]:
@@ -564,169 +437,3 @@ def _attest_checkpoint(
             message=f"mismatch (declared {declared}, computed {computed})",
         )
     return relative, checkpoint, computed, payload
-
-
-def _legacy_checkpoint(
-    path: Path, *, entry: str
-) -> tuple[Path, str, str, bytes]:
-    relative = path.name
-    _require_relative_checkpoint(relative, entry=entry)
-    resolved = _resolve_existing_path(path, entry=entry)
-    digest, payload = _consume_checkpoint(
-        resolved, entry=entry, relative=relative
-    )
-    return resolved, relative, digest, payload
-
-
-def _resolve_existing_path(path: Path, *, entry: str) -> Path:
-    try:
-        exists = path.is_file()
-        resolved = path.resolve() if exists else path
-    except (ValueError, RuntimeError, OSError) as exc:
-        _fail(
-            entry=entry,
-            field="checkpoint",
-            message=f"cannot resolve path {path.as_posix()!r}: {exc}",
-        )
-    if not exists:
-        _fail(
-            entry=entry,
-            field="checkpoint",
-            message=f"missing file {path.as_posix()!r}",
-        )
-    return resolved
-
-
-def _resolved_checkpoint(root: Path, relative: str, *, entry: str) -> Path:
-    try:
-        checkpoint = (root / relative).resolve()
-    except (ValueError, RuntimeError, OSError) as exc:
-        _fail(
-            entry=entry,
-            field="checkpoint",
-            message=f"cannot resolve path {relative!r}: {exc}",
-        )
-    try:
-        checkpoint.relative_to(root)
-    except ValueError:
-        _fail(
-            entry=entry,
-            field="checkpoint",
-            message=f"path {relative!r} escapes the bundle root",
-        )
-    return checkpoint
-
-
-def _require_checkpoint_file(
-    path: Path, *, entry: str, relative: str
-) -> None:
-    try:
-        present = path.is_file()
-    except (OSError, ValueError) as exc:
-        _fail(
-            entry=entry,
-            field="checkpoint",
-            message=f"cannot read file {relative!r}: {exc}",
-        )
-    if not present:
-        _fail(
-            entry=entry,
-            field="checkpoint",
-            message=f"missing file {relative!r}",
-        )
-
-
-def _require_relative_checkpoint(relative: str, *, entry: str) -> None:
-    reason = _unsafe_relative_reason(relative)
-    if reason is not None:
-        _fail(entry=entry, field="checkpoint", message=reason)
-
-
-def _unsafe_relative_reason(relative: str) -> str | None:
-    path = Path(relative)
-    if path.is_absolute():
-        return f"must be a relative path, got {relative!r}"
-    if path.anchor:
-        return f"must be a relative path, got {relative!r}"
-    if ".." in path.parts:
-        return f"must not contain '..', got {relative!r}"
-    if "\\" in relative:
-        return f"must use POSIX separators, got {relative!r}"
-    if "\x00" in relative:
-        return f"must not contain NUL, got {relative!r}"
-    return None
-
-
-def _require_contract_id(value: Any, *, entry: str) -> str:
-    if value is _MISSING or value is None or value == "":
-        _fail(
-            entry=entry,
-            field="output_contract_id",
-            message="missing required contract ID",
-        )
-    return _require_token(value, entry=entry, field="output_contract_id")
-
-
-def _require_token(value: Any, *, entry: str, field: str) -> str:
-    if value is _MISSING:
-        _fail(entry=entry, field=field, message=MSG_MISSING_FIELD)
-    if not isinstance(value, str) or not value:
-        _fail(
-            entry=entry,
-            field=field,
-            message=f"must be a non-empty string, got {value!r}",
-        )
-    if _contains_control(value):
-        _fail(
-            entry=entry,
-            field=field,
-            message=f"must not contain a control character, got {value!r}",
-        )
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError as exc:
-        _fail(
-            entry=entry,
-            field=field,
-            message=f"must be well-formed UTF-8, got {value!r}: {exc}",
-        )
-    return value
-
-
-def _contains_control(value: str) -> bool:
-    """True if any character is Unicode category Cc (C0, DEL, or C1)."""
-    return any(unicodedata.category(character) == "Cc" for character in value)
-
-
-def _escape_error_text(value: str) -> str:
-    """ASCII-only form of an untrusted string for error messages."""
-    return value.encode("unicode_escape").decode("ascii")
-
-
-def _require_digest(value: Any, *, entry: str, field: str) -> str:
-    token = _require_token(value, entry=entry, field=field)
-    if DIGEST_RE.fullmatch(token) is None:
-        _fail(
-            entry=entry,
-            field=field,
-            message=(
-                "must be 'sha256:' plus 64 lowercase hex characters, "
-                f"got {token!r}"
-            ),
-        )
-    return token
-
-
-def _fail(*, field: str, message: str, entry: str | None = None) -> NoReturn:
-    if entry is None:
-        text = f"model-bank field {field!r}: {message}"
-    else:
-        text = f"model-bank entry {entry!r} field {field!r}: {message}"
-    raise BankAttestationError(text, entry=entry, field=field)
-
-
-class _Missing:
-    """Sentinel for a JSON key that was not present."""
-
-
-_MISSING = _Missing()

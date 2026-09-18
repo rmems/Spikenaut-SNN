@@ -31,6 +31,7 @@ from tools.model_bank import (
     REPO_ROOT,
     BankAttestationError,
     BankParseError,
+    digest_file,
     dumps_manifest,
     load_model_bank,
     load_shipped_merged_v2_bank,
@@ -290,6 +291,49 @@ class ModelBankTests(unittest.TestCase):
             with self.assertRaises(BankParseError) as caught_ckpt:
                 load_unattested_checkpoint(checkpoint)
             self.assertIn("unreadable JSON number", str(caught_ckpt.exception))
+
+    def test_digest_file_hashes_checkpoint_bytes(self) -> None:
+        ckpt = VALID.parent / "checkpoints" / "ok.bin"
+        self.assertEqual(digest_file(ckpt), FIXTURE_DIGEST)
+        self.assertEqual(digest_file(SHIPPED_CHECKPOINT), SHIPPED_DIGEST)
+
+    def test_digest_file_missing_is_attestation_error(self) -> None:
+        missing = VALID.parent / "checkpoints" / "missing.bin"
+        with self.assertRaises(BankAttestationError) as caught:
+            digest_file(missing)
+        self.assertEqual(caught.exception.field, "checkpoint")
+        self.assertIsNone(caught.exception.entry)
+        self.assertIn("cannot read file", str(caught.exception))
+
+    def test_digest_file_nul_path_is_attestation_error(self) -> None:
+        with self.assertRaises(BankAttestationError) as caught:
+            digest_file(Path("ok.bin\x00"))
+        self.assertEqual(caught.exception.field, "checkpoint")
+        self.assertIn("cannot read file", str(caught.exception))
+
+    def test_public_names_resolve(self) -> None:
+        import tools.model_bank as model_bank
+
+        for name in model_bank.__all__:
+            self.assertTrue(hasattr(model_bank, name), name)
+
+    def test_digest_file_unreadable_is_attestation_error(self) -> None:
+        if os.name == "nt" or not hasattr(os, "geteuid"):
+            self.skipTest("chmod(0) does not make files unreadable here")
+        if os.geteuid() == 0:
+            self.skipTest("root can read chmod 0 files")
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "unreadable.bin"
+            dest.write_bytes(b"ok\n")
+            mode = dest.stat().st_mode
+            try:
+                dest.chmod(0)
+                with self.assertRaises(BankAttestationError) as caught:
+                    digest_file(dest)
+            finally:
+                dest.chmod(mode)
+            self.assertEqual(caught.exception.field, "checkpoint")
+            self.assertIn("cannot read file", str(caught.exception))
 
     def test_unreadable_checkpoint_is_attestation_error(self) -> None:
         if os.name == "nt" or not hasattr(os, "geteuid"):
