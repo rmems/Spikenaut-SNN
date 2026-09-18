@@ -9,6 +9,7 @@ Standard library only.
 
 from __future__ import annotations
 
+import itertools
 import json
 import tempfile
 from collections.abc import Callable
@@ -41,7 +42,13 @@ try:
         load_shipped_model,
         pin_failures,
     )
-    from .q88_core import MEM_OUTPUT, ParseError, SelfTestFailure, parse_mem
+    from .q88_core import (
+        MEM_OUTPUT,
+        ParseError,
+        SelfTestFailure,
+        encode_q88_hex,
+        parse_mem,
+    )
 except ImportError:
     from decision_core import (
         ERROR_INVALID_ABSTAIN_ON_TIE,
@@ -69,7 +76,13 @@ except ImportError:
         load_shipped_model,
         pin_failures,
     )
-    from q88_core import MEM_OUTPUT, ParseError, SelfTestFailure, parse_mem
+    from q88_core import (
+        MEM_OUTPUT,
+        ParseError,
+        SelfTestFailure,
+        encode_q88_hex,
+        parse_mem,
+    )
 
 
 def _require(condition: bool, message: str) -> None:
@@ -395,14 +408,17 @@ def _self_test_overflow_readout() -> None:
 
 
 def _swap_unequal_channels(model: dict) -> bool:
+    """Swap two channels whose Q8.8 words differ so the pin can observe drift.
+
+    ``assert_output_json_mem_parity`` compares encoded words, not raw floats.
+    A pair that is unequal as floats can still snap to the same Q8.8 word;
+    swapping that pair would not fail the pin.
+    """
     for neuron in model["neurons"]:
         weights = neuron["output_weights"]
-        for left, right in (
-            (left, right)
-            for left in range(len(weights))
-            for right in range(left + 1, len(weights))
-        ):
-            if weights[left] != weights[right]:
+        words = [encode_q88_hex(weight) for weight in weights]
+        for left, right in itertools.combinations(range(len(weights)), 2):
+            if words[left] != words[right]:
                 weights[left], weights[right] = weights[right], weights[left]
                 return True
     return False
@@ -423,7 +439,7 @@ def _self_test_json_mem_parity() -> None:
     reordered = _clone(model)
     _require(
         _swap_unequal_channels(reordered),
-        "shipped readout must have a pair of unequal channels",
+        "shipped readout must have a pair of unequal Q8.8 channels",
     )
     _require_parse_error(
         lambda: assert_output_json_mem_parity(reordered, entries),
