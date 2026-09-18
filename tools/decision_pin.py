@@ -198,46 +198,68 @@ def assert_output_json_mem_parity(model: dict, mem_entries: list) -> None:
     still score the ``.mem`` image. Snap each JSON scalar through Q8.8 and
     compare the hex word, in Distill neuron-major order.
     """
+    neurons = _require_neuron_list(model)
+    _require_mem_width(mem_entries)
+    for index, neuron in enumerate(neurons):
+        weights = _neuron_output_weights(neuron, index)
+        for channel, weight in enumerate(weights):
+            _snap_json_mem_channel(index, channel, weight, mem_entries)
+
+
+def _require_neuron_list(model: dict) -> list:
     neurons = model.get("neurons")
     if not isinstance(neurons, list) or len(neurons) != N_NEURONS:
         got = 0 if not isinstance(neurons, list) else len(neurons)
-        raise ParseError(f"{SHIPPED_MODEL.name}: expected {N_NEURONS} neurons, got {got}")
+        raise ParseError(
+            f"{SHIPPED_MODEL.name}: expected {N_NEURONS} neurons, got {got}"
+        )
+    return neurons
+
+
+def _require_mem_width(mem_entries: list) -> None:
     expected = N_NEURONS * OUTPUT_WIDTH
     if len(mem_entries) != expected:
         raise ParseError(
             f"{MEM_OUTPUT.name}: {len(mem_entries)} words, expected {expected}"
         )
-    for index, neuron in enumerate(neurons):
-        if not isinstance(neuron, dict):
-            raise ParseError(
-                f"neurons[{index}]: expected a JSON object, got "
-                f"{type(neuron).__name__}"
-            )
-        weights = neuron.get("output_weights")
-        if not isinstance(weights, list) or len(weights) != OUTPUT_WIDTH:
-            got = (
-                type(weights).__name__
-                if not isinstance(weights, list)
-                else len(weights)
-            )
-            raise ParseError(
-                f"neurons[{index}].output_weights: {got} entries, "
-                f"expected {OUTPUT_WIDTH}-wide"
-            )
-        for channel, weight in enumerate(weights):
-            where = f"neurons[{index}].output_weights[{channel}]"
-            value = as_finite_float(weight, where)
-            try:
-                want = encode_q88_hex(value)
-            except Q88RangeError as exc:
-                raise ParseError(str(exc)) from exc
-            mem_index = index * OUTPUT_WIDTH + channel
-            got = mem_entries[mem_index].text.upper()
-            if want != got:
-                raise ParseError(
-                    f"{where}: JSON encodes {want}, "
-                    f"{MEM_OUTPUT.name}[{mem_index}] is {got}"
-                )
+
+
+def _neuron_output_weights(neuron: object, index: int) -> list:
+    if not isinstance(neuron, dict):
+        raise ParseError(
+            f"neurons[{index}]: expected a JSON object, got "
+            f"{type(neuron).__name__}"
+        )
+    weights = neuron.get("output_weights")
+    if not isinstance(weights, list) or len(weights) != OUTPUT_WIDTH:
+        got = (
+            type(weights).__name__
+            if not isinstance(weights, list)
+            else len(weights)
+        )
+        raise ParseError(
+            f"neurons[{index}].output_weights: {got} entries, "
+            f"expected {OUTPUT_WIDTH}-wide"
+        )
+    return weights
+
+
+def _snap_json_mem_channel(
+    index: int, channel: int, weight: object, mem_entries: list
+) -> None:
+    where = f"neurons[{index}].output_weights[{channel}]"
+    value = as_finite_float(weight, where)
+    try:
+        want = encode_q88_hex(value)
+    except Q88RangeError as exc:
+        raise ParseError(str(exc)) from exc
+    mem_index = index * OUTPUT_WIDTH + channel
+    got = mem_entries[mem_index].text.upper()
+    if want != got:
+        raise ParseError(
+            f"{where}: JSON encodes {want}, "
+            f"{MEM_OUTPUT.name}[{mem_index}] is {got}"
+        )
 
 
 def _n_outputs_json() -> int:
@@ -293,7 +315,14 @@ def _checkpoint_cases() -> list[dict]:
 
 def named_cases() -> list[dict]:
     """Every class the contract names, plus the shipped-ordering pin."""
-    cases = [
+    cases = _named_propose_cases()
+    cases.extend(_named_fail_closed_cases())
+    cases.extend(_checkpoint_cases())
+    return cases
+
+
+def _named_propose_cases() -> list[dict]:
+    return [
         _finite_case("normal_comfort", [0.9, 0.2, 0.1]),
         _finite_case("normal_temp", [0.1, 0.8, 0.2]),
         _finite_case("normal_power", [0.1, 0.2, 0.9]),
@@ -302,10 +331,7 @@ def named_cases() -> list[dict]:
         _finite_case("all_equal", [0.4, 0.4, 0.4]),
         _finite_case("all_zero", [0.0, 0.0, 0.0]),
         _finite_case("negative_argmax", [-0.1, -0.5, -0.2]),
-        _finite_case(
-            "high_confidence_comfort",
-            [1.0, 0.0, 0.0],
-        ),
+        _finite_case("high_confidence_comfort", [1.0, 0.0, 0.0]),
         _finite_case(
             "abstain_on_tie",
             [0.5, 0.5, 0.1],
@@ -333,6 +359,11 @@ def named_cases() -> list[dict]:
                 "abstain_on_tie": False,
             },
         ),
+    ]
+
+
+def _named_fail_closed_cases() -> list[dict]:
+    return [
         _finite_case("empty_row", []),
         _finite_case("width_short", [0.1, 0.2]),
         _finite_case("width_long", [0.1, 0.2, 0.3, 0.4]),
@@ -352,14 +383,8 @@ def named_cases() -> list[dict]:
             "all_non_finite",
             [float("nan"), float("inf"), float("-inf")],
         ),
-        _finite_case(
-            "overflow_confidence",
-            [_F64_MAX, -_F64_MAX, -_F64_MAX],
-        ),
-        _finite_case(
-            "overflow_denominator",
-            [_F64_MAX, _F64_MAX / 2.0, 0.0],
-        ),
+        _finite_case("overflow_confidence", [_F64_MAX, -_F64_MAX, -_F64_MAX]),
+        _finite_case("overflow_denominator", [_F64_MAX, _F64_MAX / 2.0, 0.0]),
         _finite_case(
             "overflow_denominator_floor",
             [_F64_MAX, _F64_MAX / 2.0, 0.0],
@@ -370,8 +395,6 @@ def named_cases() -> list[dict]:
             },
         ),
     ]
-    cases.extend(_checkpoint_cases())
-    return cases
 
 
 def build_pin() -> dict:
@@ -416,30 +439,40 @@ def load_pin(path: Path = EXPECTED_DECISION) -> dict:
 
 def pin_failures(reference: dict, pinned: dict) -> list[str]:
     """Every compared field that disagrees. ``note`` is exempt."""
+    failures = _metadata_pin_failures(reference, pinned)
+    failures.extend(_case_pin_failures(reference.get("cases"), pinned.get("cases")))
+    return failures
+
+
+def _metadata_pin_failures(reference: dict, pinned: dict) -> list[str]:
     failures: list[str] = []
     for key in _PINNED_METADATA:
         if reference.get(key) != pinned.get(key):
             failures.append(
                 f"{key}: pinned {pinned.get(key)!r}, reference {reference.get(key)!r}"
             )
-    want = reference.get("cases")
-    got = pinned.get("cases")
-    if not isinstance(want, list) or not isinstance(got, list):
-        failures.append("cases: both sides must be arrays")
-        return failures
-    if len(want) != len(got):
-        failures.append(f"cases: pinned {len(got)}, reference {len(want)}")
-        return failures
-    for index, (expected, actual) in enumerate(zip(want, got, strict=True)):
-        if not isinstance(expected, dict) or not isinstance(actual, dict):
-            failures.append(f"cases[{index}]: both sides must be objects")
-            continue
-        name = expected.get("name")
-        if actual.get("name") != name:
-            failures.append(
-                f"cases: pinned name {actual.get('name')!r}, reference {name!r}"
-            )
-            continue
-        if expected != actual:
-            failures.append(f"cases[{name}]: pin disagrees with the reference")
     return failures
+
+
+def _case_pin_failures(want: object, got: object) -> list[str]:
+    if not isinstance(want, list) or not isinstance(got, list):
+        return ["cases: both sides must be arrays"]
+    if len(want) != len(got):
+        return [f"cases: pinned {len(got)}, reference {len(want)}"]
+    failures: list[str] = []
+    for index, (expected, actual) in enumerate(zip(want, got, strict=True)):
+        failure = _one_case_pin_failure(index, expected, actual)
+        if failure is not None:
+            failures.append(failure)
+    return failures
+
+
+def _one_case_pin_failure(index: int, expected: object, actual: object) -> str | None:
+    if not isinstance(expected, dict) or not isinstance(actual, dict):
+        return f"cases[{index}]: both sides must be objects"
+    name = expected.get("name")
+    if actual.get("name") != name:
+        return f"cases: pinned name {actual.get('name')!r}, reference {name!r}"
+    if expected != actual:
+        return f"cases[{name}]: pin disagrees with the reference"
+    return None

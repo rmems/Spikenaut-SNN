@@ -327,86 +327,95 @@ fn pin_names_the_shipped_contract() {
 #[test]
 fn rust_matches_the_python_pin() {
     let cases = cases();
-    let mut checked = 0usize;
+    assert!(!cases.is_empty());
     for case in &cases {
-        checked += 1;
-        match (&case.config, &case.expected) {
-            (Err(message), Expected::Err { code, .. }) => {
-                assert!(
-                    message.contains(match code.as_str() {
-                        "empty_vocabulary" => "vocabulary is empty",
-                        "invalid_label" => "label",
-                        "duplicate_label" => "repeats",
-                        "invalid_confidence_floor" => "confidence floor",
-                        other => panic!("{}: config error code {other}", case.name),
-                    }),
-                    "{}: config error {message:?} did not match {code}",
-                    case.name
-                );
-            }
-            (Err(message), Expected::Ok(_)) => {
-                panic!("{}: config failed ({message}) but the pin is ok", case.name)
-            }
-            (Ok(_), expected) => match (run_case(case), expected) {
-                (Ok(got), Expected::Ok(want)) => {
-                    assert_eq!(got, *want, "{}", case.name);
-                    assert_eq!(
-                        got.diagnostics.scores, case.row,
-                        "{}: diagnostics must copy the finite row",
-                        case.name
-                    );
-                }
-                (
-                    Err(err),
-                    Expected::Err {
-                        code,
-                        indices,
-                        got,
-                        expected_width,
-                        margin,
-                        confidence,
-                    },
-                ) => {
-                    let (got_code, got_indices, got_got, got_expected) = classify_error(&err);
-                    assert_eq!(got_code, code, "{}", case.name);
-                    if *code == "non_finite" {
-                        assert_eq!(got_indices, *indices, "{}", case.name);
-                    }
-                    if *code == "width_mismatch" {
-                        assert_eq!(got_got, *got, "{}", case.name);
-                        assert_eq!(got_expected, *expected_width, "{}", case.name);
-                    }
-                    if *code == "derived_non_finite" {
-                        match err {
-                            DecisionError::DerivedNonFinite {
-                                margin: got_margin,
-                                confidence: got_confidence,
-                            } => {
-                                assert_eq!(got_margin, margin.unwrap_or(true), "{}", case.name);
-                                assert_eq!(
-                                    got_confidence,
-                                    confidence.unwrap_or(true),
-                                    "{}",
-                                    case.name
-                                );
-                            }
-                            other => panic!(
-                                "{}: classified derived_non_finite but got {other:?}",
-                                case.name
-                            ),
-                        }
-                    }
-                }
-                (Ok(got), Expected::Err { code, .. }) => {
-                    panic!("{}: Rust proposed {got:?}, pin error {code}", case.name)
-                }
-                (Err(err), Expected::Ok(_)) => {
-                    panic!("{}: Rust error {err}, pin is ok", case.name)
-                }
-            },
+        assert_pin_case(case);
+    }
+}
+
+fn assert_pin_case(case: &PinCase) {
+    match (&case.config, &case.expected) {
+        (Err(message), Expected::Err { code, .. }) => {
+            assert_config_error(case, message, code);
+        }
+        (Err(message), Expected::Ok(_)) => {
+            panic!("{}: config failed ({message}) but the pin is ok", case.name)
+        }
+        (Ok(_), expected) => assert_run_case(case, expected),
+    }
+}
+
+fn assert_config_error(case: &PinCase, message: &str, code: &str) {
+    let needle = match code {
+        "empty_vocabulary" => "vocabulary is empty",
+        "invalid_label" => "label",
+        "duplicate_label" => "repeats",
+        "invalid_confidence_floor" => "confidence floor",
+        other => panic!("{}: config error code {other}", case.name),
+    };
+    assert!(
+        message.contains(needle),
+        "{}: config error {message:?} did not match {code}",
+        case.name
+    );
+}
+
+fn assert_run_case(case: &PinCase, expected: &Expected) {
+    match (run_case(case), expected) {
+        (Ok(got), Expected::Ok(want)) => {
+            assert_eq!(got, *want, "{}", case.name);
+            assert_eq!(
+                got.diagnostics.scores, case.row,
+                "{}: diagnostics must copy the finite row",
+                case.name
+            );
+        }
+        (Err(err), Expected::Err { .. }) => assert_pin_error(case, &err),
+        (Ok(got), Expected::Err { code, .. }) => {
+            panic!("{}: Rust proposed {got:?}, pin error {code}", case.name)
+        }
+        (Err(err), Expected::Ok(_)) => {
+            panic!("{}: Rust error {err}, pin is ok", case.name)
         }
     }
-    assert_eq!(checked, cases.len());
+}
+
+fn assert_pin_error(case: &PinCase, err: &DecisionError) {
+    let Expected::Err {
+        code,
+        indices,
+        got,
+        expected_width,
+        margin,
+        confidence,
+    } = &case.expected
+    else {
+        panic!("{}: assert_pin_error on an ok pin", case.name);
+    };
+    let (got_code, got_indices, got_got, got_expected) = classify_error(err);
+    assert_eq!(got_code, code, "{}", case.name);
+    if *code == "non_finite" {
+        assert_eq!(got_indices, *indices, "{}", case.name);
+    }
+    if *code == "width_mismatch" {
+        assert_eq!(got_got, *got, "{}", case.name);
+        assert_eq!(got_expected, *expected_width, "{}", case.name);
+    }
+    if *code == "derived_non_finite" {
+        match err {
+            DecisionError::DerivedNonFinite {
+                margin: got_margin,
+                confidence: got_confidence,
+            } => {
+                assert_eq!(*got_margin, margin.unwrap_or(true), "{}", case.name);
+                assert_eq!(*got_confidence, confidence.unwrap_or(true), "{}", case.name);
+            }
+            other => panic!(
+                "{}: classified derived_non_finite but got {other:?}",
+                case.name
+            ),
+        }
+    }
 }
 
 /// `replay_output_row` is decide-with-shipped, and the checkpoint case keeps
@@ -462,32 +471,34 @@ fn malformed_rows_do_not_propose() {
             expected: OUTPUT_WIDTH
         })
     ));
-    let err = replay_output_row(&[f64::NAN, 0.0, 0.0]).unwrap_err();
-    match err {
-        DecisionError::NonFinite { indices } => assert_eq!(indices, [0]),
+    assert_non_finite_row(&[f64::NAN, 0.0, 0.0], &[0]);
+    assert_non_finite_row(&[0.0, f64::INFINITY, f64::NEG_INFINITY], &[1, 2]);
+    assert_derived_row(&[f64::MAX, -f64::MAX, -f64::MAX], true, true);
+    assert_derived_row(&[f64::MAX, f64::MAX / 2.0, 0.0], false, true);
+    assert_overflowing_readout();
+}
+
+fn assert_non_finite_row(row: &[f64], want: &[usize]) {
+    match replay_output_row(row) {
+        Err(DecisionError::NonFinite { indices }) => assert_eq!(indices, want),
         other => panic!("expected NonFinite, got {other:?}"),
     }
-    let err = replay_output_row(&[0.0, f64::INFINITY, f64::NEG_INFINITY]).unwrap_err();
-    match err {
-        DecisionError::NonFinite { indices } => assert_eq!(indices, [1, 2]),
-        other => panic!("expected NonFinite, got {other:?}"),
-    }
-    let err = replay_output_row(&[f64::MAX, -f64::MAX, -f64::MAX]).unwrap_err();
-    match err {
-        DecisionError::DerivedNonFinite { margin, confidence } => {
-            assert!(margin);
-            assert!(confidence);
+}
+
+fn assert_derived_row(row: &[f64], margin: bool, confidence: bool) {
+    match replay_output_row(row) {
+        Err(DecisionError::DerivedNonFinite {
+            margin: got_margin,
+            confidence: got_confidence,
+        }) => {
+            assert_eq!(got_margin, margin);
+            assert_eq!(got_confidence, confidence);
         }
         other => panic!("expected DerivedNonFinite, got {other:?}"),
     }
-    let err = replay_output_row(&[f64::MAX, f64::MAX / 2.0, 0.0]).unwrap_err();
-    match err {
-        DecisionError::DerivedNonFinite { margin, confidence } => {
-            assert!(!margin);
-            assert!(confidence);
-        }
-        other => panic!("expected DerivedNonFinite on overflowing denom, got {other:?}"),
-    }
+}
+
+fn assert_overflowing_readout() {
     let mut weights = vec![0.0; OUTPUT_WEIGHT_COUNT];
     weights[0] = f64::MAX;
     weights[OUTPUT_WIDTH] = f64::MAX;
@@ -495,9 +506,8 @@ fn malformed_rows_do_not_propose() {
     let mut spikes = vec![false; neuron_count];
     spikes[0] = true;
     spikes[1] = true;
-    let err = score_readout(&weights, &spikes).unwrap_err();
-    match err {
-        DecisionError::NonFinite { indices } => assert_eq!(indices, [0]),
+    match score_readout(&weights, &spikes) {
+        Err(DecisionError::NonFinite { indices }) => assert_eq!(indices, [0]),
         other => panic!("expected NonFinite on overflowing readout, got {other:?}"),
     }
 }

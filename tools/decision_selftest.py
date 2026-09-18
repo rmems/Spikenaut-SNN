@@ -148,72 +148,47 @@ def _self_test_cases(reference: dict) -> None:
     )
 
 
+def _require_parse_error(action: Callable[[], object], *, what: str) -> None:
+    try:
+        action()
+    except ParseError:
+        return
+    except Exception as exc:
+        raise SelfTestFailure(
+            f"{what} raised {type(exc).__name__}, expected ParseError"
+        ) from exc
+    raise SelfTestFailure(f"{what} was accepted")
+
+
 def _self_test_model_parse_error() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         bad = tmp_path / "snn_model.json"
         bad.write_text("{", encoding="utf-8")
-        try:
-            load_shipped_model(bad)
-        except ParseError:
-            pass
-        except Exception as exc:
-            raise SelfTestFailure(
-                f"malformed model JSON raised {type(exc).__name__}, "
-                "expected ParseError"
-            ) from exc
-        else:
-            raise SelfTestFailure("malformed model JSON was accepted")
-
+        _require_parse_error(
+            lambda: load_shipped_model(bad),
+            what="malformed model JSON",
+        )
         huge = tmp_path / "huge_int.json"
         huge.write_text('{"n_outputs": 1' + "0" * 5000 + "}", encoding="utf-8")
-        try:
-            load_shipped_model(huge)
-        except ParseError:
-            pass
-        except Exception as exc:
-            raise SelfTestFailure(
-                f"oversized JSON integer raised {type(exc).__name__}, "
-                "expected ParseError"
-            ) from exc
-        else:
-            raise SelfTestFailure("oversized JSON integer was accepted")
-
-        try:
-            load_pin(huge)
-        except ParseError:
-            pass
-        except Exception as exc:
-            raise SelfTestFailure(
-                f"load_pin oversized JSON integer raised {type(exc).__name__}, "
-                "expected ParseError"
-            ) from exc
-        else:
-            raise SelfTestFailure("load_pin accepted an oversized JSON integer")
-
+        _require_parse_error(
+            lambda: load_shipped_model(huge),
+            what="oversized JSON integer",
+        )
+        _require_parse_error(
+            lambda: load_pin(huge),
+            what="load_pin oversized JSON integer",
+        )
         deep = tmp_path / "deep.json"
         deep.write_text(_json_text_that_raises_recursion_error(), encoding="utf-8")
-        try:
-            load_shipped_model(deep)
-        except ParseError:
-            pass
-        except Exception as exc:
-            raise SelfTestFailure(
-                f"deeply nested JSON raised {type(exc).__name__}, "
-                "expected ParseError"
-            ) from exc
-        else:
-            raise SelfTestFailure("deeply nested JSON was accepted")
-        try:
-            load_pin(deep)
-        except ParseError:
-            return
-        except Exception as exc:
-            raise SelfTestFailure(
-                f"load_pin deeply nested JSON raised {type(exc).__name__}, "
-                "expected ParseError"
-            ) from exc
-        raise SelfTestFailure("load_pin accepted deeply nested JSON")
+        _require_parse_error(
+            lambda: load_shipped_model(deep),
+            what="deeply nested JSON",
+        )
+        _require_parse_error(
+            lambda: load_pin(deep),
+            what="load_pin deeply nested JSON",
+        )
 
 
 def _json_text_that_raises_recursion_error() -> str:
@@ -419,6 +394,20 @@ def _self_test_overflow_readout() -> None:
     raise SelfTestFailure("overflowing readout returned a finite row")
 
 
+def _swap_unequal_channels(model: dict) -> bool:
+    for neuron in model["neurons"]:
+        weights = neuron["output_weights"]
+        for left, right in (
+            (left, right)
+            for left in range(len(weights))
+            for right in range(left + 1, len(weights))
+        ):
+            if weights[left] != weights[right]:
+                weights[left], weights[right] = weights[right], weights[left]
+                return True
+    return False
+
+
 def _self_test_json_mem_parity() -> None:
     model = load_shipped_model()
     entries = parse_mem(MEM_OUTPUT)
@@ -427,32 +416,19 @@ def _self_test_json_mem_parity() -> None:
     drifted["neurons"][0]["output_weights"][0] = (
         drifted["neurons"][0]["output_weights"][0] + 1.0
     )
-    try:
-        assert_output_json_mem_parity(drifted, entries)
-    except ParseError:
-        pass
-    else:
-        raise SelfTestFailure("JSON vs .mem value drift was accepted")
+    _require_parse_error(
+        lambda: assert_output_json_mem_parity(drifted, entries),
+        what="JSON vs .mem value drift",
+    )
     reordered = _clone(model)
-    swapped = False
-    for neuron in reordered["neurons"]:
-        weights = neuron["output_weights"]
-        for left in range(len(weights)):
-            for right in range(left + 1, len(weights)):
-                if weights[left] != weights[right]:
-                    weights[left], weights[right] = weights[right], weights[left]
-                    swapped = True
-                    break
-            if swapped:
-                break
-        if swapped:
-            break
-    _require(swapped, "shipped readout must have a pair of unequal channels")
-    try:
-        assert_output_json_mem_parity(reordered, entries)
-    except ParseError:
-        return
-    raise SelfTestFailure("JSON vs .mem order drift was accepted")
+    _require(
+        _swap_unequal_channels(reordered),
+        "shipped readout must have a pair of unequal channels",
+    )
+    _require_parse_error(
+        lambda: assert_output_json_mem_parity(reordered, entries),
+        what="JSON vs .mem order drift",
+    )
 
 
 def run_self_test() -> int:

@@ -64,6 +64,10 @@ use std::fmt;
 
 use crate::model::NEURON_COUNT;
 
+#[path = "decision_helpers.rs"]
+mod decision_helpers;
+use decision_helpers::{validate_readout_shape, write_non_finite_indices};
+
 /// Width of the shipped Distill readout (`n_outputs` in `snn_model.json`).
 pub const OUTPUT_WIDTH: usize = 3;
 
@@ -347,26 +351,29 @@ pub enum DecisionError {
 impl fmt::Display for DecisionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::EmptyRow | Self::WidthMismatch { .. } | Self::EmptyVocabulary => {
+                self.fmt_shape(f)
+            }
+            other => other.fmt_value(f),
+        }
+    }
+}
+
+impl DecisionError {
+    fn fmt_shape(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
             Self::EmptyRow => f.write_str("output row is empty"),
             Self::WidthMismatch { got, expected } => {
                 write!(f, "output row width {got}, expected {expected}")
             }
-            Self::NonFinite { indices } => {
-                f.write_str("non-finite output score")?;
-                if indices.len() != 1 {
-                    f.write_str("s")?;
-                }
-                f.write_str(" at index")?;
-                if indices.len() != 1 {
-                    f.write_str("es")?;
-                }
-                for (position, index) in indices.iter().enumerate() {
-                    let separator = if position == 0 { " " } else { ", " };
-                    write!(f, "{separator}{index}")?;
-                }
-                Ok(())
-            }
             Self::EmptyVocabulary => f.write_str("decision vocabulary is empty"),
+            _ => unreachable!("fmt_shape only formats shape errors"),
+        }
+    }
+
+    fn fmt_value(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonFinite { indices } => write_non_finite_indices(f, indices),
             Self::InvalidLabel { index } => {
                 write!(f, "decision vocabulary label {index} is empty")
             }
@@ -382,6 +389,7 @@ impl fmt::Display for DecisionError {
             Self::DerivedNonFinite { margin, confidence } => {
                 f.write_str(derived_non_finite_message(*margin, *confidence))
             }
+            _ => unreachable!("fmt_value only formats value errors"),
         }
     }
 }
@@ -472,21 +480,7 @@ pub fn score_readout(
     neuron_major: &[f64],
     spikes: &[bool],
 ) -> Result<[f64; OUTPUT_WIDTH], DecisionError> {
-    if neuron_major.is_empty() {
-        return Err(DecisionError::EmptyRow);
-    }
-    if neuron_major.len() != OUTPUT_WEIGHT_COUNT {
-        return Err(DecisionError::WidthMismatch {
-            got: neuron_major.len(),
-            expected: OUTPUT_WEIGHT_COUNT,
-        });
-    }
-    if spikes.len() != NEURON_COUNT {
-        return Err(DecisionError::WidthMismatch {
-            got: spikes.len(),
-            expected: NEURON_COUNT,
-        });
-    }
+    validate_readout_shape(neuron_major, spikes)?;
     refuse_non_finite(neuron_major)?;
     let mut scores = [0.0; OUTPUT_WIDTH];
     for (neuron, &spiked) in spikes.iter().enumerate() {
