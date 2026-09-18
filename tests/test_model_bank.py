@@ -123,10 +123,6 @@ class ModelBankTests(unittest.TestCase):
                 load_model_bank(manifest)
             except BankParseError as exc:
                 self.assertIn("JSON nesting exceeds parser limit", str(exc))
-            except BankAttestationError as exc:
-                # CPython 3.14+ json.loads can accept this depth; extra key
-                # then fails attestation instead of parse.
-                self.assertEqual(exc.field, "a")
             else:
                 self.fail("deeply nested manifest was accepted")
             checkpoint = dest / "nested.json"
@@ -139,6 +135,13 @@ class ModelBankTests(unittest.TestCase):
                 )
             else:
                 self.fail("deeply nested checkpoint was accepted")
+
+    def test_braces_inside_json_strings_do_not_count_as_nesting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = Path(tmp) / "nested.json"
+            payload = {"note": "{" * 2000 + "}" * 2000}
+            checkpoint.write_text(dumps_manifest(payload), encoding="utf-8")
+            self.assertEqual(load_unattested_checkpoint(checkpoint), payload)
 
     def test_control_character_token_is_attestation_error(self) -> None:
         cases = (

@@ -78,7 +78,46 @@ def _reject_nonstandard_json_constant(token: str) -> None:
     raise _NonstandardJsonConstantError(token)
 
 
+# CPython 3.11 ``json.loads`` RecursionError starts around this depth.
+# CPython 3.14 can decode past it, so the named bound keeps both fail-closed.
+MAX_JSON_NESTING = 1000
+
+
+def _json_nesting_depth(text: str) -> int:
+    """Nesting of objects/arrays, ignoring text inside JSON strings."""
+    depth = 0
+    deepest = 0
+    in_string = False
+    escaped = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "{[":
+            depth += 1
+            if depth > deepest:
+                deepest = depth
+        elif character in "}]" and depth:
+            depth -= 1
+    return deepest
+
+
+def _refuse_excessive_json_nesting(text: str, *, source: Path) -> None:
+    if _json_nesting_depth(text) >= MAX_JSON_NESTING:
+        raise BankParseError(
+            f"model-bank: JSON nesting exceeds parser limit in {source}"
+        )
+
+
 def _parse_json(text: str, *, source: Path) -> Any:
+    _refuse_excessive_json_nesting(text, source=source)
     try:
         return json.loads(
             text,
