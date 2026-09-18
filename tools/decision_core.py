@@ -167,25 +167,29 @@ def score_readout(
     neuron_major: Sequence[float], spikes: Sequence[bool]
 ) -> tuple[float, ...]:
     """Distill ``pred = readout * spikes`` on the neuron-major 16x3 image."""
-    if len(neuron_major) == 0:
+    weights_in = _require_ordered_scores(neuron_major)
+    flags_in = _require_ordered_container(
+        spikes, code=ERROR_INVALID_SPIKE, what="spike vector"
+    )
+    if len(weights_in) == 0:
         raise DecisionError(ERROR_EMPTY_ROW, "output row is empty")
-    if len(neuron_major) != OUTPUT_WEIGHT_COUNT:
+    if len(weights_in) != OUTPUT_WEIGHT_COUNT:
         raise DecisionError(
             ERROR_WIDTH_MISMATCH,
-            f"output row width {len(neuron_major)}, expected {OUTPUT_WEIGHT_COUNT}",
-            got=len(neuron_major),
+            f"output row width {len(weights_in)}, expected {OUTPUT_WEIGHT_COUNT}",
+            got=len(weights_in),
             expected=OUTPUT_WEIGHT_COUNT,
         )
-    if len(spikes) != NEURON_COUNT:
+    if len(flags_in) != NEURON_COUNT:
         raise DecisionError(
             ERROR_WIDTH_MISMATCH,
-            f"output row width {len(spikes)}, expected {NEURON_COUNT}",
-            got=len(spikes),
+            f"output row width {len(flags_in)}, expected {NEURON_COUNT}",
+            got=len(flags_in),
             expected=NEURON_COUNT,
         )
-    weights = _coerce_real_numbers(neuron_major)
+    weights = _coerce_real_numbers(weights_in)
     _refuse_non_finite(weights)
-    flags = _require_spike_flags(spikes)
+    flags = _require_spike_flags(flags_in)
     scores = [0.0] * OUTPUT_WIDTH
     for neuron, spiked in enumerate(flags):
         if not spiked:
@@ -221,23 +225,34 @@ def error_as_dict(exc: DecisionError) -> dict:
     return payload
 
 
-def _require_vocabulary(vocabulary: object) -> tuple[object, ...]:
-    """Refuse non-label containers. ``None`` TypeErrors on ``len()``; a
-    string would become one-character labels."""
-    if isinstance(vocabulary, (str, bytes, bytearray)):
+def _require_ordered_container(
+    values: object, *, code: str, what: str
+) -> Sequence[object]:
+    """Refuse non-sequences. Sets bind channels in hash order."""
+    if isinstance(values, (str, bytes, bytearray)) or not isinstance(
+        values, Sequence
+    ):
         raise DecisionError(
-            ERROR_EMPTY_VOCABULARY,
-            f"decision vocabulary {vocabulary!r} is not a sequence of labels",
-            value=vocabulary,
+            code,
+            f"{what} {values!r} is not an ordered sequence",
+            value=values,
         )
-    try:
-        return tuple(vocabulary)  # type: ignore[arg-type]
-    except TypeError:
-        raise DecisionError(
-            ERROR_EMPTY_VOCABULARY,
-            f"decision vocabulary {vocabulary!r} is not a sequence of labels",
-            value=vocabulary,
-        ) from None
+    return values
+
+
+def _require_vocabulary(vocabulary: object) -> Sequence[object]:
+    """Refuse non-label sequences. A set would shuffle Distill channel names."""
+    return _require_ordered_container(
+        vocabulary, code=ERROR_EMPTY_VOCABULARY, what="decision vocabulary"
+    )
+
+
+def _require_ordered_scores(row: object) -> Sequence[object]:
+    """Refuse non-sequences. ``None`` TypeErrors on ``len()``; a set
+    assigns channels in hash order."""
+    return _require_ordered_container(
+        row, code=ERROR_EMPTY_ROW, what="output row"
+    )
 
 
 def _validate_config(
@@ -328,18 +343,6 @@ def _require_confidence_floor(value: object) -> float:
             value=number,
         )
     return number
-
-
-def _require_ordered_scores(row: object) -> Sequence[object]:
-    """Refuse non-sequences. ``None`` TypeErrors on ``len()``; a set
-    assigns channels in hash order."""
-    if isinstance(row, (str, bytes, bytearray)) or not isinstance(row, Sequence):
-        raise DecisionError(
-            ERROR_EMPTY_ROW,
-            f"output row {row!r} is not an ordered sequence of scores",
-            value=row,
-        )
-    return row
 
 
 def _validate_row(row: object, expected: int) -> tuple[float, ...]:

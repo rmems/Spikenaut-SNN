@@ -294,7 +294,13 @@ def _self_test_vocabulary_types() -> None:
         code=ERROR_INVALID_LABEL,
         what="non-string vocabulary label",
     )
-    for vocab in (None, 3, "abc"):
+    for vocab in (
+        None,
+        3,
+        "abc",
+        {"comfort", "temp", "power"},
+        iter(SHIPPED_VOCABULARY),
+    ):
         _expect_code(
             lambda vocab=vocab: DecisionConfig.new(vocab),  # type: ignore[arg-type]
             code=ERROR_EMPTY_VOCABULARY,
@@ -306,35 +312,22 @@ def _self_test_vocabulary_types() -> None:
             code=ERROR_EMPTY_VOCABULARY,
             what=f"dataclass vocabulary {vocab!r}",
         )
-    leaked_gen = DecisionConfig(
-        iter(SHIPPED_VOCABULARY), 0.0, False
-    )  # type: ignore[arg-type]
-    try:
-        generated = decide([1.0, 0.0, 0.0], leaked_gen)
-    except TypeError as exc:
-        raise SelfTestFailure(
-            "dataclass iterator vocabulary leaked TypeError"
-        ) from exc
-    if generated.kind != KIND_PROPOSE:
-        raise SelfTestFailure("dataclass iterator vocabulary must still propose")
-    if generated.diagnostics.winning_action != "comfort":
-        raise SelfTestFailure(
-            "dataclass iterator vocabulary must keep Distill order"
-        )
-    leaked_empty = DecisionConfig(iter(()), 0.0, False)  # type: ignore[arg-type]
-    _expect_code(
-        lambda: decide([1.0, 0.0, 0.0], leaked_empty),
-        code=ERROR_EMPTY_VOCABULARY,
-        what="dataclass empty iterator vocabulary",
-    )
 
 
 def _self_test_row_containers() -> None:
+    silent = [False] * NEURON_COUNT
+    weights = [0.0] * OUTPUT_WEIGHT_COUNT
     for row in (None, 3, "1.0", {0.1, 0.2, 0.9}, iter((1.0, 0.0, 0.0))):
         _expect_code(
             lambda row=row: replay_output_row(row),  # type: ignore[arg-type]
             code=ERROR_EMPTY_ROW,
             what=f"row {row!r}",
+        )
+    for image in (None, set(range(OUTPUT_WEIGHT_COUNT)), iter(weights)):
+        _expect_code(
+            lambda image=image: score_readout(image, silent),  # type: ignore[arg-type]
+            code=ERROR_EMPTY_ROW,
+            what=f"readout {type(image).__name__}",
         )
 
 
@@ -418,6 +411,16 @@ def _self_test_spike_types() -> None:
         lambda: score_readout(weights, [1] * NEURON_COUNT),
         code=ERROR_INVALID_SPIKE,
         what="integer spike flags",
+    )
+    _expect_code(
+        lambda: score_readout(weights, None),  # type: ignore[arg-type]
+        code=ERROR_INVALID_SPIKE,
+        what="None spike flags",
+    )
+    _expect_code(
+        lambda: score_readout(weights, iter(silent)),
+        code=ERROR_INVALID_SPIKE,
+        what="iterator spike flags",
     )
     active = [True] + silent[1:]
     row = score_readout(weights, active)

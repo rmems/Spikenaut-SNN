@@ -245,7 +245,9 @@ pub struct DecisionConfig {
 
 impl DecisionConfig {
     /// Build a config. The vocabulary length is the row width [`decide`]
-    /// will demand.
+    /// will demand. The labels are an ordered sequence (a slice); a set or
+    /// other unordered iterator cannot be passed, because channel *i* is
+    /// vocabulary *i*.
     ///
     /// # Errors
     ///
@@ -254,12 +256,16 @@ impl DecisionConfig {
     /// - [`DecisionError::DuplicateLabel`] if a label repeats
     /// - [`DecisionError::InvalidConfidenceFloor`] if `confidence_floor` is
     ///   not finite or not in `[0, 1]`
-    pub fn new(
-        vocabulary: impl IntoIterator<Item = impl Into<String>>,
+    pub fn new<S: AsRef<str>>(
+        vocabulary: impl AsRef<[S]>,
         confidence_floor: f64,
         abstain_on_tie: bool,
     ) -> Result<Self, DecisionError> {
-        let vocabulary: Vec<String> = vocabulary.into_iter().map(Into::into).collect();
+        let vocabulary: Vec<String> = vocabulary
+            .as_ref()
+            .iter()
+            .map(|label| label.as_ref().to_string())
+            .collect();
         validate_config(&vocabulary, confidence_floor)?;
         Ok(Self {
             vocabulary,
