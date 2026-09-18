@@ -304,6 +304,27 @@ def _self_test_vocabulary_types() -> None:
             code=ERROR_EMPTY_VOCABULARY,
             what=f"dataclass vocabulary {vocab!r}",
         )
+    leaked_gen = DecisionConfig(
+        (label for label in SHIPPED_VOCABULARY), 0.0, False
+    )  # type: ignore[arg-type]
+    try:
+        generated = decide([1.0, 0.0, 0.0], leaked_gen)
+    except TypeError as exc:
+        raise SelfTestFailure(
+            "dataclass generator vocabulary leaked TypeError"
+        ) from exc
+    if generated.kind != KIND_PROPOSE:
+        raise SelfTestFailure("dataclass generator vocabulary must still propose")
+    if generated.diagnostics.winning_action != "comfort":
+        raise SelfTestFailure(
+            "dataclass generator vocabulary must keep Distill order"
+        )
+    leaked_empty = DecisionConfig((label for label in ()), 0.0, False)  # type: ignore[arg-type]
+    _expect_code(
+        lambda: decide([1.0, 0.0, 0.0], leaked_empty),
+        code=ERROR_EMPTY_VOCABULARY,
+        what="dataclass empty generator vocabulary",
+    )
 
 
 def _self_test_confidence_floor_types() -> None:

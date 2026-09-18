@@ -82,9 +82,10 @@ class DecisionConfig:
         confidence_floor: float = 0.0,
         abstain_on_tie: bool = False,
     ) -> DecisionConfig:
-        labels = _require_vocabulary(vocabulary)
-        floor, flag = _validate_config(labels, confidence_floor, abstain_on_tie)
-        return cls(tuple(str(label) for label in labels), floor, flag)
+        labels, floor, flag = _validate_config(
+            vocabulary, confidence_floor, abstain_on_tie
+        )
+        return cls(labels, floor, flag)
 
     @classmethod
     def shipped(cls) -> DecisionConfig:
@@ -116,10 +117,10 @@ class Decision:
 
 def decide(row: Sequence[float], config: DecisionConfig) -> Decision:
     """Generic conversion. Replay of the shipped bank uses ``replay_output_row``."""
-    _floor, abstain_on_tie = _validate_config(
+    labels, floor, abstain_on_tie = _validate_config(
         config.vocabulary, config.confidence_floor, config.abstain_on_tie
     )
-    scores = _validate_row(row, config.width())
+    scores = _validate_row(row, len(labels))
     winning_index, runner_up_index, tied = _pick_winner(scores)
     winning_score = scores[winning_index]
     runner_up_score = None if runner_up_index is None else scores[runner_up_index]
@@ -127,7 +128,7 @@ def decide(row: Sequence[float], config: DecisionConfig) -> Decision:
     diagnostics = Diagnostics(
         winning_index=winning_index,
         winning_score=winning_score,
-        winning_action=config.vocabulary[winning_index],
+        winning_action=labels[winning_index],
         runner_up_index=runner_up_index,
         runner_up_score=runner_up_score,
         margin=margin,
@@ -137,7 +138,7 @@ def decide(row: Sequence[float], config: DecisionConfig) -> Decision:
     )
     if tied and abstain_on_tie:
         return Decision(KIND_ABSTAIN, REASON_TIE, diagnostics)
-    if confidence < config.confidence_floor:
+    if confidence < floor:
         return Decision(KIND_ABSTAIN, REASON_LOW_CONFIDENCE, diagnostics)
     return Decision(KIND_PROPOSE, None, diagnostics)
 
@@ -243,7 +244,7 @@ def _validate_config(
     vocabulary: Sequence[object],
     confidence_floor: object,
     abstain_on_tie: object,
-) -> tuple[float, bool]:
+) -> tuple[tuple[str, ...], float, bool]:
     labels = _require_vocabulary(vocabulary)
     if len(labels) == 0:
         raise DecisionError(ERROR_EMPTY_VOCABULARY, "decision vocabulary is empty")
@@ -270,7 +271,7 @@ def _validate_config(
         seen.append(label)
     floor = _require_confidence_floor(confidence_floor)
     flag = _require_abstain_on_tie(abstain_on_tie)
-    return floor, flag
+    return tuple(seen), floor, flag
 
 
 def _require_abstain_on_tie(value: object) -> bool:
