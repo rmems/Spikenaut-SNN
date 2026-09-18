@@ -1,0 +1,35 @@
+tools/model_bank_io.py
+  s_3f797e44643f5d::t_66379a1965a14f 1-149
+tools/model_bank_fields.py
+  s_3f797e44643f5d::t_77c047b5f9604e 1-126
+tools/model_bank.py
+  s_3f797e44643f5d::t_700d1602036668 53-61,70-73,75,78-81,83-116,118,121-124,126-186
+  s_3f797e44643f5d::t_e45a95daf89e8f 74,76-77,82
+  s_3f797e44643f5d::t_67003a19059e4a 117,119-120,125
+tests/test_model_bank.py
+  s_3f797e44643f5d::t_1ec40130bbede2 295-307,320-337
+  s_3f797e44643f5d::t_2e44f14874c394 308-319
+  s_3f797e44643f5d::t_d0379fff00f997 34
+tools/model_bank_json.py
+  s_3f797e44643f5d::t_633eb030fe284b 1-112
+tools/model_bank_const.py
+  s_3f797e44643f5d::t_b07234d0820e7d 1-45
+tools/model_bank_errors.py
+  s_3f797e44643f5d::t_e6e6c8b711eb93 1-75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "72951ab6ab8d43ef6ee68771997b59b434b11768",
+  "prompts": {},
+  "sessions": {
+    "s_3f797e44643f5d": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "241a896a-f3a3-4497-8cfb-9f622c89ca21",
+        "model": "grok-4.6"
+      },
+      "human_author": "Raul Cardenas Montoya <montoyaraul34@gmail.com>"
+    }
+  }
+}
