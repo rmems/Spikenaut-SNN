@@ -137,6 +137,8 @@ class ModelBankTests(unittest.TestCase):
                 self.assertIn(
                     "JSON nesting exceeds parser limit", str(exc)
                 )
+            else:
+                self.fail("deeply nested checkpoint was accepted")
 
     def test_control_character_token_is_attestation_error(self) -> None:
         cases = (
