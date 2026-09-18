@@ -83,6 +83,23 @@ def _reject_nonstandard_json_constant(token: str) -> None:
 MAX_JSON_NESTING = 1000
 
 
+def _advance_json_string(character: str, escaped: bool) -> tuple[bool, bool]:
+    """Return (still_in_string, next_escaped) for one character."""
+    if escaped:
+        return True, False
+    if character == "\\":
+        return True, True
+    return character != '"', False
+
+
+def _apply_nesting_delimiter(character: str, depth: int) -> int:
+    if character in "{[":
+        return depth + 1
+    if character in "}]" and depth:
+        return depth - 1
+    return depth
+
+
 def _json_nesting_depth(text: str) -> int:
     """Nesting of objects/arrays, ignoring text inside JSON strings."""
     depth = 0
@@ -91,21 +108,14 @@ def _json_nesting_depth(text: str) -> int:
     escaped = False
     for character in text:
         if in_string:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == '"':
-                in_string = False
+            in_string, escaped = _advance_json_string(character, escaped)
             continue
         if character == '"':
             in_string = True
-        elif character in "{[":
-            depth += 1
-            if depth > deepest:
-                deepest = depth
-        elif character in "}]" and depth:
-            depth -= 1
+            continue
+        depth = _apply_nesting_delimiter(character, depth)
+        if depth > deepest:
+            deepest = depth
     return deepest
 
 
