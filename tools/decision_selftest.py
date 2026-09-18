@@ -17,6 +17,7 @@ from pathlib import Path
 
 try:
     from .decision_core import (
+        ERROR_EMPTY_VOCABULARY,
         ERROR_INVALID_ABSTAIN_ON_TIE,
         ERROR_INVALID_CONFIDENCE_FLOOR,
         ERROR_INVALID_LABEL,
@@ -52,6 +53,7 @@ try:
     )
 except ImportError:
     from decision_core import (
+        ERROR_EMPTY_VOCABULARY,
         ERROR_INVALID_ABSTAIN_ON_TIE,
         ERROR_INVALID_CONFIDENCE_FLOOR,
         ERROR_INVALID_LABEL,
@@ -285,21 +287,23 @@ def _self_test_unrepresentable_scores() -> None:
 
 
 def _self_test_vocabulary_types() -> None:
-    try:
-        DecisionConfig.new([None, "temp", "power"])
-    except DecisionError as exc:
-        if exc.code != ERROR_INVALID_LABEL:
-            raise SelfTestFailure(
-                f"non-string vocabulary raised {exc.code}, "
-                f"expected {ERROR_INVALID_LABEL}"
-            ) from exc
-        return
-    except Exception as exc:
-        raise SelfTestFailure(
-            f"non-string vocabulary raised {type(exc).__name__}, "
-            "expected DecisionError"
-        ) from exc
-    raise SelfTestFailure("non-string vocabulary was accepted")
+    _expect_code(
+        lambda: DecisionConfig.new([None, "temp", "power"]),
+        code=ERROR_INVALID_LABEL,
+        what="non-string vocabulary label",
+    )
+    for vocab in (None, 3, "abc"):
+        _expect_code(
+            lambda vocab=vocab: DecisionConfig.new(vocab),  # type: ignore[arg-type]
+            code=ERROR_EMPTY_VOCABULARY,
+            what=f"vocabulary {vocab!r}",
+        )
+        leaked = DecisionConfig(vocab, 0.0, False)  # type: ignore[arg-type]
+        _expect_code(
+            lambda leaked=leaked: decide([1.0, 0.0, 0.0], leaked),
+            code=ERROR_EMPTY_VOCABULARY,
+            what=f"dataclass vocabulary {vocab!r}",
+        )
 
 
 def _self_test_confidence_floor_types() -> None:

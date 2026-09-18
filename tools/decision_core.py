@@ -82,9 +82,9 @@ class DecisionConfig:
         confidence_floor: float = 0.0,
         abstain_on_tie: bool = False,
     ) -> DecisionConfig:
-        labels = tuple(vocabulary)
+        labels = _require_vocabulary(vocabulary)
         floor, flag = _validate_config(labels, confidence_floor, abstain_on_tie)
-        return cls(labels, floor, flag)
+        return cls(tuple(str(label) for label in labels), floor, flag)
 
     @classmethod
     def shipped(cls) -> DecisionConfig:
@@ -220,15 +220,35 @@ def error_as_dict(exc: DecisionError) -> dict:
     return payload
 
 
+def _require_vocabulary(vocabulary: object) -> tuple[object, ...]:
+    """Refuse non-label containers. ``None`` TypeErrors on ``len()``; a
+    string would become one-character labels."""
+    if isinstance(vocabulary, (str, bytes, bytearray)):
+        raise DecisionError(
+            ERROR_EMPTY_VOCABULARY,
+            f"decision vocabulary {vocabulary!r} is not a sequence of labels",
+            value=vocabulary,
+        )
+    try:
+        return tuple(vocabulary)  # type: ignore[arg-type]
+    except TypeError:
+        raise DecisionError(
+            ERROR_EMPTY_VOCABULARY,
+            f"decision vocabulary {vocabulary!r} is not a sequence of labels",
+            value=vocabulary,
+        ) from None
+
+
 def _validate_config(
     vocabulary: Sequence[object],
     confidence_floor: object,
     abstain_on_tie: object,
 ) -> tuple[float, bool]:
-    if len(vocabulary) == 0:
+    labels = _require_vocabulary(vocabulary)
+    if len(labels) == 0:
         raise DecisionError(ERROR_EMPTY_VOCABULARY, "decision vocabulary is empty")
     seen: list[str] = []
-    for index, label in enumerate(vocabulary):
+    for index, label in enumerate(labels):
         if not isinstance(label, str):
             raise DecisionError(
                 ERROR_INVALID_LABEL,
