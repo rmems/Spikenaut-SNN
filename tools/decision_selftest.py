@@ -17,6 +17,7 @@ from pathlib import Path
 
 try:
     from .decision_core import (
+        ERROR_EMPTY_ROW,
         ERROR_EMPTY_VOCABULARY,
         ERROR_INVALID_ABSTAIN_ON_TIE,
         ERROR_INVALID_CONFIDENCE_FLOOR,
@@ -53,6 +54,7 @@ try:
     )
 except ImportError:
     from decision_core import (
+        ERROR_EMPTY_ROW,
         ERROR_EMPTY_VOCABULARY,
         ERROR_INVALID_ABSTAIN_ON_TIE,
         ERROR_INVALID_CONFIDENCE_FLOOR,
@@ -327,6 +329,15 @@ def _self_test_vocabulary_types() -> None:
     )
 
 
+def _self_test_row_containers() -> None:
+    for row in (None, 3, "1.0", {0.1, 0.2, 0.9}, iter((1.0, 0.0, 0.0))):
+        _expect_code(
+            lambda row=row: replay_output_row(row),  # type: ignore[arg-type]
+            code=ERROR_EMPTY_ROW,
+            what=f"row {row!r}",
+        )
+
+
 def _self_test_confidence_floor_types() -> None:
     for floor in ("0.5", None, True, 10**1000):
         try:
@@ -501,6 +512,7 @@ def run_self_test() -> int:
         _self_test_boolean_scores()
         _self_test_unrepresentable_scores()
         _self_test_vocabulary_types()
+        _self_test_row_containers()
         _self_test_confidence_floor_types()
         _self_test_abstain_on_tie_types()
         _self_test_spike_types()

@@ -22,8 +22,8 @@ Standard library only. ASCII hyphens only (cp1252-safe).
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 OUTPUT_WIDTH = 3
 NEURON_COUNT = 16
@@ -330,17 +330,30 @@ def _require_confidence_floor(value: object) -> float:
     return number
 
 
-def _validate_row(row: Sequence[float], expected: int) -> tuple[float, ...]:
-    if len(row) == 0:
+def _require_ordered_scores(row: object) -> Sequence[object]:
+    """Refuse non-sequences. ``None`` TypeErrors on ``len()``; a set
+    assigns channels in hash order."""
+    if isinstance(row, (str, bytes, bytearray)) or not isinstance(row, Sequence):
+        raise DecisionError(
+            ERROR_EMPTY_ROW,
+            f"output row {row!r} is not an ordered sequence of scores",
+            value=row,
+        )
+    return row
+
+
+def _validate_row(row: object, expected: int) -> tuple[float, ...]:
+    values = _require_ordered_scores(row)
+    if len(values) == 0:
         raise DecisionError(ERROR_EMPTY_ROW, "output row is empty")
-    if len(row) != expected:
+    if len(values) != expected:
         raise DecisionError(
             ERROR_WIDTH_MISMATCH,
-            f"output row width {len(row)}, expected {expected}",
-            got=len(row),
+            f"output row width {len(values)}, expected {expected}",
+            got=len(values),
             expected=expected,
         )
-    scores = _coerce_real_numbers(row)
+    scores = _coerce_real_numbers(values)
     _refuse_non_finite(scores)
     return scores
 
