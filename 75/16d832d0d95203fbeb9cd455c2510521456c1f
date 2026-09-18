@@ -1,0 +1,38 @@
+src/decision_helpers.rs
+  s_3f797e44643f5d::t_e589c2f549560b 6
+  s_3f797e44643f5d::t_736d69178c576d 1,3-5,7-51
+  s_3f797e44643f5d::t_d3735bf7b7dc40 2
+tools/decision_selftest.py
+  s_3f797e44643f5d::t_ea0c3e772601ac 151-162,168-171,174-181,184-191
+  s_3f797e44643f5d::t_e5190ccbb50566 397-410,419-422,424-431
+tools/decision_pin.py
+  s_3f797e44643f5d::t_c4b492f12c1f37 318-325,334,362-366,386-387
+  s_3f797e44643f5d::t_f543445a447c6c 442-447,454-457,459,461-462,464-466,468-478
+  s_3f797e44643f5d::t_d83e93962c8e8a 201-209,213-219,225-262
+src/decision.rs
+  s_3f797e44643f5d::t_d7720608392797 354-363,370-376,392
+  s_3f797e44643f5d::t_dbe4dfe7a111cf 67-70
+  s_3f797e44643f5d::t_d83a901117a71d 483
+tests/decision.rs
+  s_3f797e44643f5d::t_15e94f56657573 330
+  s_3f797e44643f5d::t_9856eaecb80025 332-409,413-416
+  s_3f797e44643f5d::t_c1cb931aa89969 410
+  s_3f797e44643f5d::t_be3d45c9c8bd0a 411
+  s_3f797e44643f5d::t_2d8e14f7f002d3 474-483,486-495,499-501,509-510
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7516d832d0d95203fbeb9cd455c2510521456c1f",
+  "prompts": {},
+  "sessions": {
+    "s_3f797e44643f5d": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "241a896a-f3a3-4497-8cfb-9f622c89ca21",
+        "model": "grok-4.6"
+      },
+      "human_author": "Raul Cardenas Montoya <montoyaraul34@gmail.com>"
+    }
+  }
+}
