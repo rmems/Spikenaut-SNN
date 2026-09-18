@@ -32,6 +32,7 @@ try:
         DecisionError,
         decide,
         replay_output_row,
+        replay_tick,
         score_readout,
     )
     from .decision_pin import (
@@ -66,6 +67,7 @@ except ImportError:
         DecisionError,
         decide,
         replay_output_row,
+        replay_tick,
         score_readout,
     )
     from decision_pin import (
@@ -407,6 +409,24 @@ def _self_test_overflow_readout() -> None:
     raise SelfTestFailure("overflowing readout returned a finite row")
 
 
+def _self_test_replay_tick_shipped_only() -> None:
+    weights = [0.0] * OUTPUT_WEIGHT_COUNT
+    spikes = [False] * NEURON_COUNT
+    scored = replay_tick(weights, spikes)
+    via_row = replay_output_row(score_readout(weights, spikes))
+    if scored != via_row:
+        raise SelfTestFailure(
+            "replay_tick must equal score_readout plus replay_output_row"
+        )
+    try:
+        replay_tick(weights, spikes, DecisionConfig.shipped())  # type: ignore[call-arg]
+    except TypeError:
+        return
+    raise SelfTestFailure(
+        "replay_tick must not accept a config (Rust is shipped-only)"
+    )
+
+
 def _swap_unequal_channels(model: dict) -> bool:
     """Swap two channels whose Q8.8 words differ so the pin can observe drift.
 
@@ -460,6 +480,7 @@ def run_self_test() -> int:
         _self_test_abstain_on_tie_types()
         _self_test_spike_types()
         _self_test_overflow_readout()
+        _self_test_replay_tick_shipped_only()
         _self_test_json_mem_parity()
     except SelfTestFailure as exc:
         print(f"FAIL self-test: {exc}")

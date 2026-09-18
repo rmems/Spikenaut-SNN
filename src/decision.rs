@@ -452,7 +452,9 @@ pub fn replay_output_row(row: &[f64]) -> Result<Decision, DecisionError> {
 /// Score one spike vector through the shipped readout, then decide.
 ///
 /// Software replay step downstream of a keep-LIF tick: spikes in, Distill-
-/// ordered decision out. It does not actuate the host.
+/// ordered decision out. It does not actuate the host. Custom knobs stay on
+/// [`score_readout`] plus [`decide`]; this path is always
+/// [`DecisionConfig::shipped`].
 ///
 /// # Errors
 ///

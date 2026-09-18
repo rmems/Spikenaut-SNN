@@ -150,16 +150,16 @@ def replay_output_row(row: Sequence[float]) -> Decision:
 def replay_tick(
     neuron_major: Sequence[float],
     spikes: Sequence[bool],
-    config: DecisionConfig | None = None,
 ) -> Decision:
-    """Score one spike vector through the readout, then decide.
+    """Score one spike vector through the shipped readout, then decide.
 
     This is the software replay step that sits downstream of a keep-LIF
     tick: spikes in, Distill-ordered decision out. It still does not
-    actuate anything.
+    actuate anything. Custom knobs stay on ``score_readout`` plus
+    ``decide``; this path is always ``DecisionConfig.shipped()``.
     """
     row = score_readout(neuron_major, spikes)
-    return decide(row, DecisionConfig.shipped() if config is None else config)
+    return replay_output_row(row)
 
 
 def score_readout(
