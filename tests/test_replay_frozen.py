@@ -93,8 +93,8 @@ class TestFixtureReplay(unittest.TestCase):
             self.assertIn(key, row)
         self.assertEqual(len(row["stim"]), 16)
         self.assertEqual(len(row["scores"]), 3)
-        self.assertTrue(
-            row["decision"]["winning_action"] in {"comfort", "temp", "power"}
+        self.assertIn(
+            row["decision"]["winning_action"], {"comfort", "temp", "power"}
         )
         # Unused axons stay exactly zero.
         self.assertTrue(all(v == 0.0 for v in row["stim"][5:]))

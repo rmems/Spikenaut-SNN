@@ -145,6 +145,8 @@ MISSING_POLICIES = (MISSING_POLICY_ENCODE_ZERO, MISSING_POLICY_REJECT)
 
 SPLIT_NAMES = ("train", "val", "test")
 
+_SPLIT_MANIFEST_KIND = "split manifest"
+
 
 def sha256_bytes(payload: bytes) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
@@ -202,7 +204,7 @@ def load_split_manifest(path: Path) -> dict[str, frozenset[str]]:
     """
     if not path.is_file():
         raise ParseError(f"missing split manifest: {path}")
-    return _split_manifest_entries(path, _read_utf8(path, kind="split manifest"))
+    return _split_manifest_entries(path, _read_utf8(path, kind=_SPLIT_MANIFEST_KIND))
 
 
 def _split_manifest_entries(path: Path, text: str) -> dict[str, frozenset[str]]:
@@ -764,11 +766,11 @@ def load_replay_inputs(
     split_doc = None
     split_sha256 = None
     if split_manifest_path is not None:
-        payload = _read_input_bytes(split_manifest_path, "split manifest")
+        payload = _read_input_bytes(split_manifest_path, _SPLIT_MANIFEST_KIND)
         split_sha256 = sha256_bytes(payload)
         split_doc = _split_manifest_entries(
             split_manifest_path,
-            _utf8_or_refuse(payload, split_manifest_path, "split manifest"),
+            _utf8_or_refuse(payload, split_manifest_path, _SPLIT_MANIFEST_KIND),
         )
     jsonl_bytes = _read_input_bytes(jsonl, "file")
     records = parse_jsonl_text(
