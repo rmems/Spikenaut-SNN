@@ -56,7 +56,7 @@ README = REPO_ROOT / "README.md"
 
 # Guards against a manifest silently emptied or padded by a bad edit. Bump
 # deliberately when a claim is added or retired.
-EXPECTED_CLAIMS = 14
+EXPECTED_CLAIMS = 15
 
 # Historical 1.6 KB is allowed only on a line that also carries this
 # annotation. The spec-table row is forbidden even when annotated.
@@ -321,6 +321,27 @@ CLAIMS: tuple[Claim, ...] = (
             "axon 7 stays unused (0)",
             "unused 5-15 stay 0",
             "Live bank remains exp-025 axons 0-4",
+        ),
+    ),
+    Claim(
+        name="output-row-decision-contract",
+        why=(
+            "Linear RM-1328 defines the Distill (comfort, temp, power) "
+            "output-row -> decision contract. A copy that still says the "
+            "readout has no contract, or that binds RM-1150's five-wide "
+            "ALLOW/WARN/THROTTLE/PAUSE/YIELD_GPU list onto those three "
+            "regression channels, would undo the landed honesty."
+        ),
+        required=(
+            "(comfort, temp, power)",
+            "replay_output_row",
+            "lowest-index",
+            "unbound",
+            "RM-1150",
+        ),
+        forbidden=(
+            "still without a decision contract",
+            "still has no decision contract",
         ),
     ),
 )
