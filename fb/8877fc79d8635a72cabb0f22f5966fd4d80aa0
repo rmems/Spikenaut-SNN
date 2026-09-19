@@ -1,0 +1,25 @@
+tests/test_model_bank.py
+  s_353b11f7e8c155::t_b80a59ae2fc77d 397-400,417-420,530-541,543-547
+  s_353b11f7e8c155::t_54eba30536bf40 542
+  s_353b11f7e8c155::t_3cd4027ac9c621 139-145
+tools/model_bank_json.py
+  s_353b11f7e8c155::t_54eba30536bf40 12,82-88,144
+tools/model_bank_fields.py
+  s_353b11f7e8c155::t_54eba30536bf40 84-89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "fb8877fc79d8635a72cabb0f22f5966fd4d80aa0",
+  "prompts": {},
+  "sessions": {
+    "s_353b11f7e8c155": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0ae6a-c05e-77c2-bed9-8ad2ea069ba8",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Raul Cardenas Montoya <montoyaraul34@gmail.com>"
+    }
+  }
+}
