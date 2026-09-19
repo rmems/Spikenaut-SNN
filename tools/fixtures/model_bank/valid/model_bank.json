@@ -1,0 +1,13 @@
+{
+  "models": [
+    {
+      "checkpoint": "checkpoints/ok.bin",
+      "checkpoint_digest": "sha256:bd0133a6225aa377e9c68668b7abd4d69a1dc670877ad01be5629befa7d10111",
+      "feature_map_id": "spikenaut.feature-map.live-exp-025.v1",
+      "id": "fixture-ok",
+      "numeric_format": "q8.8-fixed-point",
+      "output_contract_id": "spikenaut.output-contract.supervisor-v3.rm-1150"
+    }
+  ],
+  "schema_version": 1
+}

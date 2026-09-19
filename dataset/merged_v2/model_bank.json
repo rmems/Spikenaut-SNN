@@ -1,0 +1,14 @@
+{
+  "models": [
+    {
+      "checkpoint": "snn_model.json",
+      "checkpoint_digest": "sha256:cf3b7a47c5eb62d93b28480804e2ca82923db5bece1285bcbeba723437bfaf89",
+      "feature_map_id": "spikenaut.feature-map.live-exp-025.v1",
+      "id": "merged_v2",
+      "numeric_format": "q8.8-fixed-point",
+      "output_contract_id": "spikenaut.output-contract.supervisor-v3.rm-1150",
+      "training_dataset_digest": "sha256:26d7d7442605a32b11330f53f55e621750f31e775465209991f73f94a6c72c09"
+    }
+  ],
+  "schema_version": 1
+}

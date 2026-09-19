@@ -281,6 +281,7 @@ config.json                        # Machine-readable header: neuron and
                                    # channel counts, weight format, clock
 
 dataset/merged_v2/
+├── model_bank.json                # One-entry attested bank wrapping this checkpoint (RM-1327)
 ├── parameters.mem                 # 16 neuron thresholds (Q8.8 hex)
 ├── parameters_decay.mem           # 16 decay rates (Q8.8 hex)
 ├── parameters_weights.mem         # 16x16 weight matrix (Q8.8 hex)
@@ -289,6 +290,7 @@ dataset/merged_v2/
 
 tools/                             # Python package, standard library only
 ├── verify_q88.py                  # Q8.8 encoding verifier (#4)
+├── verify_model_bank.py           # Manifest-backed model-bank attestation (RM-1327)
 ├── measure_hamming.py             # float-vs-Q8.8 Hamming holdout (#39):
                                    # CLI; keep-LIF stepper is hamming_core.py;
                                    # --self-test proves it can fail.
@@ -298,9 +300,10 @@ tools/                             # Python package, standard library only
                                    # src/stim.rs, on a shared fixture. CLI;
                                    # the pin itself is live_stim_pin.py and
                                    # --self-test is live_stim_selftest.py.
-└── fixtures/live_stim/            # reading.jsonl + expected_stim.json, read
+├── fixtures/live_stim/            # reading.jsonl + expected_stim.json, read
                                    # by both live_stim_parity.py and
                                    # tests/live_stim.rs
+└── fixtures/model_bank/           # Golden valid + negative bank fixtures (RM-1327)
 
 src/                               # Rust, `spikenaut-snn`
 ├── lib.rs                         # Crate root: what the library exposes
@@ -454,7 +457,7 @@ A replacement corpus, `qubic_ticks_snn.jsonl` (~27,430 records), and a data adap
 - **FPGA spike/action/membrane parity vs software is not done.** Phase C live smoke ([silicon-hdl#68](https://github.com/rmems/silicon-hdl/issues/68), CLOSED) is **PASS**: PROGRAM_OK + `step_en` ~heartbeat after BTNC in SW15 status mode on Basys. That is not FPGA parity, not a Dale inhibitory proof on board, and not a measurement of the power/LUT rows below. Spike agreement, action agreement, membrane-potential error, and quantization error against the software model have not been measured. [#6](https://github.com/rmems/Spikenaut-SNN/issues/6) stays open.
 - **Float-vs-Q8.8 Hamming is published as a measurement, not a gate.** `tools/measure_hamming.py` reports per-tick Hamming (%) and mean bits for `k=none` and `k=4` with the full protocol (weights, encoder, episodes, seed). exp-025 scratch (this bank): k=none **14.960%**, k=4 **49.095%**, json↔mem hidden **0/256**. exp-024 claimed `k=none` 13.187% / 0.1608 bits and `k=4` 56.188% / 1.697 bits on the exp-023 PASS Distill knobs scratch (seed 123 / 5 ep), legal 5-ch train-scaled encoder, frozen minmax lineage `74acdd0f`, v3 test `gpu-000170..198` (n=117653). The in-repo harness run is a method fixture, not a reproduction of either scratch. A pass threshold is deferred to [#20](https://github.com/rmems/Spikenaut-SNN/issues/20). [#39](https://github.com/rmems/Spikenaut-SNN/issues/39), [#4](https://github.com/rmems/Spikenaut-SNN/issues/4)
 - **Checked export is not hardware parity.** `silicon-bridge` 0.3.0 now rejects malformed or out-of-range parameters and preserves signed hidden/readout words; the in-repo adapter reproduces all four committed `.mem` files byte-for-byte. Its UART feature stays disabled here, and an exact parameter image does not establish spike/action/membrane agreement on the connected FPGA. [#15](https://github.com/rmems/Spikenaut-SNN/issues/15), [#6](https://github.com/rmems/Spikenaut-SNN/issues/6)
-- **The output layer has a JSON source and still has no decision contract.** The 48 signed values in `parameters_output_weights.mem` match per-neuron `output_weights` in `snn_model.json` (neuron-major). `tools/verify_q88.py` still pins the `.mem` by canonical sha256 and gold hex. Nothing here defines what the three rows mean. [#4](https://github.com/rmems/Spikenaut-SNN/issues/4), [#20](https://github.com/rmems/Spikenaut-SNN/issues/20)
+- **The output layer has a JSON source and still has no decision contract.** The 48 signed values in `parameters_output_weights.mem` match per-neuron `output_weights` in `snn_model.json` (neuron-major). `tools/verify_q88.py` still pins the `.mem` by canonical sha256 and gold hex. Nothing here defines what the three rows mean. The model-bank entry for this checkpoint names the RM-1150 output-contract identifier; it does not implement that decision. [#4](https://github.com/rmems/Spikenaut-SNN/issues/4), [#20](https://github.com/rmems/Spikenaut-SNN/issues/20)
 - **Tier A stream-READY is not axon fill.** After [gaming-telemetry#27](https://github.com/rmems/gaming-telemetry/pull/27), axon **6** (`memory_used_mb`) is **READY** to stream; each of `pcie_tx_kbps` and `pcie_rx_kbps` is independently **READY** to stream (axon **7** is **stream-candidate / projection TBD** and stays unused (0) until a named Stage-1 EXP); axon **8** (`fan_speed_perc`) is **CONDITIONAL READY** (variance-gated). Axons **5** (`gpu_util_pct`) and **9** (`cpu_util_pct`) stay **BLOCKED** (collector schema absent — do not invent them, and do not substitute encoder/decoder util). Live bank remains exp-025 axons 0-4; unused 5-15 stay 0 until a named Stage-1 EXP. Schema / acceptance on [#20](https://github.com/rmems/Spikenaut-SNN/issues/20) stay open.
 - **Upstream dataset hygiene.** Sibling telemetry datasets still carry dead columns, schema drift, mixed timestamp formats, synthetic tail records, and stuck values. [#2](https://github.com/rmems/Spikenaut-SNN/issues/2), [#3](https://github.com/rmems/Spikenaut-SNN/issues/3)
 

@@ -7,3 +7,12 @@ assets/fpga_hardware_cat.jpg filter=lfs diff=lfs merge=lfs -text
 # only: the verifier hashes the canonical token sequence, not raw bytes, so
 # the pin holds either way.
 *.mem text eol=lf
+
+# Model-bank attestation hashes checkpoint file bytes (RM-1327). Keep those
+# artifacts LF so a Windows core.autocrlf checkout cannot rewrite them and
+# fail attestation of an otherwise unchanged tree. Unlike *.mem, the pin is
+# the raw-byte digest, so this is the pin, not only defense in depth. The
+# golden manifests are compared to dumps_manifest byte-for-byte (LF-only).
+snn_model.json text eol=lf
+tools/fixtures/model_bank/*/checkpoints/ok.bin text eol=lf
+model_bank.json text eol=lf
