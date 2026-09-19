@@ -36,9 +36,9 @@ fn a_subthreshold_step_leaks_without_firing() {
     assert!(cell.check_fire().is_none());
 }
 
-/// Acceptance from issue #5: `neuromod` resolves to 0.5.x from crates.io,
-/// not from a git or sibling-path pin. The `"0.5"` caret is
-/// `>=0.5.0, <0.6.0`; a later 0.5.x lockfile bump must still pass.
+/// Acceptance from issue #5: `neuromod` resolves to 0.6.x from crates.io,
+/// not from a git or sibling-path pin. The `"0.6"` caret is
+/// `>=0.6.0, <0.7.0`; a later 0.6.x lockfile bump must still pass.
 #[test]
 fn neuromod_resolves_from_crates_io() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -53,11 +53,11 @@ fn neuromod_resolves_from_crates_io() {
         entry.contains(r#"source = "registry+https://github.com/rust-lang/crates.io-index""#),
         "neuromod must come from the crates.io registry, got:\n{entry}",
     );
-    // Same series check as axon-encoder's `"0.4"` caret: `version = "0.5.`
-    // matches 0.5.2 and 0.5.10, not 0.6.0.
+    // Same series check as axon-encoder's `"0.4"` caret: `version = "0.6.`
+    // matches 0.6.0 and 0.6.10, not 0.7.0.
     assert!(
-        entry.contains(r#"version = "0.5."#),
-        "neuromod must resolve to 0.5.x (>=0.5, <0.6), got:\n{entry}",
+        entry.contains(r#"version = "0.6."#),
+        "neuromod must resolve to 0.6.x (>=0.6, <0.7), got:\n{entry}",
     );
     assert!(
         !lock.contains("source = \"git+") && !lock.contains("[[patch"),

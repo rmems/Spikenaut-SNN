@@ -132,7 +132,7 @@ Parity with the reference is pinned across both languages: `tools/live_stim_pari
 
 Readings JSON cannot express — `NaN`, the infinities, an `f64` past the binary32 ceiling, negative zero, subnormals — travel in the pin as raw IEEE-754 bits, each recording whether the reference *refused* it. Without them the refusal contract would have no cross-language coverage at all, since a JSONL row carrying one would make the pin generator reject the whole file. The same tool also pins Python's `FROZEN_MINMAX` against `dataset/merged_v2/snn_model.json`, mirroring what `shipped_bank_frozen_minmax_matches_live_raw_ranges` already did for Rust. One divergence is known and uncovered: a degenerate span (`max <= min`) short-circuits in Rust and divides by a negative width in Python. It is unreachable on this bank — the shipped spans are strictly increasing and now pinned on both sides — and is documented rather than papered over.
 
-This is the input side only. It is not a claim that this crate runs the shipped bank — `tools/hamming_lif.py` remains the only place in this repository that steps *these weights* through a membrane, and `src/neuromod_host.rs`, which does step a LIF, steps a default published `neuromod::LifNeuron` that never sees them — and it does not change FPGA parity ([#6](https://github.com/rmems/Spikenaut-SNN/issues/6)), where `LiveTelemetryEncoder` stays the right front end for a spike-consuming consumer.
+This is the input side only. It is not a claim that this crate runs the shipped bank — `tools/hamming_lif.py` remains the only place in this repository that steps *these weights* through a membrane. `src/neuromod_host.rs` steps a default published `neuromod::LifNeuron` and a synthetic non-negative `SpikingNetwork`, neither of which sees the shipped weights. This also does not change FPGA parity ([#6](https://github.com/rmems/Spikenaut-SNN/issues/6)), where `LiveTelemetryEncoder` stays the right front end for a spike-consuming consumer.
 
 A live 5-column **kinetic** encode path exists on top of `LiveTelemetryEncoder`: `kinetic::LiveKineticFrontEnd` runs one causal `kinetic-signals` pipeline per live sensor and encodes through `LiveTelemetryEncoder`, targeting axons 0–4 with axons 5–15 held at zero. Being a spike path, it inherits the modality caveat above — it is not the shipped bank's front end either. Its projection is the identity — each sensor's own raw value, normalised against the `frozen_minmax` span the sidecar records for it, lands on its own axon. The eleven kinetic features come back alongside the frame as audit data and **do not** reach an axon: which of them (if any) earns one is the RAW / KINETIC / HYBRID ablation, which remains open — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14). The encode path is host-side only and does not block FPGA parity.
 
@@ -325,17 +325,32 @@ src/                               # Rust, `spikenaut-snn`
                                    # 5-15 at zero); host-side only, FPGA
                                    # parity not blocked; does not replace
                                    # axon-encoder
-├── neuromod_host.rs               # Host-side neuromod 0.5 LifNeuron
-                                   # adapter; does not rewrite weights
+├── neuromod_host.rs               # Host-side neuromod 0.6 experiments:
+                                   # LifNeuron compatibility, seeded
+                                   # non-negative R-STDP network, sparse GIF
+├── critic.rs                      # Checked limbic-critic TD adapter
+├── wiring.rs                      # Deterministic 12:4 Dale recurrent
+                                   # topology experiment; not the bank matrix
+├── ipc.rs                         # Validated corpus-ipc messages;
+                                   # typed JSON only, no transport
+├── silicon.rs                     # Checked silicon-bridge 0.3 signed Q8.8
+                                   # export; KxN exporter to NxK HDL adapter
+├── training.rs                    # Optional plasticity-lab 0.2 session over
+                                   # the synthetic seeded HostNetwork only
 └── json.rs                        # Strict reader, so the dependency list
                                    # stays at what Cargo.toml declares
 ```
 
 The artifacts are the product; the code exists to check them and to hand them
 to consumers in a standard form. The Rust crate still does not run the
-network — `Neuron::membrane_potential` is decoded and never advanced.
+**shipped exp-025 bank** — `Neuron::membrane_potential` is decoded and never
+advanced. `HostNetwork` and `HostGifLayer` are explicitly separate experiments
+with synthetic non-negative weights / GIF dynamics; neither is the bank.
+The optional `HostTrainingSession` applies `plasticity-lab` only to that
+synthetic `HostNetwork`; its in-memory weight deltas are not a new exp-025
+checkpoint and are not written into `dataset/merged_v2/`.
 `stim::LiveStimAdapter` builds the input the network would eat; it does not
-step it.
+step the shipped weights.
 `tools/measure_hamming.py` is the documented exception: it publishes
 float-vs-Q8.8 Hamming on a holdout via a standard-library **keep-LIF**
 stepper in `tools/hamming_core.py`
@@ -356,6 +371,58 @@ initial $readmemh("dataset/merged_v2/parameters.mem", threshold_ram);
 reg [15:0] weight_ram [0:255];
 initial $readmemh("dataset/merged_v2/parameters_weights.mem", weight_ram);
 ```
+
+### Checked FPGA parameter export
+
+[`silicon-bridge`](https://crates.io/crates/silicon-bridge) 0.3.0 now validates
+and encodes the full shipped bank through its rejecting **Checked signed Q8.8**
+path. `export_shipped_fpga_image()` returns all four memory images without
+overwriting the vault:
+
+```rust
+use spikenaut_snn::{FPGA_MEM_FILENAMES, export_shipped_fpga_image};
+
+let image = export_shipped_fpga_image()?;
+let files = image.mem_files();
+assert_eq!(files.each_ref().map(|file| file.name), FPGA_MEM_FILENAMES);
+assert_eq!(image.weights[6 * 16] as u16, 0xFF00); // signed -1.0 survives
+# Ok::<(), spikenaut_snn::SiliconExportError>(())
+```
+
+The crate validates readout weights as KxN (outputs by neurons), while the
+checked-in vault and silicon-hdl `OutputLayer` consume NxK (neuron by output).
+The adapter performs both transposes explicitly; its contract test regenerates
+all 336 words and matches the four committed `.mem` files byte-for-byte. The
+dependency uses default features disabled, so the optional UART feature stays
+disabled. This deterministic export does not prove live UART or FPGA parity;
+the connected-board protocol and software-vs-hardware outputs remain separate
+evidence gates.
+
+### Optional host training experiment
+
+The `training` Cargo feature adopts [`plasticity-lab`](https://crates.io/crates/plasticity-lab)
+0.2 from crates.io. It wraps the existing caller-seeded, synthetic
+`HostNetwork`, uses one persistent RNG stream across the whole batch, and
+returns the published `TrainingSummary`, including the exact per-weight deltas
+that were applied:
+
+```rust
+use spikenaut_snn::{HostTrainingSession, TrainingConfig, TrainingExample};
+
+let mut session = HostTrainingSession::new(99, TrainingConfig::default());
+let summary = session.run_session(&[
+    TrainingExample { stimuli: vec![1.0; 16], reward: 0.0 },
+    TrainingExample { stimuli: vec![0.0; 16], reward: 10.0 },
+])?;
+assert!(summary.weight_drifts.iter().flatten().any(|&delta| delta != 0.0));
+# Ok::<(), spikenaut_snn::TrainerError>(())
+```
+
+Run it with `cargo test --locked --features training`. The feature is off by
+default: this is an M3 host experiment, not a runtime for the signed exp-025
+bank. It neither exports Q8.8 nor hands a checkpoint to `silicon-bridge`, so
+the Julia Distill sidecar remains the only artifact-producing trainer until a
+separately validated parity/export path exists.
 
 ## Training provenance
 
@@ -389,7 +456,7 @@ A replacement corpus, `qubic_ticks_snn.jsonl` (~27,430 records), and a data adap
 - **Outgoing Dale, no recurrence.** Hidden weights are mixed-sign; sidecar `inhibitory` marks neurons 12–15 on the readout (12:4). That is not incoming-Dale recurrence and not K-WTA in the NIR graph — train-time K-WTA is sidecar metadata (`k_wta: 4`). The gap that remains is **recurrent** memory, not temporal state as such: each LIF still keeps a decaying membrane. [#3](https://github.com/rmems/Spikenaut-SNN/issues/3)
 - **FPGA spike/action/membrane parity vs software is not done.** Phase C live smoke ([silicon-hdl#68](https://github.com/rmems/silicon-hdl/issues/68), CLOSED) is **PASS**: PROGRAM_OK + `step_en` ~heartbeat after BTNC in SW15 status mode on Basys. That is not FPGA parity, not a Dale inhibitory proof on board, and not a measurement of the power/LUT rows below. Spike agreement, action agreement, membrane-potential error, and quantization error against the software model have not been measured. [#6](https://github.com/rmems/Spikenaut-SNN/issues/6) stays open.
 - **Float-vs-Q8.8 Hamming is published as a measurement, not a gate.** `tools/measure_hamming.py` reports per-tick Hamming (%) and mean bits for `k=none` and `k=4` with the full protocol (weights, encoder, episodes, seed). exp-025 scratch (this bank): k=none **14.960%**, k=4 **49.095%**, json↔mem hidden **0/256**. exp-024 claimed `k=none` 13.187% / 0.1608 bits and `k=4` 56.188% / 1.697 bits on the exp-023 PASS Distill knobs scratch (seed 123 / 5 ep), legal 5-ch train-scaled encoder, frozen minmax lineage `74acdd0f`, v3 test `gpu-000170..198` (n=117653). The in-repo harness run is a method fixture, not a reproduction of either scratch. A pass threshold is deferred to [#20](https://github.com/rmems/Spikenaut-SNN/issues/20). [#39](https://github.com/rmems/Spikenaut-SNN/issues/39), [#4](https://github.com/rmems/Spikenaut-SNN/issues/4)
-- **Unsigned `.mem` export still zero-clamps negatives.** `silicon-bridge`'s `encode_q88` / `encode_q88_unsigned` on the `$readmemh` `.mem` parameter-export path still clamp negatives to 0 (`u16`). Using that path blindly would destroy signed inhibitory weights (hidden and `parameters_output_weights.mem`). A separate `encode_q88_signed` (`i16`) exists for UART/host stimuli; it is not a substitute for signed weight `.mem` export. [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) is still the crates.io pin and signed-export ticket.
+- **Checked export is not hardware parity.** `silicon-bridge` 0.3.0 now rejects malformed or out-of-range parameters and preserves signed hidden/readout words; the in-repo adapter reproduces all four committed `.mem` files byte-for-byte. Its UART feature stays disabled here, and an exact parameter image does not establish spike/action/membrane agreement on the connected FPGA. [#15](https://github.com/rmems/Spikenaut-SNN/issues/15), [#6](https://github.com/rmems/Spikenaut-SNN/issues/6)
 - **The output layer has a JSON source and still has no decision contract.** The 48 signed values in `parameters_output_weights.mem` match per-neuron `output_weights` in `snn_model.json` (neuron-major). `tools/verify_q88.py` still pins the `.mem` by canonical sha256 and gold hex. Nothing here defines what the three rows mean. The model-bank entry for this checkpoint names the RM-1150 output-contract identifier; it does not implement that decision. [#4](https://github.com/rmems/Spikenaut-SNN/issues/4), [#20](https://github.com/rmems/Spikenaut-SNN/issues/20)
 - **Tier A stream-READY is not axon fill.** After [gaming-telemetry#27](https://github.com/rmems/gaming-telemetry/pull/27), axon **6** (`memory_used_mb`) is **READY** to stream; each of `pcie_tx_kbps` and `pcie_rx_kbps` is independently **READY** to stream (axon **7** is **stream-candidate / projection TBD** and stays unused (0) until a named Stage-1 EXP); axon **8** (`fan_speed_perc`) is **CONDITIONAL READY** (variance-gated). Axons **5** (`gpu_util_pct`) and **9** (`cpu_util_pct`) stay **BLOCKED** (collector schema absent — do not invent them, and do not substitute encoder/decoder util). Live bank remains exp-025 axons 0-4; unused 5-15 stay 0 until a named Stage-1 EXP. Schema / acceptance on [#20](https://github.com/rmems/Spikenaut-SNN/issues/20) stay open.
 - **Upstream dataset hygiene.** Sibling telemetry datasets still carry dead columns, schema drift, mixed timestamp formats, synthetic tail records, and stuck values. [#2](https://github.com/rmems/Spikenaut-SNN/issues/2), [#3](https://github.com/rmems/Spikenaut-SNN/issues/3)
@@ -440,11 +507,12 @@ Spikenaut-SNN is a weights and model repository that now also carries a thin Rus
 | [`nir-rs`](https://crates.io/crates/nir-rs) 0.4.3 | NIR graph interchange | **Declared** in `Cargo.toml`, resolved from crates.io — [#8](https://github.com/rmems/Spikenaut-SNN/issues/8) |
 | [`kinetic-signals`](https://crates.io/crates/kinetic-signals) 0.4.0 | Causal temporal features (Hurst / Hawkes / surprise / volatility / entropy / EMA-SMA / Z-score / moments) | **Declared** in `Cargo.toml`, resolved from crates.io — host-side preprocessing **upstream of** `axon-encoder`; does not replace it. The kinetic path now encodes against the live 5-col contract (`LiveKineticFrontEnd` → `LiveTelemetryEncoder`, axons 0–4, axons 5–15 at zero), host-side only. FPGA parity is not blocked: software and FPGA should see the same encoded sequence. RAW / KINETIC / HYBRID ablation remains open — [#14](https://github.com/rmems/Spikenaut-SNN/issues/14) |
 | [`axon-encoder`](https://crates.io/crates/axon-encoder) 0.4.0 | Telemetry → spike encoding | **Declared** in `Cargo.toml`, resolved from crates.io — downstream of `kinetic-signals` — [#9](https://github.com/rmems/Spikenaut-SNN/issues/9) |
-| [`neuromod`](https://crates.io/crates/neuromod) 0.5.2 | LIF engine, learning rules, neuromodulators | **Declared** from crates.io — host-side `LifNeuron` adapter only; does not rewrite weights, Distill, FPGA, or training — [#5](https://github.com/rmems/Spikenaut-SNN/issues/5) |
-| `silicon-bridge` | Q8.8 `.mem` export | Dependency once published — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
-| `synaptic-mesh` | Dale 80:20 polarity, 16-channel router | Dependency once published — [#16](https://github.com/rmems/Spikenaut-SNN/issues/16) |
-| `limbic-critic` | TD critic → neuromodulator adapter | Optional dependency once published — [#10](https://github.com/rmems/Spikenaut-SNN/issues/10) |
-| `plasticity-lab` | Reproducible training loops | Only once it actually writes weight deltas — [#17](https://github.com/rmems/Spikenaut-SNN/issues/17) |
+| [`neuromod`](https://crates.io/crates/neuromod) 0.6.0 | LIF engine, seeded stepping, R-STDP, neuromodulators, sparse GIF | **Declared** from crates.io — `HostLif` compatibility plus parallel `HostNetwork` / `HostGifLayer` experiments; their synthetic non-negative weights are not exp-025 and do not rewrite Distill or FPGA artifacts — [#5](https://github.com/rmems/Spikenaut-SNN/issues/5) |
+| [`limbic-critic`](https://crates.io/crates/limbic-critic) 0.3.0 | Checked TD critic → neuromodulator adapter | **Declared** from crates.io — `HostCritic` uses `try_assess`, preserves signed TD dopamine, and keeps domain reward collection outside — [#10](https://github.com/rmems/Spikenaut-SNN/issues/10) |
+| [`synaptic-wiring`](https://crates.io/crates/synaptic-wiring) 0.3.0 | Deterministic topology, Dale polarity, delayed propagation | **Declared** from crates.io — parallel 16-neuron 12:4 recurrent proposal only; it does not reinterpret the shipped dense input matrix or change `.mem` layout — [#16](https://github.com/rmems/Spikenaut-SNN/issues/16) |
+| [`corpus-ipc`](https://crates.io/crates/corpus-ipc) 0.1.0 | Versioned stimulus, spike, and modulator wire messages | **Declared** from crates.io with transport features disabled — validated typed JSON only; no ZMQ/server, and no invented mapping between the two crates' different modulator vocabularies |
+| [`silicon-bridge`](https://crates.io/crates/silicon-bridge) 0.3.0 | Checked signed Q8.8 `.mem` export | **Declared** from crates.io with default features disabled — `export_shipped_fpga_image` rejects invalid shapes/ranges, preserves signed hidden and readout words, and explicitly adapts KxN exporter order to NxK silicon-hdl order; all four vault images match byte-for-byte. The UART feature stays disabled, and this does not prove live UART or FPGA parity — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
+| [`plasticity-lab`](https://crates.io/crates/plasticity-lab) 0.2.0 | Reproducible reward-modulated training sessions | **Declared** from crates.io as optional feature `training` — `HostTrainingSession` uses the synthetic seeded `HostNetwork`, proves real in-memory weight deltas, and does not export or overwrite exp-025 artifacts — [#17](https://github.com/rmems/Spikenaut-SNN/issues/17) |
 | `brainstem-daemon` | 1 kHz headless inference host | **Peer process, not a dependency** — [#11](https://github.com/rmems/Spikenaut-SNN/issues/11) |
 | `thalamic-relay` | NVML supervisor, 85 °C / 350 W brake | **Peer process, not a dependency** — [#12](https://github.com/rmems/Spikenaut-SNN/issues/12) |
 | `SynapticDistill.jl` | Training sidecar that writes the `.mem` artifacts | **Sidecar, not a Cargo dependency** — Distill pin landed; closed [#13](https://github.com/rmems/Spikenaut-SNN/issues/13) |
@@ -462,7 +530,7 @@ As of the right now the weights are a mess, merged_v2 is where I am going to con
 
 ## Related
 
-- **Limen-Neural** — [github.com/Limen-Neural](https://github.com/Limen-Neural) (runtime and learning-rule crates: `neuromod`, `nir-rs`, `axon-encoder`, `synaptic-mesh`, `plasticity-lab`, `brainstem-daemon`). The FPGA-export and training repos named elsewhere in this document — `silicon-bridge`, `silicon-hdl`, `kinetic-signals`, `limbic-critic`, `thalamic-relay`, `SynapticDistill.jl` — have moved to [github.com/rmems](https://github.com/rmems); the old org paths only 301-redirect.
+- **Limen-Neural** — [github.com/Limen-Neural](https://github.com/Limen-Neural) (runtime and learning-rule crates include `neuromod`, `nir-rs`, `axon-encoder`, `synaptic-wiring`, `limbic-critic`, `corpus-ipc`, `plasticity-lab`, and `brainstem-daemon`). The FPGA-export and training peers named elsewhere remain separate repositories.
 - **Telemetry** — [rmems/Spikenaut-SNN-Telemetry](https://huggingface.co/datasets/rmems/Spikenaut-SNN-Telemetry)
 - **Q8.8 export** — [silicon-bridge](https://github.com/rmems/silicon-bridge)
 - **Research program** — [Artificial Interoception / Neuromorphic Supervisor](https://github.com/rmems/Spikenaut-SNN/issues/7)

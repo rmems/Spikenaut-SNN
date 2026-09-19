@@ -116,7 +116,7 @@ pub const MERGED_V2_PROVENANCE: &str = "shipped merged_v2 artifact: 16-neuron LI
 ///
 /// Compiled in so [`SnnModel::load_default`] does not resolve a
 /// `CARGO_MANIFEST_DIR` path at runtime.
-const SHIPPED_MODEL_JSON: &str = include_str!("../dataset/merged_v2/snn_model.json");
+pub(crate) const SHIPPED_MODEL_JSON: &str = include_str!("../dataset/merged_v2/snn_model.json");
 
 /// Checkout path of the shipped `merged_v2` JSON.
 ///
@@ -634,7 +634,7 @@ fn reject_unknown_members(context: &str, value: &Json, known: &[&str]) -> Result
 ///
 /// `context` names the field for the error message, which quotes the value as
 /// written rather than as snapped, so it points at the file.
-fn q8_8_field(context: &str, value: f64) -> Result<f64, ModelError> {
+pub(crate) fn q8_8_field(context: &str, value: f64) -> Result<f64, ModelError> {
     if !value.is_finite() {
         return Err(ModelError::Schema(format!(
             "{context} is {value}, expected a finite number"
