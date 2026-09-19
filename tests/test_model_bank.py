@@ -39,7 +39,7 @@ from tools.model_bank import (
     wrap_legacy_checkpoint,
 )
 from tools.verify_model_bank import main
-from tests.model_bank_review_cases import ModelBankReviewTests  # noqa: F401
+from tests import model_bank_review_cases
 
 FIXTURE_ROOT = REPO_ROOT / "tools" / "fixtures" / "model_bank"
 VALID = FIXTURE_ROOT / "valid" / MANIFEST_FILENAME
@@ -52,6 +52,16 @@ FIXTURE_DIGEST = (
 SHIPPED_DIGEST = (
     "sha256:cf3b7a47c5eb62d93b28480804e2ca82923db5bece1285bcbeba723437bfaf89"
 )
+
+
+def load_tests(loader, suite, pattern):
+    del pattern
+    suite.addTests(
+        loader.loadTestsFromTestCase(
+            model_bank_review_cases.ModelBankReviewTests
+        )
+    )
+    return suite
 
 
 class ModelBankTests(unittest.TestCase):
@@ -102,17 +112,6 @@ class ModelBankTests(unittest.TestCase):
                 f"sha256:{hashlib.sha256(entry.checkpoint_bytes).hexdigest()}",
                 entry.checkpoint_digest,
             )
-
-    def test_nul_loader_paths_are_parse_errors(self) -> None:
-        with self.assertRaises(BankParseError) as caught_manifest:
-            load_model_bank("model_bank.json\x00")
-        # resolve() runs first; pathlib raises ValueError for an embedded NUL.
-        self.assertRegex(
-            str(caught_manifest.exception), r"cannot read|cannot resolve"
-        )
-        with self.assertRaises(BankParseError) as caught_ckpt:
-            load_unattested_checkpoint("snn_model.json\x00")
-        self.assertIn("cannot read", str(caught_ckpt.exception))
 
     def test_deeply_nested_json_is_parse_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

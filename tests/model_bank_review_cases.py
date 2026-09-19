@@ -22,6 +22,16 @@ VALID = FIXTURE_ROOT / "valid" / MANIFEST_FILENAME
 
 
 class ModelBankReviewTests(unittest.TestCase):
+    def test_nul_loader_paths_are_parse_errors(self) -> None:
+        with self.assertRaises(BankParseError) as caught_manifest:
+            load_model_bank("model_bank.json\x00")
+        self.assertRegex(
+            str(caught_manifest.exception), r"cannot read|cannot resolve"
+        )
+        with self.assertRaises(BankParseError) as caught_ckpt:
+            load_unattested_checkpoint("snn_model.json\x00")
+        self.assertIn("cannot read", str(caught_ckpt.exception))
+
     def test_unattested_checkpoint_rejects_invalid_utf8(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             broken = Path(tmp) / "not-utf8.json"
