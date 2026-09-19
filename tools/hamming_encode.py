@@ -149,7 +149,15 @@ def load_jsonl(path: Path) -> list[tuple[int, dict]]:
     """
     if not path.is_file():
         raise ParseError(f"missing file: {path}")
-    text = read_utf8_text(path)
+    return parse_jsonl_text(read_utf8_text(path), path.name)
+
+
+def parse_jsonl_text(text: str, name: str) -> list[tuple[int, dict]]:
+    """``load_jsonl`` on already-read text; ``name`` labels errors.
+
+    Callers that must hash the exact bytes they replayed read the file
+    once and hand the same payload here -- no second read can drift.
+    """
     records: list[tuple[int, dict]] = []
     # ASCII CRLF/CR only -- same idiom as q88_core.parse_mem. str.splitlines()
     # also breaks on U+2028/U+2029/U+0085, which can appear inside a JSON
@@ -164,11 +172,11 @@ def load_jsonl(path: Path) -> list[tuple[int, dict]]:
             parsed = json.loads(line)
         except json.JSONDecodeError as exc:
             raise ParseError(
-                f"{path.name}:{lineno}: not a JSON object ({exc})"
+                f"{name}:{lineno}: not a JSON object ({exc})"
             ) from exc
         if not isinstance(parsed, dict):
             raise ParseError(
-                f"{path.name}:{lineno}: expected a JSON object, got "
+                f"{name}:{lineno}: expected a JSON object, got "
                 f"{type(parsed).__name__}"
             )
         records.append((lineno, parsed))

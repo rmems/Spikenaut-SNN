@@ -416,8 +416,14 @@ from an observed zero; `--missing-policy reject` refuses such rows
 instead. v3 `state_telemetry` has no usable timestamp, so staleness is
 undetectable — rows replay in file order. An optional
 `spikenaut.split-manifest.v1` JSON assigns episodes to splits for sessions
-outside the built-in ranges; an episode in two splits is rejected. See
-`tools/replay_core.py` for the full contract.
+outside the built-in ranges; an episode in two splits is rejected. The
+entry's declared `feature_map_id`/`output_contract_id` must match the
+implemented contracts, and parameters are consumed on the declared
+`numeric_format` grid (Q8.8 — the same decode the deployed `.mem`
+images produce). Unset knobs come from the checkpoint: `k` defaults to
+its recorded `k_wta` (`--k none` disables K-WTA), `--i-drive` to its
+recorded `exp023_knobs.I_DRIVE` (0.05). See `tools/replay_core.py` for
+the full contract.
 
 ### Loading on FPGA
 

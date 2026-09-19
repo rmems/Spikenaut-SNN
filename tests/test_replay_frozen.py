@@ -17,6 +17,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import unittest.mock
+
 from tools.model_bank import (
     BankAttestationError,
     load_model_bank,
@@ -58,7 +60,7 @@ def _fixture_inputs(**kwargs):
 
 
 def _fixture_replay(**kwargs):
-    bank, entry, samples = _fixture_inputs(**kwargs)
+    bank, entry, samples, _ = _fixture_inputs(**kwargs)
     return bank, entry, samples, replay(entry, samples, CONFIG)
 
 
@@ -118,7 +120,7 @@ class TestFixtureReplay(unittest.TestCase):
         self.assertEqual(result.missing_counts["mem_clock_mhz"], 1)
 
     def test_reject_missing_policy(self):
-        _, entry, samples = _fixture_inputs()
+        _, entry, samples, _ = _fixture_inputs()
         config = ReplayConfig(
             split="all", k=4, i_drive=0.0,
             missing_policy=MISSING_POLICY_REJECT,
@@ -267,7 +269,7 @@ class TestSplitManifest(unittest.TestCase):
                     "test": ["gpu-000002"],
                 },
             )
-            _, _, samples = _fixture_inputs(
+            _, _, samples, _ = _fixture_inputs(
                 split="test", split_manifest=path
             )
             self.assertEqual(
@@ -355,6 +357,11 @@ class TestManifestContents(unittest.TestCase):
             bank=bank,
             jsonl=FIXTURE_JSONL,
             split_manifest_path=None,
+            input_sha256={
+                "jsonl": "sha256:"
+                + hashlib.sha256(FIXTURE_JSONL.read_bytes()).hexdigest(),
+                "split_manifest": None,
+            },
             config=CONFIG,
             result=result,
             trace_bytes=trace_jsonl(result.trace_rows),
@@ -374,11 +381,192 @@ class TestManifestContents(unittest.TestCase):
         self.assertTrue(
             manifest["trace_sha256"].startswith("sha256:")
         )
+        # The recorded digest covers the bytes that were actually parsed.
+        self.assertEqual(
+            manifest["input"]["sha256"],
+            "sha256:" + hashlib.sha256(FIXTURE_JSONL.read_bytes()).hexdigest(),
+        )
         # Round-trips through the canonical serializer unchanged.
         self.assertEqual(
             manifest_json(manifest),
             manifest_json(json.loads(manifest_json(manifest))),
         )
+
+
+def _write_bank(tmp: Path, checkpoint_bytes: bytes, **overrides) -> Path:
+    """A correctly-attested one-entry bank manifest in ``tmp``."""
+    entry = {
+        "id": "test_bank",
+        "checkpoint": "snn_model.json",
+        "checkpoint_digest": "sha256:"
+        + hashlib.sha256(checkpoint_bytes).hexdigest(),
+        "feature_map_id": "spikenaut.feature-map.live-exp-025.v1",
+        "output_contract_id": "spikenaut.output-contract.supervisor-v3.rm-1150",
+        "numeric_format": "q8.8-fixed-point",
+        "training_dataset_digest": "sha256:" + "0" * 64,
+    }
+    entry.update(overrides)
+    (tmp / "snn_model.json").write_bytes(checkpoint_bytes)
+    manifest = tmp / "model_bank.json"
+    manifest.write_text(
+        json.dumps({"schema_version": 1, "models": [entry]}),
+        encoding="utf-8",
+    )
+    return manifest
+
+
+class TestContracts(unittest.TestCase):
+    """Attestation proves identity, not that the replay can consume it."""
+
+    def test_foreign_feature_map_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = _write_bank(
+                Path(tmp),
+                SHIPPED_CHECKPOINT.read_bytes(),
+                feature_map_id="spikenaut.feature-map.other.v9",
+            )
+            with self.assertRaises(ParseError) as ctx:
+                _fixture_inputs(manifest=manifest)
+            self.assertIn("feature_map_id", str(ctx.exception))
+
+    def test_foreign_output_contract_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = _write_bank(
+                Path(tmp),
+                SHIPPED_CHECKPOINT.read_bytes(),
+                output_contract_id="spikenaut.output-contract.other",
+            )
+            with self.assertRaises(ParseError) as ctx:
+                _fixture_inputs(manifest=manifest)
+            self.assertIn("output_contract_id", str(ctx.exception))
+
+    def test_malformed_attested_checkpoint_exits_2(self):
+        # Digest is correct, so attestation passes; the malformed JSON must
+        # still surface as exit 2, not an uncaught JSONDecodeError.
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as out:
+            manifest = _write_bank(Path(tmp), b"{not json\n")
+            self.assertEqual(
+                cli_main(
+                    ["--bank-manifest", str(manifest), "--out-dir", out]
+                ),
+                2,
+            )
+
+    def test_unknown_numeric_format_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = _write_bank(
+                Path(tmp),
+                SHIPPED_CHECKPOINT.read_bytes(),
+                numeric_format="float32",
+            )
+            _, entry, samples, _ = _fixture_inputs(manifest=manifest)
+            with self.assertRaises(ParseError) as ctx:
+                replay(entry, samples, CONFIG)
+            self.assertIn("numeric_format", str(ctx.exception))
+
+    def test_q88_grid_matches_mem_decode(self):
+        # The replayed parameters must equal what the deployed .mem
+        # decodes to -- not the raw JSON floats.
+        from tools.hamming_banks import bank_from_mem
+        from tools.replay_core import model_on_numeric_grid
+        from tools.hamming_banks import model_from_bytes
+
+        model = model_from_bytes(
+            SHIPPED_CHECKPOINT.read_bytes(), "snn_model.json"
+        )
+        grid = model_on_numeric_grid(model, "q8.8-fixed-point", "test")
+        mem = bank_from_mem(
+            REPO_ROOT / "dataset" / "merged_v2", "mem", 0.0
+        )
+        self.assertEqual(
+            [n["weights"] for n in grid["neurons"]], mem.weights
+        )
+        self.assertEqual(
+            [n["decay_rate"] for n in grid["neurons"]], mem.decay
+        )
+        self.assertEqual(
+            [n["threshold"] for n in grid["neurons"]], mem.threshold
+        )
+
+
+class TestKnobDefaults(unittest.TestCase):
+    def test_k_none_disables_kwta(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                cli_main(["--k", "none", "--out-dir", tmp]), 0
+            )
+            manifest = json.loads(
+                (Path(tmp) / "manifest.json").read_text()
+            )
+        self.assertIsNone(manifest["stepper"]["k"])
+
+    def test_k_default_uses_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(cli_main(["--out-dir", tmp]), 0)
+            manifest = json.loads(
+                (Path(tmp) / "manifest.json").read_text()
+            )
+        self.assertEqual(manifest["stepper"]["k"], 4)
+        self.assertEqual(manifest["stepper"]["i_drive"], 0.05)
+
+    def test_i_drive_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                cli_main(["--i-drive", "0.0", "--out-dir", tmp]), 0
+            )
+            manifest = json.loads(
+                (Path(tmp) / "manifest.json").read_text()
+            )
+        self.assertEqual(manifest["stepper"]["i_drive"], 0.0)
+
+
+class TestAtomicPublish(unittest.TestCase):
+    def test_failed_publish_leaves_no_mixed_pair(self):
+        from tools.replay_frozen import _write_artifacts
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "trace.jsonl").write_text("stale", encoding="utf-8")
+            (out / "manifest.json").write_text("stale", encoding="utf-8")
+            with unittest.mock.patch(
+                "tools.replay_frozen.manifest_json",
+                side_effect=OSError("disk full"),
+            ):
+                with self.assertRaises(OSError):
+                    _write_artifacts(out, b"trace", {})
+            self.assertFalse((out / "trace.jsonl").exists())
+            self.assertFalse((out / "manifest.json").exists())
+            self.assertFalse((out / "trace.jsonl.tmp").exists())
+            self.assertFalse((out / "manifest.json.tmp").exists())
+
+
+class TestWorktreeRevision(unittest.TestCase):
+    def test_linked_worktree_resolves_commondir(self):
+        from tools.replay_core import git_revision
+
+        commit = "a" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "wt"
+            main_git = Path(tmp) / "main" / ".git"
+            wt_git = main_git / "worktrees" / "wt"
+            (main_git / "refs" / "heads").mkdir(parents=True)
+            wt_git.mkdir(parents=True)
+            root.mkdir()
+            (main_git / "refs" / "heads" / "main").write_text(
+                commit + "\n", encoding="utf-8"
+            )
+            (wt_git / "HEAD").write_text(
+                "ref: refs/heads/main\n", encoding="utf-8"
+            )
+            (wt_git / "commondir").write_text(
+                "../..\n", encoding="utf-8"
+            )
+            (root / ".git").write_text(
+                f"gitdir: {wt_git}\n", encoding="utf-8"
+            )
+            info = git_revision(root)
+        self.assertEqual(info["commit"], commit)
+        self.assertEqual(info["branch"], "main")
 
 
 if __name__ == "__main__":

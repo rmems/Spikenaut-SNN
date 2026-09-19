@@ -110,9 +110,9 @@ def model_from_bytes(payload: bytes, source: str) -> dict:
         raise ParseError(f"{label.name}: checkpoint is not UTF-8 ({exc})") from exc
     try:
         model = json.loads(text)
-    except json.JSONDecodeError:
-        raise
     except ValueError as exc:
+        # JSONDecodeError included: a digest-valid but malformed checkpoint
+        # is an unconsumable artifact (ParseError -> CLI exit 2), not a crash.
         raise ParseError(
             f"{label.name}: unreadable JSON number: {exc}"
         ) from exc

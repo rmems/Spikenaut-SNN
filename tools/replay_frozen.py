@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -66,6 +67,7 @@ try:  # package import: `python3 -m tools.replay_frozen`
         MISSING_POLICIES,
         ReplayConfig,
         build_manifest,
+        default_i_drive,
         default_k,
         fixture_jsonl,
         load_replay_inputs,
@@ -83,6 +85,7 @@ except ImportError:  # direct script: `python3 tools/replay_frozen.py`
         MISSING_POLICIES,
         ReplayConfig,
         build_manifest,
+        default_i_drive,
         default_k,
         fixture_jsonl,
         load_replay_inputs,
@@ -124,6 +127,9 @@ def _kwta(text: str) -> int | None:
             f"--k must be a non-negative integer or 'none', got {text!r}"
         )
     return value
+
+
+_K_UNSET = object()  # distinguishes "--k none" from an omitted --k
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -186,7 +192,7 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--k",
         type=_kwta,
-        default=None,
+        default=_K_UNSET,
         metavar="N|none",
         help=(
             "K-WTA width (default: the checkpoint's recorded k_wta; "
@@ -196,8 +202,11 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--i-drive",
         type=_finite_float,
-        default=0.0,
-        help="Dale I bias added to neurons 12-15 (default 0.0)",
+        default=None,
+        help=(
+            "Dale I bias added to neurons 12-15 (default: the checkpoint's "
+            "recorded exp023_knobs.I_DRIVE, else the shipped protocol's 0.05)"
+        ),
     )
     parser.add_argument(
         "--missing-policy",
@@ -217,22 +226,42 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _resolve_k(args: argparse.Namespace, entry: AttestedEntry) -> int | None:
-    if args.k is not None:
-        return args.k
+def _resolve_knobs(
+    args: argparse.Namespace, entry: AttestedEntry
+) -> tuple[int | None, float]:
+    """Resolve unset knobs from the checkpoint metadata (one parse)."""
+    if args.k is not _K_UNSET and args.i_drive is not None:
+        return args.k, args.i_drive
     model = model_from_bytes(entry.checkpoint_bytes, entry.checkpoint_relative)
-    return default_k(model)
+    k = default_k(model) if args.k is _K_UNSET else args.k
+    i_drive = default_i_drive(model) if args.i_drive is None else args.i_drive
+    return k, i_drive
 
 
 def _write_artifacts(
     out_dir: Path, trace_bytes: bytes, manifest: dict
 ) -> None:
+    """Publish the pair atomically: stage under temp names first so a
+    failed or interrupted run can never leave a new trace beside a stale
+    manifest (or vice versa). On failure the pair is removed rather than
+    left half-new -- a missing result is honest, a mixed one is not."""
     # NOSONAR pythonsecurity:S8707 -- --out-dir is the tool's explicit
     # user-chosen destination; constraining it would break the documented
     # explicit-path qualification workflow.
     out_dir.mkdir(parents=True, exist_ok=True)  # NOSONAR
-    (out_dir / "trace.jsonl").write_bytes(trace_bytes)  # NOSONAR
-    (out_dir / "manifest.json").write_bytes(manifest_json(manifest))  # NOSONAR
+    trace_tmp = out_dir / "trace.jsonl.tmp"
+    manifest_tmp = out_dir / "manifest.json.tmp"
+    trace_path = out_dir / "trace.jsonl"
+    manifest_path = out_dir / "manifest.json"
+    try:
+        trace_tmp.write_bytes(trace_bytes)  # NOSONAR
+        manifest_tmp.write_bytes(manifest_json(manifest))  # NOSONAR
+        os.replace(trace_tmp, trace_path)
+        os.replace(manifest_tmp, manifest_path)
+    except OSError:
+        for stale in (trace_tmp, manifest_tmp, trace_path, manifest_path):
+            stale.unlink(missing_ok=True)
+        raise
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -244,14 +273,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     jsonl = args.jsonl if args.jsonl is not None else fixture_jsonl()
     try:
-        bank, entry, samples = load_replay_inputs(
+        bank, entry, samples, input_sha256 = load_replay_inputs(
             bank_manifest, args.model_id, jsonl, args.split,
             args.split_manifest,
         )
+        k, i_drive = _resolve_knobs(args, entry)
         config = ReplayConfig(
             split=args.split,
-            k=_resolve_k(args, entry),
-            i_drive=args.i_drive,
+            k=k,
+            i_drive=i_drive,
             missing_policy=args.missing_policy,
         )
         result = replay(entry, samples, config)
@@ -261,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
             bank=bank,
             jsonl=jsonl,
             split_manifest_path=args.split_manifest,
+            input_sha256=input_sha256,
             config=config,
             result=result,
             trace_bytes=trace_bytes,

@@ -63,20 +63,34 @@ try:  # package import: `python3 -m tools.replay_frozen`
     from .hamming_const import (
         FROZEN_LINEAGE,
         FROZEN_MINMAX,
+        I_DRIVE_EXP024,
         LIVE_COLUMNS,
         N_NEURONS,
         SHIPPED_DIR,
+        f32,
     )
     from .hamming_encode import (
         Sample,
         episode_index,
-        load_jsonl,
+        parse_jsonl_text,
         select_samples,
     )
     from .hamming_lif import LifBank, keep_lif_step
-    from .model_bank import AttestedEntry, ModelBank, load_model_bank
+    from .model_bank import (
+        FEATURE_MAP_LIVE_EXP_025,
+        OUTPUT_CONTRACT_SUPERVISOR_V3_RM1150,
+        AttestedEntry,
+        ModelBank,
+        load_model_bank,
+    )
     from .model_bank_json import _parse_json, _read_utf8
-    from .q88_core import ParseError, read_utf8_text
+    from .q88_core import (
+        ParseError,
+        Q88RangeError,
+        as_finite_float,
+        decode_q88,
+        encode_q88,
+    )
 except ImportError:  # direct script: `python3 tools/replay_frozen.py`
     from decision_core import (
         OUTPUT_WIDTH,
@@ -89,20 +103,34 @@ except ImportError:  # direct script: `python3 tools/replay_frozen.py`
     from hamming_const import (
         FROZEN_LINEAGE,
         FROZEN_MINMAX,
+        I_DRIVE_EXP024,
         LIVE_COLUMNS,
         N_NEURONS,
         SHIPPED_DIR,
+        f32,
     )
     from hamming_encode import (
         Sample,
         episode_index,
-        load_jsonl,
+        parse_jsonl_text,
         select_samples,
     )
     from hamming_lif import LifBank, keep_lif_step
-    from model_bank import AttestedEntry, ModelBank, load_model_bank
+    from model_bank import (
+        FEATURE_MAP_LIVE_EXP_025,
+        OUTPUT_CONTRACT_SUPERVISOR_V3_RM1150,
+        AttestedEntry,
+        ModelBank,
+        load_model_bank,
+    )
     from model_bank_json import _parse_json, _read_utf8
-    from q88_core import ParseError, read_utf8_text
+    from q88_core import (
+        ParseError,
+        Q88RangeError,
+        as_finite_float,
+        decode_q88,
+        encode_q88,
+    )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REPLAY_FIXTURE_DIR = REPO_ROOT / "tools" / "fixtures" / "replay_frozen"
@@ -172,7 +200,14 @@ def load_split_manifest(path: Path) -> dict[str, frozenset[str]]:
     in two splits is a split overlap and is refused -- assigning one
     session to both train and test would quietly contaminate the holdout.
     """
-    splits = _split_manifest_doc(path)
+    if not path.is_file():
+        raise ParseError(f"missing split manifest: {path}")
+    return _split_manifest_entries(path, _read_utf8(path, kind="split manifest"))
+
+
+def _split_manifest_entries(path: Path, text: str) -> dict[str, frozenset[str]]:
+    """Validate the already-read manifest text into split -> episodes."""
+    splits = _split_manifest_doc(path, text)
     owner: dict[str, str] = {}
     out: dict[str, frozenset[str]] = {}
     for name, episodes in splits.items():
@@ -190,11 +225,9 @@ def load_split_manifest(path: Path) -> dict[str, frozenset[str]]:
     return out
 
 
-def _split_manifest_doc(path: Path) -> dict:
-    """Read the manifest and return its validated ``splits`` object."""
-    if not path.is_file():
-        raise ParseError(f"missing split manifest: {path}")
-    document = _parse_json(_read_utf8(path, kind="split manifest"), source=path)
+def _split_manifest_doc(path: Path, text: str) -> dict:
+    """Validate the manifest text and return its ``splits`` object."""
+    document = _parse_json(text, source=path)
     if not isinstance(document, dict):
         raise ParseError(
             f"{path.name}: top level must be an object, got "
@@ -337,14 +370,68 @@ def replay(
 
     The bank is built from ``entry.checkpoint_bytes`` -- the bytes the
     digest covered -- so the replay is bound to attestation by
-    construction. ``entry`` bytes and parsed parameters are only read,
-    never mutated.
+    construction, and the parameters are consumed on the grid
+    ``entry.numeric_format`` declares (Q8.8 for the shipped bank), so
+    the trace matches the deployed ``.mem`` decoding. ``entry`` bytes
+    and parsed parameters are only read, never mutated.
     """
     _require_missing_policy(config.missing_policy)
     _require_samples_missing_policy(samples, config.missing_policy)
-    model = model_from_bytes(entry.checkpoint_bytes, entry.checkpoint_relative)
+    model = model_on_numeric_grid(
+        model_from_bytes(entry.checkpoint_bytes, entry.checkpoint_relative),
+        entry.numeric_format,
+        entry.checkpoint_relative,
+    )
     bank = bank_from_model(model, entry.id, config.i_drive)
     return _run_steps(bank, readout_from_model(model), samples, config)
+
+
+def _q88(value: Any, where: str) -> float:
+    """Round-trip ``value`` through the Q8.8 codec (the .mem decode)."""
+    try:
+        return f32(decode_q88(encode_q88(as_finite_float(value, where))))
+    except Q88RangeError as exc:
+        raise ParseError(str(exc)) from exc
+
+
+def model_on_numeric_grid(
+    model: dict, numeric_format: str, source: str
+) -> dict:
+    """Parameters on the entry's declared consumption grid.
+
+    The checkpoint stores float JSON; ``numeric_format`` names the grid
+    the bank consumes them on. ``q8.8-fixed-point`` round-trips every
+    hidden weight, keep-factor, threshold and readout weight through
+    the codec the deployed ``.mem`` images decode with -- replaying the
+    raw floats would produce a different model than the one the digest
+    and format claim. An unknown format is refused rather than
+    silently replayed in float.
+    """
+    if numeric_format != "q8.8-fixed-point":
+        raise ParseError(
+            f"{source}: numeric_format {numeric_format!r} has no replay "
+            "implementation (supported: 'q8.8-fixed-point')"
+        )
+    neurons = []
+    for i, neuron in enumerate(model["neurons"]):
+        where = f"neurons[{i}]"
+        q = dict(neuron)
+        q["weights"] = [
+            _q88(w, f"{where}.weights[{j}]")
+            for j, w in enumerate(neuron["weights"])
+        ]
+        q["decay_rate"] = _q88(neuron["decay_rate"], f"{where}.decay_rate")
+        q["threshold"] = _q88(neuron["threshold"], f"{where}.threshold")
+        row = neuron.get("output_weights")
+        if isinstance(row, list):
+            q["output_weights"] = [
+                _q88(v, f"{where}.output_weights[{j}]")
+                for j, v in enumerate(row)
+            ]
+        neurons.append(q)
+    out = dict(model)
+    out["neurons"] = neurons
+    return out
 
 
 def _run_steps(
@@ -414,6 +501,18 @@ def _git_dir(root: Path) -> Path | None:
     return gitdir if gitdir.is_dir() else None
 
 
+def _common_dir(gitdir: Path) -> Path:
+    """The shared git dir: in a linked worktree the ``commondir`` file
+    names it; loose branch refs and ``packed-refs`` live there, not in
+    the per-worktree dir that HEAD sits in."""
+    try:
+        rel = (gitdir / "commondir").read_text(encoding="utf-8").strip()
+    except OSError:
+        return gitdir
+    common = (gitdir / rel).resolve()
+    return common if common.is_dir() else gitdir
+
+
 def _ref_target(gitdir: Path, ref: str) -> str | None:
     try:
         return (gitdir / ref).read_text(encoding="utf-8").strip()
@@ -452,7 +551,7 @@ def git_revision(root: Path) -> dict[str, Any]:
         ref = head.split(":", 1)[1].strip()
         if ref.startswith("refs/heads/"):
             info["branch"] = ref[len("refs/heads/"):]
-        commit = _ref_target(gitdir, ref)
+        commit = _ref_target(_common_dir(gitdir), ref)
     if commit is not None and len(commit) == 40:
         info["commit"] = commit
     return info
@@ -472,6 +571,7 @@ def build_manifest(
     bank: ModelBank,
     jsonl: Path,
     split_manifest_path: Path | None,
+    input_sha256: dict[str, str | None],
     config: ReplayConfig,
     result: ReplayResult,
     trace_bytes: bytes,
@@ -484,7 +584,9 @@ def build_manifest(
         "trace_schema": TRACE_SCHEMA,
         "trace_sha256": sha256_bytes(trace_bytes),
         "model": _model_section(entry, bank),
-        "input": _input_section(jsonl, split_manifest_path, config, result),
+        "input": _input_section(
+            jsonl, split_manifest_path, config, result, input_sha256
+        ),
         "encoder": {
             "kind": "analog-current, frozen minmax (not spikes)",
             "columns": list(LIVE_COLUMNS),
@@ -540,10 +642,11 @@ def _input_section(
     split_manifest_path: Path | None,
     config: ReplayConfig,
     result: ReplayResult,
+    input_sha256: dict[str, str | None],
 ) -> dict[str, Any]:
     doc: dict[str, Any] = {
         "path": _display_path(jsonl),
-        "sha256": sha256_bytes(read_utf8_text(jsonl).encode("utf-8")),
+        "sha256": input_sha256["jsonl"],
         "split": config.split,
         "sessions": result.sessions,
         "steps_per_session": result.steps_per_session,
@@ -552,9 +655,7 @@ def _input_section(
     if split_manifest_path is not None:
         doc["split_manifest"] = {
             "path": _display_path(split_manifest_path),
-            "sha256": sha256_bytes(
-                read_utf8_text(split_manifest_path).encode("utf-8")
-            ),
+            "sha256": input_sha256["split_manifest"],
         }
     return doc
 
@@ -577,10 +678,47 @@ def default_k(model: dict) -> int | None:
     return raw
 
 
+def default_i_drive(model: dict) -> float:
+    """Dale I bias: the checkpoint's recorded ``exp023_knobs.I_DRIVE``,
+    else the shipped protocol constant ``I_DRIVE_EXP024`` (0.05)."""
+    knobs = model.get("exp023_knobs")
+    if not isinstance(knobs, dict):
+        return I_DRIVE_EXP024
+    raw = knobs.get("I_DRIVE")
+    if raw is None:
+        return I_DRIVE_EXP024
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ParseError(f"checkpoint 'exp023_knobs.I_DRIVE': {raw!r}")
+    if not math.isfinite(raw):
+        raise ParseError(f"checkpoint 'exp023_knobs.I_DRIVE': {raw!r}")
+    return float(raw)
+
+
 def select_entry(bank: ModelBank, model_id: str | None) -> AttestedEntry:
-    """Pick the replayed entry. A multi-entry bank requires an explicit id."""
-    if model_id is not None:
-        return bank.select(model_id)
+    """Pick the replayed entry. A multi-entry bank requires an explicit id.
+
+    Attestation verifies digest and shape, not semantics: this replay
+    implements exactly the exp-025 feature map and the supervisor-v3
+    (comfort/temp/power) output contract, so an attested entry declaring
+    any other contract is refused -- a digest-valid foreign-contract
+    checkpoint would otherwise emit a semantically invalid trace.
+    """
+    entry = bank.select(model_id) if model_id is not None else _sole(bank)
+    if entry.feature_map_id != FEATURE_MAP_LIVE_EXP_025:
+        raise ParseError(
+            f"{entry.id}: feature_map_id {entry.feature_map_id!r} is not "
+            f"the replayed contract {FEATURE_MAP_LIVE_EXP_025!r}"
+        )
+    if entry.output_contract_id != OUTPUT_CONTRACT_SUPERVISOR_V3_RM1150:
+        raise ParseError(
+            f"{entry.id}: output_contract_id {entry.output_contract_id!r} "
+            f"is not the replayed contract "
+            f"{OUTPUT_CONTRACT_SUPERVISOR_V3_RM1150!r}"
+        )
+    return entry
+
+
+def _sole(bank: ModelBank) -> AttestedEntry:
     if len(bank.entries) != 1:
         raise ParseError(
             "bank holds "
@@ -590,24 +728,57 @@ def select_entry(bank: ModelBank, model_id: str | None) -> AttestedEntry:
     return bank.entries[0]
 
 
+def _read_input_bytes(path: Path, kind: str) -> bytes:
+    """Read an input once; the returned bytes are parsed *and* hashed, so
+    the manifest can only describe the payload that was replayed."""
+    if not path.is_file():
+        raise ParseError(f"missing {kind}: {path}")
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise ParseError(f"unreadable {kind} {path}: {exc}") from exc
+
+
+def _utf8_or_refuse(payload: bytes, path: Path, kind: str) -> str:
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ParseError(
+            f"{path.name}: {kind} is not UTF-8 ({exc})"
+        ) from exc
+
+
 def load_replay_inputs(
     manifest_path: Path,
     model_id: str | None,
     jsonl: Path,
     split: str,
     split_manifest_path: Path | None,
-) -> tuple[ModelBank, AttestedEntry, list[Sample]]:
+) -> tuple[ModelBank, AttestedEntry, list[Sample], dict[str, str | None]]:
     """Attest the bank, then select rows. The checkpoint bytes consumed
-    downstream are the attested ones -- there is no unverified reload."""
+    downstream are the attested ones -- there is no unverified reload.
+    Each input file is read once; its digest (returned in the fourth
+    element) covers the same bytes that were parsed."""
     bank = load_model_bank(manifest_path)
     entry = select_entry(bank, model_id)
-    manifest = (
-        load_split_manifest(split_manifest_path)
-        if split_manifest_path is not None
-        else None
+    split_doc = None
+    split_sha256 = None
+    if split_manifest_path is not None:
+        payload = _read_input_bytes(split_manifest_path, "split manifest")
+        split_sha256 = sha256_bytes(payload)
+        split_doc = _split_manifest_entries(
+            split_manifest_path,
+            _utf8_or_refuse(payload, split_manifest_path, "split manifest"),
+        )
+    jsonl_bytes = _read_input_bytes(jsonl, "file")
+    records = parse_jsonl_text(
+        _utf8_or_refuse(jsonl_bytes, jsonl, "file"), jsonl.name
     )
-    samples = select_replay_samples(load_jsonl(jsonl), split, manifest)
-    return bank, entry, samples
+    samples = select_replay_samples(records, split, split_doc)
+    return bank, entry, samples, {
+        "jsonl": sha256_bytes(jsonl_bytes),
+        "split_manifest": split_sha256,
+    }
 
 
 def shipped_manifest_path() -> Path:
