@@ -135,6 +135,10 @@ class Sample:
     episode: int | None
     stim: list[float]
     source_line: int
+    # Live columns absent or null on the source row. They encode to 0 under
+    # the frozen-minmax contract, so replay keeps the per-sensor names --
+    # a missing measurement must stay distinguishable from an observed zero.
+    missing: tuple[str, ...] = ()
 
 
 def load_jsonl(path: Path) -> list[tuple[int, dict]]:
@@ -290,6 +294,11 @@ def select_samples(
                     episode=index,
                     stim=encode_record(record),
                     source_line=lineno,
+                    missing=tuple(
+                        column
+                        for column in LIVE_COLUMNS
+                        if record.get(column) is None
+                    ),
                 )
             )
 

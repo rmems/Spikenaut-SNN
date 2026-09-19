@@ -1,0 +1,546 @@
+"""Frozen model-bank replay core (Linear RM-1692 / GH #60).
+
+Composes the pieces that already exist -- attested model-bank selection
+(``model_bank``), the exp-025 five-sensor analog encoder
+(``hamming_encode``), the reference keep-LIF stepper (``hamming_lif``) and
+the output-row decision contract (``decision_core``) -- into one offline
+replay that emits a per-step trace plus a reproducibility manifest.
+
+Determinism contract
+--------------------
+* The checkpoint is consumed as the exact bytes the bank attested
+  (``AttestedEntry.checkpoint_bytes``); nothing re-reads the file, so a
+  swapped checkpoint cannot bypass the digest.
+* All float math runs through ``f32`` (binary32) inside the existing
+  stepper; this module adds no new arithmetic.
+* Manifest and trace contents depend only on inputs. Wall-clock timing is
+  not recorded in either artifact; callers that want timing keep it
+  outside the deterministic documents.
+
+Missing / stale input policy
+----------------------------
+A live column absent or ``null`` on a v3 row encodes to ``0.0`` under the
+frozen-minmax contract (``frozen_unit01``), matching the Distill ``T=0
+stays 0`` semantics the bank was trained with. That zero is a *missing
+measurement*, not an observed idle sensor, so each trace row carries the
+per-sensor ``missing`` names -- a count alone would make missing values
+indistinguishable from observed zeros. ``missing_policy='reject'``
+refuses such rows instead. The v3 schema has no usable timestamp
+(``ts_utc`` is null), so *staleness* is undetectable in replay: rows are
+consumed in file order and the policy is documented as none. Callers
+needing staleness must supply data whose schema supports it.
+
+Sessions
+--------
+The session key is ``episode_id`` (``gpu-######``), same as the rest of
+the harness: membrane state resets at every episode boundary, and
+interleaved episodes are refused because a reset needs grouped rows.
+An optional split manifest declares episodes per split explicitly, for
+recorded sessions outside the built-in train/val/test episode ranges;
+an episode listed in two splits is an overlap and is rejected.
+
+Standard library only.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+try:  # package import: `python3 -m tools.replay_frozen`
+    from .decision_core import (
+        OUTPUT_WIDTH,
+        SHIPPED_VOCABULARY,
+        decision_as_dict,
+        replay_output_row,
+        score_readout,
+    )
+    from .hamming_banks import bank_from_model, model_from_bytes
+    from .hamming_const import (
+        FROZEN_LINEAGE,
+        FROZEN_MINMAX,
+        LIVE_COLUMNS,
+        N_NEURONS,
+        SHIPPED_DIR,
+    )
+    from .hamming_encode import (
+        Sample,
+        episode_index,
+        load_jsonl,
+        select_samples,
+    )
+    from .hamming_lif import LifBank, keep_lif_step
+    from .model_bank import AttestedEntry, ModelBank, load_model_bank
+    from .model_bank_json import _parse_json, _read_utf8
+    from .q88_core import ParseError, read_utf8_text
+except ImportError:  # direct script: `python3 tools/replay_frozen.py`
+    from decision_core import (
+        OUTPUT_WIDTH,
+        SHIPPED_VOCABULARY,
+        decision_as_dict,
+        replay_output_row,
+        score_readout,
+    )
+    from hamming_banks import bank_from_model, model_from_bytes
+    from hamming_const import (
+        FROZEN_LINEAGE,
+        FROZEN_MINMAX,
+        LIVE_COLUMNS,
+        N_NEURONS,
+        SHIPPED_DIR,
+    )
+    from hamming_encode import (
+        Sample,
+        episode_index,
+        load_jsonl,
+        select_samples,
+    )
+    from hamming_lif import LifBank, keep_lif_step
+    from model_bank import AttestedEntry, ModelBank, load_model_bank
+    from model_bank_json import _parse_json, _read_utf8
+    from q88_core import ParseError, read_utf8_text
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+REPLAY_FIXTURE_DIR = REPO_ROOT / "tools" / "fixtures" / "replay_frozen"
+
+TRACE_SCHEMA = "spikenaut.replay-trace.v1"
+MANIFEST_SCHEMA = "spikenaut.replay-manifest.v1"
+SPLIT_MANIFEST_SCHEMA = "spikenaut.split-manifest.v1"
+
+MISSING_POLICY_ENCODE_ZERO = "encode-zero"
+MISSING_POLICY_REJECT = "reject"
+MISSING_POLICIES = (MISSING_POLICY_ENCODE_ZERO, MISSING_POLICY_REJECT)
+
+SPLIT_NAMES = ("train", "val", "test")
+
+
+def sha256_bytes(payload: bytes) -> str:
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def readout_from_model(model: dict) -> list[float]:
+    """Neuron-major 16x3 readout weights for ``decision_core.score_readout``.
+
+    ``_validate_neuron`` (run by ``model_from_bytes``) guarantees the
+    neuron container shape and that every listed field is a finite real;
+    this layer additionally refuses a missing or wrongly-sized
+    ``output_weights`` row rather than letting a short row shift the
+    channel assignment.
+    """
+    flat: list[float] = []
+    for i, neuron in enumerate(model["neurons"]):
+        row = neuron.get("output_weights")
+        if not isinstance(row, list) or len(row) != OUTPUT_WIDTH:
+            got = (
+                type(row).__name__ if not isinstance(row, list) else len(row)
+            )
+            raise ParseError(
+                f"neurons[{i}].output_weights: {got} entries, "
+                f"expected {OUTPUT_WIDTH}"
+            )
+        for j, value in enumerate(row):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ParseError(
+                    f"neurons[{i}].output_weights[{j}]: expected a finite "
+                    f"number, got {type(value).__name__} {value!r}"
+                )
+            if not math.isfinite(value):
+                raise ParseError(
+                    f"neurons[{i}].output_weights[{j}]: non-finite {value!r}"
+                )
+            flat.append(float(value))
+    return flat
+
+
+def load_split_manifest(path: Path) -> dict[str, frozenset[str]]:
+    """Parse an explicit episode->split declaration.
+
+    Shape::
+
+        {"schema_version": "spikenaut.split-manifest.v1",
+         "splits": {"train": ["gpu-000001", ...], "val": [...], "test": [...]}}
+
+    Every entry must be a ``gpu-######`` episode id. An episode appearing
+    in two splits is a split overlap and is refused -- assigning one
+    session to both train and test would quietly contaminate the holdout.
+    """
+    if not path.is_file():
+        raise ParseError(f"missing split manifest: {path}")
+    document = _parse_json(_read_utf8(path, kind="split manifest"), source=path)
+    if not isinstance(document, dict):
+        raise ParseError(
+            f"{path.name}: top level must be an object, got "
+            f"{type(document).__name__}"
+        )
+    version = document.get("schema_version")
+    if version != SPLIT_MANIFEST_SCHEMA:
+        raise ParseError(
+            f"{path.name}: schema_version must be {SPLIT_MANIFEST_SCHEMA!r}, "
+            f"got {version!r}"
+        )
+    splits = document.get("splits")
+    if not isinstance(splits, dict) or not splits:
+        raise ParseError(
+            f"{path.name}: 'splits' must be a non-empty object, got "
+            f"{type(splits).__name__}"
+        )
+    owner: dict[str, str] = {}
+    out: dict[str, frozenset[str]] = {}
+    for name, episodes in splits.items():
+        if name not in SPLIT_NAMES:
+            raise ParseError(
+                f"{path.name}: unknown split {name!r} "
+                f"(expected one of {', '.join(SPLIT_NAMES)})"
+            )
+        if not isinstance(episodes, list):
+            raise ParseError(
+                f"{path.name}: splits[{name!r}] must be an array, got "
+                f"{type(episodes).__name__}"
+            )
+        members: set[str] = set()
+        for raw in episodes:
+            if not isinstance(raw, str) or episode_index(raw) is None:
+                raise ParseError(
+                    f"{path.name}: splits[{name!r}] entry {raw!r} is not a "
+                    "gpu-###### episode id"
+                )
+            if raw in members:
+                raise ParseError(
+                    f"{path.name}: episode {raw} listed twice in split "
+                    f"{name!r}"
+                )
+            previous = owner.get(raw)
+            if previous is not None:
+                raise ParseError(
+                    f"{path.name}: split overlap -- episode {raw} is in both "
+                    f"{previous!r} and {name!r}"
+                )
+            members.add(raw)
+            owner[raw] = name
+        out[name] = frozenset(members)
+    return out
+
+
+def select_replay_samples(
+    records: list[tuple[int, dict]],
+    split: str,
+    split_manifest: dict[str, frozenset[str]] | None,
+) -> list[Sample]:
+    """Select the rows to replay, in file order.
+
+    Without a manifest, ``split`` uses the built-in episode ranges via
+    ``select_samples``. With a manifest, membership decides: ``split``
+    names the manifest split to replay and ``all`` replays every listed
+    episode. ``select_samples('all')`` still runs first, so the v3 row
+    refusals (non-telemetry, forbidden derived sensors, malformed
+    ``episode_id``, interleaved episodes) apply unchanged either way.
+    """
+    if split_manifest is None:
+        samples = select_samples(records, split)
+    else:
+        all_samples = select_samples(records, "all")
+        if split == "all":
+            members: set[str] = set()
+            for episodes in split_manifest.values():
+                members.update(episodes)
+        else:
+            if split not in split_manifest:
+                raise ParseError(
+                    f"split {split!r} is not declared in the split manifest "
+                    f"(declares {', '.join(sorted(split_manifest))})"
+                )
+            members = set(split_manifest[split])
+        samples = [s for s in all_samples if s.episode_id in members]
+    if not samples:
+        raise ParseError(
+            f"NOTHING WAS REPLAYED: 0 steps after split={split!r}"
+            + (" (split manifest supplied)" if split_manifest else "")
+        )
+    return samples
+
+
+@dataclass(frozen=True)
+class ReplayConfig:
+    """Knobs recorded on the manifest."""
+
+    split: str
+    k: int | None
+    i_drive: float
+    missing_policy: str
+
+
+@dataclass
+class ReplayResult:
+    """The two deterministic artifacts plus a human-facing summary."""
+
+    trace_rows: list[dict]
+    sessions: list[str]
+    steps_per_session: dict[str, int]
+    missing_counts: dict[str, int]
+    spikes_fired: int
+
+
+def _require_missing_policy(policy: str) -> None:
+    if policy not in MISSING_POLICIES:
+        raise ParseError(
+            f"unknown missing policy {policy!r} "
+            f"(expected {'|'.join(MISSING_POLICIES)})"
+        )
+
+
+def _require_samples_missing_policy(
+    samples: list[Sample], policy: str
+) -> None:
+    if policy != MISSING_POLICY_REJECT:
+        return
+    bad = [s for s in samples if s.missing]
+    if not bad:
+        return
+    first = bad[0]
+    raise ParseError(
+        f"line {first.source_line}: missing live sensor(s) "
+        f"{', '.join(first.missing)} and missing_policy='reject' -- "
+        "a missing measurement is not an observed zero"
+    )
+
+
+def replay(
+    entry: AttestedEntry,
+    samples: list[Sample],
+    config: ReplayConfig,
+) -> ReplayResult:
+    """Step the attested checkpoint through the encoded sessions.
+
+    The bank is built from ``entry.checkpoint_bytes`` -- the bytes the
+    digest covered -- so the replay is bound to attestation by
+    construction. ``entry`` bytes and parsed parameters are only read,
+    never mutated.
+    """
+    _require_missing_policy(config.missing_policy)
+    _require_samples_missing_policy(samples, config.missing_policy)
+    model = model_from_bytes(entry.checkpoint_bytes, entry.checkpoint_relative)
+    bank = bank_from_model(model, entry.id, config.i_drive)
+    readout = readout_from_model(model)
+
+    rows: list[dict] = []
+    sessions: list[str] = []
+    steps_per_session: dict[str, int] = {}
+    missing_counts: dict[str, int] = {c: 0 for c in LIVE_COLUMNS}
+    fired_total = 0
+    prev: str | None = None
+    bank.reset()
+    for step, sample in enumerate(samples):
+        if sample.episode_id != prev:
+            bank.reset()
+            prev = sample.episode_id
+            sessions.append(sample.episode_id)
+            steps_per_session[sample.episode_id] = 0
+        steps_per_session[sample.episode_id] += 1
+        spikes = keep_lif_step(bank, list(sample.stim), config.k)
+        decision = replay_output_row(score_readout(readout, spikes))
+        fired_total += sum(1 for s in spikes if s)
+        for column in sample.missing:
+            missing_counts[column] += 1
+        rows.append(
+            {
+                "step": step,
+                "session": sample.episode_id,
+                "source_line": sample.source_line,
+                "missing": list(sample.missing),
+                "stim": list(sample.stim),
+                "spikes": [i for i, s in enumerate(spikes) if s],
+                "scores": list(score_readout(readout, spikes)),
+                "decision": decision_as_dict(decision),
+            }
+        )
+    return ReplayResult(
+        trace_rows=rows,
+        sessions=sessions,
+        steps_per_session=steps_per_session,
+        missing_counts=missing_counts,
+        spikes_fired=fired_total,
+    )
+
+
+def trace_jsonl(rows: list[dict]) -> bytes:
+    """Canonical trace bytes: one compact JSON object per step, LF endings."""
+    lines = [json.dumps(row, sort_keys=True, ensure_ascii=True) for row in rows]
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def git_revision(root: Path) -> dict[str, Any]:
+    """``git rev-parse HEAD`` + dirty flag, or nulls where unavailable."""
+    info: dict[str, Any] = {"commit": None, "dirty": None}
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        info["commit"] = commit
+        info["dirty"] = bool(status.strip())
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    return info
+
+
+def _display_path(path: Path) -> str:
+    """Repo-relative when under the checkout, absolute otherwise."""
+    try:
+        return path.resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def build_manifest(
+    *,
+    entry: AttestedEntry,
+    bank: ModelBank,
+    jsonl: Path,
+    split_manifest_path: Path | None,
+    config: ReplayConfig,
+    result: ReplayResult,
+    trace_bytes: bytes,
+) -> dict:
+    """The reproducibility manifest. No wall-clock fields: this document is
+    byte-identical between runs on the same inputs, which is the property
+    the determinism criterion checks."""
+    jsonl_bytes = read_utf8_text(jsonl).encode("utf-8")
+    input_doc: dict[str, Any] = {
+        "path": _display_path(jsonl),
+        "sha256": sha256_bytes(jsonl_bytes),
+        "split": config.split,
+        "sessions": result.sessions,
+        "steps_per_session": result.steps_per_session,
+        "n_steps": len(result.trace_rows),
+    }
+    if split_manifest_path is not None:
+        input_doc["split_manifest"] = {
+            "path": _display_path(split_manifest_path),
+            "sha256": sha256_bytes(
+                read_utf8_text(split_manifest_path).encode("utf-8")
+            ),
+        }
+    return {
+        "schema_version": MANIFEST_SCHEMA,
+        "trace_schema": TRACE_SCHEMA,
+        "trace_sha256": sha256_bytes(trace_bytes),
+        "model": {
+            "id": entry.id,
+            "checkpoint": entry.checkpoint_relative,
+            "checkpoint_digest": entry.checkpoint_digest,
+            "feature_map_id": entry.feature_map_id,
+            "output_contract_id": entry.output_contract_id,
+            "numeric_format": entry.numeric_format,
+            "training_dataset_digest": entry.training_dataset_digest,
+            "bank_manifest": (
+                _display_path(bank.manifest_path)
+                if bank.manifest_path is not None
+                else None
+            ),
+        },
+        "input": input_doc,
+        "encoder": {
+            "kind": "analog-current, frozen minmax (not spikes)",
+            "columns": list(LIVE_COLUMNS),
+            "frozen_minmax_lineage": FROZEN_LINEAGE,
+            "frozen_minmax": {k: list(v) for k, v in FROZEN_MINMAX.items()},
+            "missing_policy": config.missing_policy,
+            "missing_counts": result.missing_counts,
+            "staleness": "undetectable on v3 state_telemetry (ts_utc is "
+            "null); rows replay in file order",
+        },
+        "stepper": {
+            "name": "tools/hamming_lif.py keep_lif_step "
+            "(v = decay*v + W@stim; decay is KEEP)",
+            "k": config.k,
+            "i_drive": config.i_drive,
+            "n_neurons": N_NEURONS,
+            "session_reset": "LifBank.reset() at each episode_id boundary",
+        },
+        "output": {
+            "vocabulary": list(SHIPPED_VOCABULARY),
+            "contract": "tools/decision_core.py replay_output_row",
+            "diagnostic_only": True,
+            "note": "argmax over comfort/temp/power is a diagnostic, not a "
+            "validated ALLOW/WARN/THROTTLE/PAUSE/YIELD_GPU policy",
+        },
+        "results": {
+            "spikes_fired": result.spikes_fired,
+            "sessions": len(result.sessions),
+        },
+        "source": git_revision(REPO_ROOT),
+    }
+
+
+def manifest_json(manifest: dict) -> bytes:
+    """Canonical manifest bytes (same rules as ``model_bank.dumps_manifest``)."""
+    return (
+        json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=True)
+        + "\n"
+    ).encode("utf-8")
+
+
+def default_k(model: dict) -> int | None:
+    """K-WTA from the checkpoint metadata; ``None`` when unrecorded."""
+    raw = model.get("k_wta")
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ParseError(f"checkpoint 'k_wta' is not an integer: {raw!r}")
+    return raw
+
+
+def select_entry(bank: ModelBank, model_id: str | None) -> AttestedEntry:
+    """Pick the replayed entry. A multi-entry bank requires an explicit id."""
+    if model_id is not None:
+        return bank.select(model_id)
+    if len(bank.entries) != 1:
+        raise ParseError(
+            "bank holds "
+            f"{len(bank.entries)} attested entries ({', '.join(bank.ids())}); "
+            "pass --model-id"
+        )
+    return bank.entries[0]
+
+
+def load_replay_inputs(
+    manifest_path: Path,
+    model_id: str | None,
+    jsonl: Path,
+    split: str,
+    split_manifest_path: Path | None,
+) -> tuple[ModelBank, AttestedEntry, list[Sample]]:
+    """Attest the bank, then select rows. The checkpoint bytes consumed
+    downstream are the attested ones -- there is no unverified reload."""
+    bank = load_model_bank(manifest_path)
+    entry = select_entry(bank, model_id)
+    manifest = (
+        load_split_manifest(split_manifest_path)
+        if split_manifest_path is not None
+        else None
+    )
+    samples = select_replay_samples(load_jsonl(jsonl), split, manifest)
+    return bank, entry, samples
+
+
+def shipped_manifest_path() -> Path:
+    return SHIPPED_DIR / "model_bank.json"
+
+
+def fixture_jsonl() -> Path:
+    return REPLAY_FIXTURE_DIR / "telemetry.jsonl"
