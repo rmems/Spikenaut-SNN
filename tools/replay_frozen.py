@@ -246,9 +246,14 @@ def main(argv: list[str] | None = None) -> int:
             result=result,
             trace_bytes=trace_bytes,
         )
-        args.out_dir.mkdir(parents=True, exist_ok=True)
-        (args.out_dir / "trace.jsonl").write_bytes(trace_bytes)
-        (args.out_dir / "manifest.json").write_bytes(manifest_json(manifest))
+        # NOSONAR pythonsecurity:S8707 -- --out-dir is the tool's explicit
+        # user-chosen destination; constraining it would break the documented
+        # explicit-path qualification workflow.
+        args.out_dir.mkdir(parents=True, exist_ok=True)  # NOSONAR
+        (args.out_dir / "trace.jsonl").write_bytes(trace_bytes)  # NOSONAR
+        (args.out_dir / "manifest.json").write_bytes(  # NOSONAR
+            manifest_json(manifest)
+        )
     except (BankError, ParseError, DecisionError) as exc:
         print(f"replay_frozen: {exc}", file=sys.stderr)
         return 2

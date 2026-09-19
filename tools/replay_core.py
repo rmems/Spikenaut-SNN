@@ -143,17 +143,21 @@ def readout_from_model(model: dict) -> list[float]:
                 f"expected {OUTPUT_WIDTH}"
             )
         for j, value in enumerate(row):
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ParseError(
-                    f"neurons[{i}].output_weights[{j}]: expected a finite "
-                    f"number, got {type(value).__name__} {value!r}"
-                )
-            if not math.isfinite(value):
-                raise ParseError(
-                    f"neurons[{i}].output_weights[{j}]: non-finite {value!r}"
-                )
-            flat.append(float(value))
+            flat.append(_readout_weight(i, j, value))
     return flat
+
+
+def _readout_weight(i: int, j: int, value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ParseError(
+            f"neurons[{i}].output_weights[{j}]: expected a finite "
+            f"number, got {type(value).__name__} {value!r}"
+        )
+    if not math.isfinite(value):
+        raise ParseError(
+            f"neurons[{i}].output_weights[{j}]: non-finite {value!r}"
+        )
+    return float(value)
 
 
 def load_split_manifest(path: Path) -> dict[str, frozenset[str]]:
@@ -201,28 +205,34 @@ def load_split_manifest(path: Path) -> dict[str, frozenset[str]]:
                 f"{path.name}: splits[{name!r}] must be an array, got "
                 f"{type(episodes).__name__}"
             )
-        members: set[str] = set()
-        for raw in episodes:
-            if not isinstance(raw, str) or episode_index(raw) is None:
-                raise ParseError(
-                    f"{path.name}: splits[{name!r}] entry {raw!r} is not a "
-                    "gpu-###### episode id"
-                )
-            if raw in members:
-                raise ParseError(
-                    f"{path.name}: episode {raw} listed twice in split "
-                    f"{name!r}"
-                )
-            previous = owner.get(raw)
-            if previous is not None:
-                raise ParseError(
-                    f"{path.name}: split overlap -- episode {raw} is in both "
-                    f"{previous!r} and {name!r}"
-                )
-            members.add(raw)
-            owner[raw] = name
-        out[name] = frozenset(members)
+        out[name] = _split_members(path, name, episodes, owner)
     return out
+
+
+def _split_members(
+    path: Path, name: str, episodes: list, owner: dict[str, str]
+) -> frozenset[str]:
+    members: set[str] = set()
+    for raw in episodes:
+        if not isinstance(raw, str) or episode_index(raw) is None:
+            raise ParseError(
+                f"{path.name}: splits[{name!r}] entry {raw!r} is not a "
+                "gpu-###### episode id"
+            )
+        if raw in members:
+            raise ParseError(
+                f"{path.name}: episode {raw} listed twice in split "
+                f"{name!r}"
+            )
+        previous = owner.get(raw)
+        if previous is not None:
+            raise ParseError(
+                f"{path.name}: split overlap -- episode {raw} is in both "
+                f"{previous!r} and {name!r}"
+            )
+        members.add(raw)
+        owner[raw] = name
+    return frozenset(members)
 
 
 def select_replay_samples(
@@ -329,7 +339,7 @@ def replay(
     rows: list[dict] = []
     sessions: list[str] = []
     steps_per_session: dict[str, int] = {}
-    missing_counts: dict[str, int] = {c: 0 for c in LIVE_COLUMNS}
+    missing_counts: dict[str, int] = dict.fromkeys(LIVE_COLUMNS, 0)
     fired_total = 0
     prev: str | None = None
     bank.reset()
@@ -372,6 +382,36 @@ def trace_jsonl(rows: list[dict]) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
+def _git_dir(root: Path) -> Path | None:
+    """The real git directory, following a worktree ``.git`` file."""
+    gitdir = root / ".git"
+    try:
+        if gitdir.is_file():
+            text = gitdir.read_text(encoding="utf-8").strip()
+            if not text.startswith("gitdir:"):
+                return None
+            gitdir = (root / text.split(":", 1)[1].strip()).resolve()
+    except OSError:
+        return None
+    return gitdir if gitdir.is_dir() else None
+
+
+def _ref_target(gitdir: Path, ref: str) -> str | None:
+    try:
+        return (gitdir / ref).read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    try:
+        packed = (gitdir / "packed-refs").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in packed.splitlines():
+        line = line.strip()
+        if line and not line.startswith(("#", "^")) and line.endswith(" " + ref):
+            return line.split(" ", 1)[0]
+    return None
+
+
 def git_revision(root: Path) -> dict[str, Any]:
     """HEAD commit + branch read from ``.git`` files; nulls where unavailable.
 
@@ -382,36 +422,21 @@ def git_revision(root: Path) -> dict[str, Any]:
     so it is reported as ``None`` (unavailable), never guessed.
     """
     info: dict[str, Any] = {"commit": None, "branch": None, "dirty": None}
-    gitdir = root / ".git"
+    gitdir = _git_dir(root)
+    if gitdir is None:
+        return info
     try:
-        if gitdir.is_file():
-            text = gitdir.read_text(encoding="utf-8").strip()
-            if not text.startswith("gitdir:"):
-                return info
-            gitdir = (root / text.split(":", 1)[1].strip()).resolve()
         head = (gitdir / "HEAD").read_text(encoding="utf-8").strip()
     except OSError:
         return info
+    commit = head
     if head.startswith("ref:"):
         ref = head.split(":", 1)[1].strip()
         if ref.startswith("refs/heads/"):
             info["branch"] = ref[len("refs/heads/"):]
-        try:
-            info["commit"] = (gitdir / ref).read_text(encoding="utf-8").strip()
-        except OSError:
-            try:
-                packed = (gitdir / "packed-refs").read_text(encoding="utf-8")
-            except OSError:
-                packed = ""
-            for line in packed.splitlines():
-                line = line.strip()
-                if line and not line.startswith(("#", "^")) and line.endswith(" " + ref):
-                    info["commit"] = line.split(" ", 1)[0]
-                    break
-    else:
-        info["commit"] = head
-    if info["commit"] is not None and len(info["commit"]) != 40:
-        info["commit"] = None
+        commit = _ref_target(gitdir, ref)
+    if commit is not None and len(commit) == 40:
+        info["commit"] = commit
     return info
 
 

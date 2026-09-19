@@ -91,9 +91,8 @@ class TestFixtureReplay(unittest.TestCase):
             self.assertIn(key, row)
         self.assertEqual(len(row["stim"]), 16)
         self.assertEqual(len(row["scores"]), 3)
-        self.assertEqual(
-            row["decision"]["winning_action"] in {"comfort", "temp", "power"},
-            True,
+        self.assertTrue(
+            row["decision"]["winning_action"] in {"comfort", "temp", "power"}
         )
         # Unused axons stay exactly zero.
         self.assertTrue(all(v == 0.0 for v in row["stim"][5:]))
@@ -120,15 +119,12 @@ class TestFixtureReplay(unittest.TestCase):
 
     def test_reject_missing_policy(self):
         _, entry, samples = _fixture_inputs()
+        config = ReplayConfig(
+            split="all", k=4, i_drive=0.0,
+            missing_policy=MISSING_POLICY_REJECT,
+        )
         with self.assertRaises(ParseError) as ctx:
-            replay(
-                entry,
-                samples,
-                ReplayConfig(
-                    split="all", k=4, i_drive=0.0,
-                    missing_policy=MISSING_POLICY_REJECT,
-                ),
-            )
+            replay(entry, samples, config)
         self.assertIn("sm_clock_mhz", str(ctx.exception))
 
     def test_checkpoint_bytes_unchanged(self):
