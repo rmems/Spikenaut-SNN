@@ -47,7 +47,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -374,27 +373,45 @@ def trace_jsonl(rows: list[dict]) -> bytes:
 
 
 def git_revision(root: Path) -> dict[str, Any]:
-    """``git rev-parse HEAD`` + dirty flag, or nulls where unavailable."""
-    info: dict[str, Any] = {"commit": None, "dirty": None}
+    """HEAD commit + branch read from ``.git`` files; nulls where unavailable.
+
+    No subprocess: replay must stay hermetic, and spawning ``git`` is a
+    security-scanner hotspot. Loose refs are read directly; packed refs
+    fall back to ``.git/packed-refs``. A worktree ``.git`` file is
+    followed. The working-tree dirty flag is not derivable without git,
+    so it is reported as ``None`` (unavailable), never guessed.
+    """
+    info: dict[str, Any] = {"commit": None, "branch": None, "dirty": None}
+    gitdir = root / ".git"
     try:
-        commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        status = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-        info["commit"] = commit
-        info["dirty"] = bool(status.strip())
-    except (OSError, subprocess.CalledProcessError):
-        pass
+        if gitdir.is_file():
+            text = gitdir.read_text(encoding="utf-8").strip()
+            if not text.startswith("gitdir:"):
+                return info
+            gitdir = (root / text.split(":", 1)[1].strip()).resolve()
+        head = (gitdir / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return info
+    if head.startswith("ref:"):
+        ref = head.split(":", 1)[1].strip()
+        if ref.startswith("refs/heads/"):
+            info["branch"] = ref[len("refs/heads/"):]
+        try:
+            info["commit"] = (gitdir / ref).read_text(encoding="utf-8").strip()
+        except OSError:
+            try:
+                packed = (gitdir / "packed-refs").read_text(encoding="utf-8")
+            except OSError:
+                packed = ""
+            for line in packed.splitlines():
+                line = line.strip()
+                if line and not line.startswith(("#", "^")) and line.endswith(" " + ref):
+                    info["commit"] = line.split(" ", 1)[0]
+                    break
+    else:
+        info["commit"] = head
+    if info["commit"] is not None and len(info["commit"]) != 40:
+        info["commit"] = None
     return info
 
 
