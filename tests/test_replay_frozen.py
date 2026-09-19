@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,10 +32,8 @@ from tools.replay_core import (
     manifest_json,
     build_manifest,
     replay,
-    select_replay_samples,
     trace_jsonl,
 )
-from tools.hamming_encode import load_jsonl
 from tools.replay_frozen import main as cli_main
 
 FIXTURE_JSONL = REPLAY_FIXTURE_DIR / "telemetry.jsonl"
