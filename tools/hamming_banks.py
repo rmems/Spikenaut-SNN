@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 try:
@@ -10,6 +11,8 @@ try:
     from .q88_core import (
         ParseError,
         Q88RangeError,
+        _model_neurons,
+        _validate_neuron,
         as_finite_float,
         decode_q88,
         encode_q88_hex,
@@ -22,6 +25,8 @@ except ImportError:
     from q88_core import (
         ParseError,
         Q88RangeError,
+        _model_neurons,
+        _validate_neuron,
         as_finite_float,
         decode_q88,
         encode_q88_hex,
@@ -89,8 +94,36 @@ def _require_keep_factor(value: float, where: str) -> float:
     return value
 
 
-def bank_from_json(path: Path, name: str, i_drive: float) -> tuple[LifBank, dict]:
-    model = load_model(path)
+def model_from_bytes(payload: bytes, source: str) -> dict:
+    """Parse and validate a checkpoint consumed as already-attested bytes.
+
+    The model-bank attestation path hands callers the exact bytes it
+    hashed; this is the ``load_model`` equivalent for those bytes, so a
+    replay never re-reads the checkpoint file and cannot silently consume
+    different contents than the digest covered. Same shape checks as
+    ``load_model``; ``source`` labels errors only.
+    """
+    label = Path(source)
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ParseError(f"{label.name}: checkpoint is not UTF-8 ({exc})") from exc
+    try:
+        model = json.loads(text)
+    except ValueError as exc:
+        # JSONDecodeError included: a digest-valid but malformed checkpoint
+        # is an unconsumable artifact (ParseError -> CLI exit 2), not a crash.
+        raise ParseError(
+            f"{label.name}: unreadable JSON number: {exc}"
+        ) from exc
+    neurons = _model_neurons(label, model)
+    for i, neuron in enumerate(neurons):
+        _validate_neuron(label, i, neuron)
+    return model
+
+
+def bank_from_model(model: dict, name: str, i_drive: float) -> LifBank:
+    """Build a keep-LIF bank from an already-parsed, already-validated model."""
     neurons = model["neurons"]
     weights = []
     decay = []
@@ -111,16 +144,18 @@ def bank_from_json(path: Path, name: str, i_drive: float) -> tuple[LifBank, dict
                 for j, w in enumerate(neuron["weights"])
             ]
         )
-    return (
-        LifBank(
-            name=name,
-            weights=weights,
-            decay=decay,
-            threshold=threshold,
-            i_drive=f32(i_drive),
-        ),
-        model,
+    return LifBank(
+        name=name,
+        weights=weights,
+        decay=decay,
+        threshold=threshold,
+        i_drive=f32(i_drive),
     )
+
+
+def bank_from_json(path: Path, name: str, i_drive: float) -> tuple[LifBank, dict]:
+    model = load_model(path)
+    return bank_from_model(model, name, i_drive), model
 
 
 def _require_mem_len(entries, expected: int, name: str) -> None:

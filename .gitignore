@@ -40,6 +40,9 @@ docs/reseach/
 /artifacts/*
 !/artifacts/.gitkeep
 
+# Default tools/replay_frozen.py output (untracked so reruns stay deterministic)
+/replay_out/
+
 # GitHub Actions runner
 /actions-runner/
 

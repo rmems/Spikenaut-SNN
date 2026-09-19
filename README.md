@@ -305,12 +305,18 @@ tools/                             # Python package, standard library only
                                    # decision_core.py vs src/decision.rs.
                                    # Distill (comfort, temp, power); RM-1150
                                    # five-wide list unbound.
+├── replay_frozen.py               # Deterministic frozen model-bank replay
+                                   # (RM-1692): attested bank -> analog
+                                   # encode -> keep-LIF -> readout decision;
+                                   # trace.jsonl + manifest.json artifacts
 ├── fixtures/live_stim/            # reading.jsonl + expected_stim.json, read
                                    # by both live_stim_parity.py and
                                    # tests/live_stim.rs
 ├── fixtures/model_bank/           # Golden valid + negative bank fixtures (RM-1327)
-└── fixtures/decision/             # expected.json golden pin for
+├── fixtures/decision/             # expected.json golden pin for
                                    # replay_output_row (RM-1328)
+└── fixtures/replay_frozen/        # Synthetic method fixture for
+                                   # replay_frozen.py (RM-1692)
 
 src/                               # Rust, `spikenaut-snn`
 ├── lib.rs                         # Crate root: what the library exposes
@@ -371,6 +377,53 @@ stepper in `tools/hamming_core.py`
 claim `src/` executes spikes, and it is not a Hamming pass/fail gate — the
 tolerance is deferred to [#20](https://github.com/rmems/Spikenaut-SNN/issues/20). Protocol:
 `tools/HAMMING_PROTOCOL.md`.
+
+### Frozen model-bank replay (RM-1692)
+
+`tools/replay_frozen.py` is the offline shadow-replay command. One run
+composes the pieces above in order — attested model-bank selection
+(`model_bank.py`, consuming the digest-verified checkpoint bytes, never
+re-reading the file), the exp-025 five-sensor analog encoder
+(`hamming_encode.py`, frozen minmax lineage `74acdd0f`), the reference
+keep-LIF stepper (`hamming_lif.py`, membrane reset at each `episode_id`
+boundary), and the shipped readout (`decision_core.py` `replay_output_row`,
+output names `comfort`/`temp`/`power` — argmax is a diagnostic, not a
+validated ALLOW/WARN/THROTTLE/PAUSE/YIELD_GPU policy).
+
+```bash
+# Method fixture (synthetic committed rows; not measured hardware):
+python3 tools/replay_frozen.py
+
+# Real-session qualification on explicit paths:
+python3 tools/replay_frozen.py \
+    --jsonl PATH/state_telemetry.jsonl --split test \
+    --split-manifest PATH/splits.json --out-dir out/
+```
+
+Artifacts under `--out-dir` (default `replay_out/`):
+
+- `trace.jsonl` — one object per step: session, source line, per-sensor
+  `missing` names, stim, fired neurons, scores, decision diagnostics.
+- `manifest.json` — checkpoint/input digests, feature-map and
+  output-contract identifiers, frozen-minmax reference, session IDs,
+  configuration, source revision, trace digest. No wall-clock fields:
+  both artifacts are byte-identical across runs on the same inputs.
+
+Missing/stale policy: a live column absent or `null` encodes to 0 (the
+`T=0 stays 0` semantics the bank was trained with) **and** is named per
+step in `missing`, so a missing measurement is never indistinguishable
+from an observed zero; `--missing-policy reject` refuses such rows
+instead. v3 `state_telemetry` has no usable timestamp, so staleness is
+undetectable — rows replay in file order. An optional
+`spikenaut.split-manifest.v1` JSON assigns episodes to splits for sessions
+outside the built-in ranges; an episode in two splits is rejected. The
+entry's declared `feature_map_id`/`output_contract_id` must match the
+implemented contracts, and parameters are consumed on the declared
+`numeric_format` grid (Q8.8 — the same decode the deployed `.mem`
+images produce). Unset knobs come from the checkpoint: `k` defaults to
+its recorded `k_wta` (`--k none` disables K-WTA), `--i-drive` to its
+recorded `exp023_knobs.I_DRIVE` (0.05). See `tools/replay_core.py` for
+the full contract.
 
 ### Loading on FPGA
 

@@ -178,3 +178,12 @@ jobs:
           python3 tools/verify_model_bank.py --self-test
           python3 -m tools.verify_model_bank --self-test
           python3 -m unittest tests.test_model_bank -v
+
+      # Frozen model-bank replay (RM-1692 / GH #60). Composes attested
+      # selection -> analog encode -> keep-LIF -> readout on the committed
+      # synthetic fixture; artifacts land in the gitignored replay_out/.
+      - name: Replay the shipped bank on the method fixture
+        run: |
+          python3 tools/replay_frozen.py
+          python3 -m tools.replay_frozen
+          python3 -m unittest tests.test_replay_frozen -v
