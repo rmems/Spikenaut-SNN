@@ -73,7 +73,7 @@ try:  # package import: `python3 -m tools.replay_frozen`
         load_jsonl,
         select_samples,
     )
-    from .hamming_lif import keep_lif_step
+    from .hamming_lif import LifBank, keep_lif_step
     from .model_bank import AttestedEntry, ModelBank, load_model_bank
     from .model_bank_json import _parse_json, _read_utf8
     from .q88_core import ParseError, read_utf8_text
@@ -99,7 +99,7 @@ except ImportError:  # direct script: `python3 tools/replay_frozen.py`
         load_jsonl,
         select_samples,
     )
-    from hamming_lif import keep_lif_step
+    from hamming_lif import LifBank, keep_lif_step
     from model_bank import AttestedEntry, ModelBank, load_model_bank
     from model_bank_json import _parse_json, _read_utf8
     from q88_core import ParseError, read_utf8_text
@@ -172,6 +172,26 @@ def load_split_manifest(path: Path) -> dict[str, frozenset[str]]:
     in two splits is a split overlap and is refused -- assigning one
     session to both train and test would quietly contaminate the holdout.
     """
+    splits = _split_manifest_doc(path)
+    owner: dict[str, str] = {}
+    out: dict[str, frozenset[str]] = {}
+    for name, episodes in splits.items():
+        if name not in SPLIT_NAMES:
+            raise ParseError(
+                f"{path.name}: unknown split {name!r} "
+                f"(expected one of {', '.join(SPLIT_NAMES)})"
+            )
+        if not isinstance(episodes, list):
+            raise ParseError(
+                f"{path.name}: splits[{name!r}] must be an array, got "
+                f"{type(episodes).__name__}"
+            )
+        out[name] = _split_members(path, name, episodes, owner)
+    return out
+
+
+def _split_manifest_doc(path: Path) -> dict:
+    """Read the manifest and return its validated ``splits`` object."""
     if not path.is_file():
         raise ParseError(f"missing split manifest: {path}")
     document = _parse_json(_read_utf8(path, kind="split manifest"), source=path)
@@ -192,21 +212,7 @@ def load_split_manifest(path: Path) -> dict[str, frozenset[str]]:
             f"{path.name}: 'splits' must be a non-empty object, got "
             f"{type(splits).__name__}"
         )
-    owner: dict[str, str] = {}
-    out: dict[str, frozenset[str]] = {}
-    for name, episodes in splits.items():
-        if name not in SPLIT_NAMES:
-            raise ParseError(
-                f"{path.name}: unknown split {name!r} "
-                f"(expected one of {', '.join(SPLIT_NAMES)})"
-            )
-        if not isinstance(episodes, list):
-            raise ParseError(
-                f"{path.name}: splits[{name!r}] must be an array, got "
-                f"{type(episodes).__name__}"
-            )
-        out[name] = _split_members(path, name, episodes, owner)
-    return out
+    return splits
 
 
 def _split_members(
@@ -252,18 +258,8 @@ def select_replay_samples(
     if split_manifest is None:
         samples = select_samples(records, split)
     else:
+        members = _manifest_members(split_manifest, split)
         all_samples = select_samples(records, "all")
-        if split == "all":
-            members: set[str] = set()
-            for episodes in split_manifest.values():
-                members.update(episodes)
-        else:
-            if split not in split_manifest:
-                raise ParseError(
-                    f"split {split!r} is not declared in the split manifest "
-                    f"(declares {', '.join(sorted(split_manifest))})"
-                )
-            members = set(split_manifest[split])
         samples = [s for s in all_samples if s.episode_id in members]
     if not samples:
         raise ParseError(
@@ -271,6 +267,20 @@ def select_replay_samples(
             + (" (split manifest supplied)" if split_manifest else "")
         )
     return samples
+
+
+def _manifest_members(
+    split_manifest: dict[str, frozenset[str]], split: str
+) -> set[str]:
+    """Episodes the manifest assigns to ``split``; ``all`` means every one."""
+    if split == "all":
+        return set().union(*split_manifest.values())
+    if split not in split_manifest:
+        raise ParseError(
+            f"split {split!r} is not declared in the split manifest "
+            f"(declares {', '.join(sorted(split_manifest))})"
+        )
+    return set(split_manifest[split])
 
 
 @dataclass(frozen=True)
@@ -334,8 +344,16 @@ def replay(
     _require_samples_missing_policy(samples, config.missing_policy)
     model = model_from_bytes(entry.checkpoint_bytes, entry.checkpoint_relative)
     bank = bank_from_model(model, entry.id, config.i_drive)
-    readout = readout_from_model(model)
+    return _run_steps(bank, readout_from_model(model), samples, config)
 
+
+def _run_steps(
+    bank: LifBank,
+    readout: list[float],
+    samples: list[Sample],
+    config: ReplayConfig,
+) -> ReplayResult:
+    """The stepping loop: one trace row per sample, reset per session."""
     rows: list[dict] = []
     sessions: list[str] = []
     steps_per_session: dict[str, int] = {}
@@ -351,7 +369,7 @@ def replay(
             steps_per_session[sample.episode_id] = 0
         steps_per_session[sample.episode_id] += 1
         spikes = keep_lif_step(bank, list(sample.stim), config.k)
-        decision = replay_output_row(score_readout(readout, spikes))
+        scores = score_readout(readout, spikes)
         fired_total += sum(1 for s in spikes if s)
         for column in sample.missing:
             missing_counts[column] += 1
@@ -363,8 +381,8 @@ def replay(
                 "missing": list(sample.missing),
                 "stim": list(sample.stim),
                 "spikes": [i for i, s in enumerate(spikes) if s],
-                "scores": list(score_readout(readout, spikes)),
-                "decision": decision_as_dict(decision),
+                "scores": list(scores),
+                "decision": decision_as_dict(replay_output_row(scores)),
             }
         )
     return ReplayResult(
@@ -461,41 +479,12 @@ def build_manifest(
     """The reproducibility manifest. No wall-clock fields: this document is
     byte-identical between runs on the same inputs, which is the property
     the determinism criterion checks."""
-    jsonl_bytes = read_utf8_text(jsonl).encode("utf-8")
-    input_doc: dict[str, Any] = {
-        "path": _display_path(jsonl),
-        "sha256": sha256_bytes(jsonl_bytes),
-        "split": config.split,
-        "sessions": result.sessions,
-        "steps_per_session": result.steps_per_session,
-        "n_steps": len(result.trace_rows),
-    }
-    if split_manifest_path is not None:
-        input_doc["split_manifest"] = {
-            "path": _display_path(split_manifest_path),
-            "sha256": sha256_bytes(
-                read_utf8_text(split_manifest_path).encode("utf-8")
-            ),
-        }
     return {
         "schema_version": MANIFEST_SCHEMA,
         "trace_schema": TRACE_SCHEMA,
         "trace_sha256": sha256_bytes(trace_bytes),
-        "model": {
-            "id": entry.id,
-            "checkpoint": entry.checkpoint_relative,
-            "checkpoint_digest": entry.checkpoint_digest,
-            "feature_map_id": entry.feature_map_id,
-            "output_contract_id": entry.output_contract_id,
-            "numeric_format": entry.numeric_format,
-            "training_dataset_digest": entry.training_dataset_digest,
-            "bank_manifest": (
-                _display_path(bank.manifest_path)
-                if bank.manifest_path is not None
-                else None
-            ),
-        },
-        "input": input_doc,
+        "model": _model_section(entry, bank),
+        "input": _input_section(jsonl, split_manifest_path, config, result),
         "encoder": {
             "kind": "analog-current, frozen minmax (not spikes)",
             "columns": list(LIVE_COLUMNS),
@@ -527,6 +516,47 @@ def build_manifest(
         },
         "source": git_revision(REPO_ROOT),
     }
+
+
+def _model_section(entry: AttestedEntry, bank: ModelBank) -> dict[str, Any]:
+    return {
+        "id": entry.id,
+        "checkpoint": entry.checkpoint_relative,
+        "checkpoint_digest": entry.checkpoint_digest,
+        "feature_map_id": entry.feature_map_id,
+        "output_contract_id": entry.output_contract_id,
+        "numeric_format": entry.numeric_format,
+        "training_dataset_digest": entry.training_dataset_digest,
+        "bank_manifest": (
+            _display_path(bank.manifest_path)
+            if bank.manifest_path is not None
+            else None
+        ),
+    }
+
+
+def _input_section(
+    jsonl: Path,
+    split_manifest_path: Path | None,
+    config: ReplayConfig,
+    result: ReplayResult,
+) -> dict[str, Any]:
+    doc: dict[str, Any] = {
+        "path": _display_path(jsonl),
+        "sha256": sha256_bytes(read_utf8_text(jsonl).encode("utf-8")),
+        "split": config.split,
+        "sessions": result.sessions,
+        "steps_per_session": result.steps_per_session,
+        "n_steps": len(result.trace_rows),
+    }
+    if split_manifest_path is not None:
+        doc["split_manifest"] = {
+            "path": _display_path(split_manifest_path),
+            "sha256": sha256_bytes(
+                read_utf8_text(split_manifest_path).encode("utf-8")
+            ),
+        }
+    return doc
 
 
 def manifest_json(manifest: dict) -> bytes:

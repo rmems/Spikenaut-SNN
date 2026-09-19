@@ -60,7 +60,7 @@ from pathlib import Path
 
 try:  # package import: `python3 -m tools.replay_frozen`
     from .decision_core import DecisionError
-    from .model_bank import BankError
+    from .model_bank import AttestedEntry, BankError
     from .q88_core import ParseError
     from .replay_core import (
         MISSING_POLICIES,
@@ -77,7 +77,7 @@ try:  # package import: `python3 -m tools.replay_frozen`
     )
 except ImportError:  # direct script: `python3 tools/replay_frozen.py`
     from decision_core import DecisionError
-    from model_bank import BankError
+    from model_bank import AttestedEntry, BankError
     from q88_core import ParseError
     from replay_core import (
         MISSING_POLICIES,
@@ -131,6 +131,12 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="replay_frozen",
         description=__doc__.split("\n\n", 1)[0],
     )
+    _add_input_args(parser)
+    _add_run_args(parser)
+    return parser
+
+
+def _add_input_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--bank-manifest",
         type=Path,
@@ -174,6 +180,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "episode in two splits is rejected"
         ),
     )
+
+
+def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--k",
         type=_kwta,
@@ -206,7 +215,24 @@ def _build_parser() -> argparse.ArgumentParser:
         default=Path("replay_out"),
         help="directory for trace.jsonl + manifest.json (default replay_out/)",
     )
-    return parser
+
+
+def _resolve_k(args: argparse.Namespace, entry: AttestedEntry) -> int | None:
+    if args.k is not None:
+        return args.k
+    model = model_from_bytes(entry.checkpoint_bytes, entry.checkpoint_relative)
+    return default_k(model)
+
+
+def _write_artifacts(
+    out_dir: Path, trace_bytes: bytes, manifest: dict
+) -> None:
+    # NOSONAR pythonsecurity:S8707 -- --out-dir is the tool's explicit
+    # user-chosen destination; constraining it would break the documented
+    # explicit-path qualification workflow.
+    out_dir.mkdir(parents=True, exist_ok=True)  # NOSONAR
+    (out_dir / "trace.jsonl").write_bytes(trace_bytes)  # NOSONAR
+    (out_dir / "manifest.json").write_bytes(manifest_json(manifest))  # NOSONAR
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -222,16 +248,9 @@ def main(argv: list[str] | None = None) -> int:
             bank_manifest, args.model_id, jsonl, args.split,
             args.split_manifest,
         )
-        if args.k is None:
-            model = model_from_bytes(
-                entry.checkpoint_bytes, entry.checkpoint_relative
-            )
-            k = default_k(model)
-        else:
-            k = args.k
         config = ReplayConfig(
             split=args.split,
-            k=k,
+            k=_resolve_k(args, entry),
             i_drive=args.i_drive,
             missing_policy=args.missing_policy,
         )
@@ -246,14 +265,7 @@ def main(argv: list[str] | None = None) -> int:
             result=result,
             trace_bytes=trace_bytes,
         )
-        # NOSONAR pythonsecurity:S8707 -- --out-dir is the tool's explicit
-        # user-chosen destination; constraining it would break the documented
-        # explicit-path qualification workflow.
-        args.out_dir.mkdir(parents=True, exist_ok=True)  # NOSONAR
-        (args.out_dir / "trace.jsonl").write_bytes(trace_bytes)  # NOSONAR
-        (args.out_dir / "manifest.json").write_bytes(  # NOSONAR
-            manifest_json(manifest)
-        )
+        _write_artifacts(args.out_dir, trace_bytes, manifest)
     except (BankError, ParseError, DecisionError) as exc:
         print(f"replay_frozen: {exc}", file=sys.stderr)
         return 2
