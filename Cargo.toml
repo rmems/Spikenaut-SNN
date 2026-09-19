@@ -11,6 +11,10 @@ keywords = ["nir", "neuromorphic", "snn", "spiking", "lif"]
 categories = ["science"]
 publish = false
 
+[features]
+default = []
+training = ["dep:plasticity-lab"]
+
 # The only dependencies of this repository, all resolved from crates.io.
 # Deliberately unpinned to any checkout: the lockfile must resolve
 # `registry+https://github.com/rust-lang/crates.io-index` for each.
@@ -22,15 +26,35 @@ publish = false
 # Default features are empty; the optional `serde` and `ndarray` features are
 # left off.
 #
-# neuromod: 0.5.x is experimental pre-1.0, so `"0.5"` is `>=0.5.0, <0.6.0`.
-# Declared from crates.io (issue #5). Host-side adapter only — it does not
-# rewrite Spikenaut weights, Distill, FPGA, or training loops.
+# neuromod: 0.6.x is experimental pre-1.0, so `"0.6"` is `>=0.6.0, <0.7.0`.
+# Declared from crates.io (issue #5). Host-side experiments only — they do
+# not rewrite Spikenaut weights, Distill, FPGA, or training loops.
 #
 # kinetic-signals: same `"0.4"` bound. It is a causal temporal feature layer
 # *upstream* of axon-encoder (issue #14) and does not replace it. Host-side
 # preprocessing only; FPGA parity is not blocked on kinetic RTL.
+#
+# limbic-critic: checked TD reward shaping only. The app-level adapter copies
+# its four fields into neuromod; domain reward collection stays outside.
+#
+# synaptic-wiring: deterministic recurrent topology experiment only. It does
+# not reinterpret the shipped dense input matrix or change FPGA artifacts.
+#
+# corpus-ipc: typed, versioned message construction only. Default features are
+# kept off explicitly; no ZMQ socket, HTTP server, or background runtime.
+#
+# plasticity-lab: optional host-side training/session orchestration over the
+# synthetic neuromod network. It never rewrites the shipped exp-025 artifacts.
+#
+# silicon-bridge: checked signed Q8.8 parameter encoding only. Its optional
+# UART feature stays disabled; live board transport remains a separate gate.
 [dependencies]
 axon-encoder = "0.4"
+corpus-ipc = { version = "0.1", default-features = false }
 kinetic-signals = "0.4"
-neuromod = "0.5"
+limbic-critic = "0.3"
+neuromod = "0.6"
 nir-rs = "0.4.3"
+plasticity-lab = { version = "0.2", optional = true }
+silicon-bridge = { version = "0.3", default-features = false }
+synaptic-wiring = "0.3"

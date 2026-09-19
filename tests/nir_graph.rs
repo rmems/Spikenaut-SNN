@@ -555,15 +555,24 @@ fn nir_rs_resolves_from_crates_io() {
             "no dependency in any table may be pinned with `{forbidden}`, found in:\n{dependencies}",
         );
     }
-    // The allowed set is exact, so a third dependency (issue #9 added
-    // `axon-encoder`) or a rename still fails here. Sorted, so the manifest's
-    // declaration order is not part of the contract.
+    // The allowed set is exact, so an undeclared addition or a rename still
+    // fails here. Sorted, so declaration order is not part of the contract.
     let mut names = runtime.clone();
     names.sort_unstable();
     assert_eq!(
         names,
-        ["axon-encoder", "kinetic-signals", "neuromod", "nir-rs"],
-        "`[dependencies]` must declare exactly axon-encoder, kinetic-signals, neuromod and nir-rs, found: {names:?}",
+        [
+            "axon-encoder",
+            "corpus-ipc",
+            "kinetic-signals",
+            "limbic-critic",
+            "neuromod",
+            "nir-rs",
+            "plasticity-lab",
+            "silicon-bridge",
+            "synaptic-wiring",
+        ],
+        "`[dependencies]` must declare the nine reviewed registry crates, found: {names:?}",
     );
 
     let lock_path: PathBuf = root.join("Cargo.lock");
@@ -581,6 +590,33 @@ fn nir_rs_resolves_from_crates_io() {
     assert!(
         entry.contains("version = \"0.4."),
         "nir-rs must resolve to 0.4.x, got:\n{entry}",
+    );
+}
+
+/// The host trainer is intentionally opt-in. Both sides of that statement are
+/// manifest contracts: no default feature may enable it, and the dependency
+/// must remain optional behind the named feature.
+#[test]
+fn plasticity_training_remains_optional_and_off_by_default() {
+    let manifest =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+            .expect("read Cargo.toml");
+
+    assert!(
+        manifest.lines().any(|line| line.trim() == "default = []"),
+        "the default feature set must stay empty",
+    );
+    assert!(
+        manifest
+            .lines()
+            .any(|line| line.trim() == "training = [\"dep:plasticity-lab\"]"),
+        "the training feature must enable plasticity-lab explicitly",
+    );
+    assert!(
+        manifest.lines().any(|line| {
+            line.trim() == "plasticity-lab = { version = \"0.2\", optional = true }"
+        }),
+        "plasticity-lab must remain an optional 0.2 dependency",
     );
 }
 
@@ -672,9 +708,8 @@ fn off_grid_public_parameters_are_rejected() {
 /// This does not police the prose, and should not be read as if it did. A row
 /// that implies a dependency without using the marker reads as a
 /// non-dependency here and passes. The marker is what this test makes
-/// load-bearing; the wording around it is review's job. `neuromod` is now a
-/// **Declared** crates.io dependency (issue #5); a row that dropped the
-/// marker would fail the set equality below.
+/// load-bearing; the wording around it is review's job. A row that drops the
+/// marker fails the set equality below.
 #[test]
 fn the_readme_dependency_table_agrees_with_the_manifest() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));

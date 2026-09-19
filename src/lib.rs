@@ -36,8 +36,10 @@
 //! [`CHANNEL_MAP`]: encode::CHANNEL_MAP
 //! [`LIVE_COLUMNS`]: encode::LIVE_COLUMNS
 //!
-//! Its dependency list is deliberately minimal -- currently [`nir_rs`],
-//! [`axon_encoder`], [`kinetic_signals`], and [`neuromod`], all from crates.io.
+//! Its nine direct dependencies are deliberate: [`nir_rs`],
+//! [`axon_encoder`], [`kinetic_signals`], [`neuromod`], `limbic-critic`,
+//! `synaptic-wiring`, `corpus-ipc`, `silicon-bridge`, and the optional
+//! `plasticity-lab`, all from crates.io.
 //! The bound is the claim, not the number: `tests/nir_graph.rs` asserts the
 //! manifest's exact *runtime* dependency set, so adopting a crate this library
 //! links against fails that test until the adoption is deliberate. Dev- and
@@ -52,10 +54,16 @@
 //! features come back as audit data; which of them — if any — earns an axon is
 //! the RAW / KINETIC / HYBRID ablation, which stays open.
 //!
-//! [`neuromod_host`] is a thin host-side adapter over published `neuromod`
-//! 0.5.x `LifNeuron`. It constructs and steps a real crates.io type so the
-//! dependency is load-bearing. It does not rewrite shipped weights, Distill,
-//! FPGA, or training loops.
+//! [`neuromod_host`] preserves the thin `LifNeuron` adapter and adds parallel
+//! `neuromod` 0.6 experiments: a caller-seeded non-negative R-STDP network and
+//! a sparse GIF layer. [`critic`] supplies checked TD modulators, [`wiring`]
+//! supplies a deterministic 12:4 Dale recurrent proposal, and [`ipc`] builds
+//! validated versioned messages without transport. With the `training` feature,
+//! `training` runs `plasticity-lab` only over that synthetic network. None of
+//! these paths executes or rewrites the shipped signed bank, Distill, or FPGA
+//! artifacts. [`silicon`] is the distinct deployment boundary: it runs the
+//! shipped bank through `silicon-bridge`'s checked signed Q8.8 path and adapts
+//! the crate's `K × N` readout order back to the FPGA vault's `N × K` order.
 //!
 //! The graph [`load_default_lif_graph`] returns is the shipped `merged_v2`
 //! artifact ([`model::MERGED_V2_PROVENANCE`]): 16-neuron LIF, exp-025 Dale
@@ -105,21 +113,29 @@
 //! `.mem` artifacts.
 //!
 //! Writing `.nir` files (the `nir-rs` `hdf5` feature links the system libhdf5)
-//! and the output-layer weights in `parameters_output_weights.mem` belong to
-//! their own tickets.
+//! remains out of scope. [`export_shipped_fpga_image`] now regenerates every
+//! signed Q8.8 parameter image in memory; it does not run a board or define the
+//! three output classes.
 //!
 //! [nir]: https://neuroir.org/
 
 #![warn(missing_docs)]
 
+pub mod critic;
 pub mod encode;
 pub mod graph;
+pub mod ipc;
 pub mod json;
 pub mod kinetic;
 pub mod model;
 pub mod neuromod_host;
+pub mod silicon;
 pub mod stim;
+#[cfg(feature = "training")]
+pub mod training;
+pub mod wiring;
 
+pub use critic::{HostCritic, SupervisorObservation};
 pub use encode::{
     CHANNEL_COUNT, LIVE_COLUMNS, LIVE_LEGAL_COLUMNS, LiveMapMismatch, LiveTelemetryEncoder,
     NonFiniteFrame, NonFiniteLiveFrame, SpikeModalityMismatch,
@@ -130,10 +146,23 @@ pub use graph::{
     Provenance, build_lif_graph, build_lif_graph_with_provenance, load_default_lif_graph,
     resistance_from_decay,
 };
+pub use ipc::{
+    IpcBatchContext, IpcBridgeError, decode_ipc_message, encode_ipc_message,
+    neuromodulator_message, spike_message, stimulus_message,
+};
 pub use kinetic::{
     ClockMismatch, KINETIC_DT_SECONDS, KINETIC_SIGNALS_CRATE_VERSION, KineticError,
     KineticFeatures, KineticPipeline, LiveKineticFrontEnd,
 };
 pub use model::{MERGED_V2_PROVENANCE, ModelError, Neuron, SnnModel, is_q8_8, quantize_q8_8};
-pub use neuromod_host::HostLif;
+pub use neuromod_host::{HOST_NETWORK_INITIAL_WEIGHT, HostGifLayer, HostLif, HostNetwork};
+pub use silicon::{
+    FPGA_MEM_FILENAMES, FpgaMemFile, ShippedFpgaImage, SiliconExportError,
+    export_shipped_fpga_image,
+};
 pub use stim::{LiveStimAdapter, NO_STIMULUS, UNUSED_AXONS};
+#[cfg(feature = "training")]
+pub use training::{
+    HostTrainingSession, TrainerError, TrainingConfig, TrainingExample, TrainingSummary,
+};
+pub use wiring::{DaleMeshConfig, ExperimentalDaleMesh};
