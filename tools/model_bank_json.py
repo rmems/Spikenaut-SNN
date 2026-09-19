@@ -9,6 +9,7 @@ deep nesting, invalid UTF-8) onto ``BankParseError``.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -78,6 +79,13 @@ def _reject_nonstandard_json_constant(token: str) -> None:
     raise _NonstandardJsonConstantError(token)
 
 
+def _parse_finite_json_float(token: str) -> float:
+    value = float(token)
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite JSON number {token!r}")
+    return value
+
+
 # CPython 3.11 ``json.loads`` RecursionError starts around this depth.
 # CPython 3.14 can decode past it, so the named bound keeps both fail-closed.
 MAX_JSON_NESTING = 1000
@@ -133,6 +141,7 @@ def _parse_json(text: str, *, source: Path) -> Any:
             text,
             object_pairs_hook=_reject_duplicate_object_keys,
             parse_constant=_reject_nonstandard_json_constant,
+            parse_float=_parse_finite_json_float,
         )
     except json.JSONDecodeError as exc:
         raise BankParseError(

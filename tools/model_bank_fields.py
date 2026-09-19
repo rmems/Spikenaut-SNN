@@ -81,6 +81,12 @@ def _require_token(value: Any, *, entry: str, field: str) -> str:
             field=field,
             message=f"must be a non-empty string, got {value!r}",
         )
+    if not value.strip():
+        _fail(
+            entry=entry,
+            field=field,
+            message=f"must contain a non-whitespace character, got {value!r}",
+        )
     if _contains_control(value):
         _fail(
             entry=entry,

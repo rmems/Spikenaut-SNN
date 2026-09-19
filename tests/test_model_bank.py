@@ -136,6 +136,14 @@ class ModelBankTests(unittest.TestCase):
             else:
                 self.fail("deeply nested checkpoint was accepted")
 
+    def test_overflowing_json_float_is_parse_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = Path(tmp) / "overflow.json"
+            checkpoint.write_text('{"weight": 1e400}', encoding="utf-8")
+            with self.assertRaises(BankParseError) as caught:
+                load_unattested_checkpoint(checkpoint)
+            self.assertIn("unreadable JSON number", str(caught.exception))
+
     def test_braces_inside_json_strings_do_not_count_as_nesting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             checkpoint = Path(tmp) / "nested.json"
@@ -386,7 +394,10 @@ class ModelBankTests(unittest.TestCase):
             other = tmp_path / "other"
             other.mkdir()
             link = other / MANIFEST_FILENAME
-            link.symlink_to(dest / MANIFEST_FILENAME)
+            try:
+                link.symlink_to(dest / MANIFEST_FILENAME)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlink creation is unavailable: {exc}")
             bank = load_model_bank(link)
             entry = bank.select("fixture-ok")
             self.assertEqual(entry.checkpoint_digest, FIXTURE_DIGEST)
@@ -403,7 +414,10 @@ class ModelBankTests(unittest.TestCase):
             dest = Path(tmp) / "loop"
             shutil.copytree(VALID.parent, dest)
             loop = dest / "loop.bin"
-            loop.symlink_to(loop)
+            try:
+                loop.symlink_to(loop)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlink creation is unavailable: {exc}")
             document = json.loads((dest / MANIFEST_FILENAME).read_text(encoding="utf-8"))
             document["models"][0]["checkpoint"] = "loop.bin"
             (dest / MANIFEST_FILENAME).write_text(
@@ -512,6 +526,25 @@ class ModelBankTests(unittest.TestCase):
             self.assertEqual(caught.exception.entry, "fixture-ok")
             self.assertEqual(caught.exception.field, "output_contract_id")
             self.assertIn("missing required contract ID", str(caught.exception))
+
+    def test_required_identifiers_reject_whitespace_only_values(self) -> None:
+        for field in (
+            "id",
+            "feature_map_id",
+            "output_contract_id",
+            "numeric_format",
+        ):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
+                dest = Path(tmp) / "whitespace"
+                shutil.copytree(VALID.parent, dest)
+                manifest = dest / MANIFEST_FILENAME
+                document = json.loads(manifest.read_text(encoding="utf-8"))
+                document["models"][0][field] = "   "
+                manifest.write_text(dumps_manifest(document), encoding="utf-8")
+                with self.assertRaises(BankAttestationError) as caught:
+                    load_model_bank(manifest)
+                self.assertEqual(caught.exception.field, field)
+                self.assertIn("non-whitespace", str(caught.exception))
 
     def test_shipped_merged_v2_bank_and_legacy_wrapper(self) -> None:
         bank = load_shipped_merged_v2_bank()
