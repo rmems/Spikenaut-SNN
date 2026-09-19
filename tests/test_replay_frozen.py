@@ -24,13 +24,15 @@ from tools.model_bank import (
     load_model_bank,
 )
 from tools.q88_core import ParseError
+from tools.replay_inputs import (
+    load_replay_inputs,
+    load_split_manifest,
+)
 from tools.replay_core import (
     MISSING_POLICY_REJECT,
     REPLAY_FIXTURE_DIR,
     REPO_ROOT,
     ReplayConfig,
-    load_replay_inputs,
-    load_split_manifest,
     manifest_json,
     build_manifest,
     replay,

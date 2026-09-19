@@ -63,6 +63,7 @@ try:  # package import: `python3 -m tools.replay_frozen`
     from .decision_core import DecisionError
     from .model_bank import AttestedEntry, BankError
     from .q88_core import ParseError
+    from .replay_inputs import load_replay_inputs
     from .replay_core import (
         MISSING_POLICIES,
         ReplayConfig,
@@ -70,7 +71,6 @@ try:  # package import: `python3 -m tools.replay_frozen`
         default_i_drive,
         default_k,
         fixture_jsonl,
-        load_replay_inputs,
         manifest_json,
         model_from_bytes,
         replay,
@@ -81,6 +81,7 @@ except ImportError:  # direct script: `python3 tools/replay_frozen.py`
     from decision_core import DecisionError
     from model_bank import AttestedEntry, BankError
     from q88_core import ParseError
+    from replay_inputs import load_replay_inputs
     from replay_core import (
         MISSING_POLICIES,
         ReplayConfig,
@@ -88,7 +89,6 @@ except ImportError:  # direct script: `python3 tools/replay_frozen.py`
         default_i_drive,
         default_k,
         fixture_jsonl,
-        load_replay_inputs,
         manifest_json,
         model_from_bytes,
         replay,
