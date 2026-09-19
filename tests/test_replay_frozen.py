@@ -349,7 +349,7 @@ class TestCli(unittest.TestCase):
 
 class TestManifestContents(unittest.TestCase):
     def test_manifest_fields(self):
-        bank, entry, samples, result = _fixture_replay()
+        bank, entry, _, result = _fixture_replay()
         manifest = build_manifest(
             entry=entry,
             bank=bank,

@@ -73,7 +73,7 @@ try:  # package import: `python3 -m tools.replay_frozen`
         load_jsonl,
         select_samples,
     )
-    from .hamming_lif import LifBank, keep_lif_step
+    from .hamming_lif import keep_lif_step
     from .model_bank import AttestedEntry, ModelBank, load_model_bank
     from .model_bank_json import _parse_json, _read_utf8
     from .q88_core import ParseError, read_utf8_text
@@ -99,7 +99,7 @@ except ImportError:  # direct script: `python3 tools/replay_frozen.py`
         load_jsonl,
         select_samples,
     )
-    from hamming_lif import LifBank, keep_lif_step
+    from hamming_lif import keep_lif_step
     from model_bank import AttestedEntry, ModelBank, load_model_bank
     from model_bank_json import _parse_json, _read_utf8
     from q88_core import ParseError, read_utf8_text
