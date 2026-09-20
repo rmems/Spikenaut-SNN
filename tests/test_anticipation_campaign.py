@@ -160,3 +160,72 @@ def test_prediction_identity_and_duplicates_are_rejected():
     artifact["predictions"] *= 2
     with pytest.raises(ValueError, match="duplicate"):
         checked_predictions(artifact, {"arm": "uniform", "seed": 123})
+
+
+def test_zero_evaluation_budget_marks_all_runs_unfinished(tmp_path):
+    from tools.anticipation.evaluate import evaluate
+    from tools.anticipation.campaign import write_json
+    import json
+
+    # Deadline is already exhausted: no Julia executable may be launched.
+    prepared = tmp_path / "prepared.json"
+    write_json(prepared, {"schema_version": "anticipation-prepared-v1"})
+    result = evaluate(
+        prepared, tmp_path / "results", julia="must-not-run", budget_seconds=0
+    )
+    assert result["status"] == "incomplete"
+    assert result["reason"] == "budget_exhausted_before_baselines"
+    summary = json.loads((tmp_path / "results/snn/summary.json").read_text())
+    assert len(summary["runs"]) == 6
+    assert all(r["status"] == "unfinished" for r in summary["runs"])
+
+
+def test_evaluator_always_records_missing_input_failure(tmp_path):
+    from tools.anticipation.evaluate import evaluate
+    import json
+
+    with pytest.raises(FileNotFoundError):
+        evaluate(tmp_path / "missing.json", tmp_path / "results", julia="must-not-run")
+    report = json.loads((tmp_path / "results/budget-report.json").read_text())
+    assert report["status"] == "incomplete"
+    assert "FileNotFoundError" in report["reason"]
+
+
+def test_shutdown_timeout_preserves_executed_stimulus_audit(tmp_path, monkeypatch):
+    from tools.anticipation import campaign
+    from types import SimpleNamespace
+    import sys
+    import json
+
+    binary = tmp_path / "collector"
+    binary.write_text(
+        "#!"
+        + sys.executable
+        + "\n"
+        + """import os,signal,json,time
+from pathlib import Path
+signal.signal(signal.SIGINT,signal.SIG_IGN)
+(Path(os.environ['SESSION_DIR'])/'session_manifest.json').write_text(json.dumps({'ended_at_utc':None,'parquet_write_failures':0}))
+time.sleep(30)
+"""
+    )
+    binary.chmod(0o755)
+    stimulus = SimpleNamespace(
+        seed=lambda seed: None,
+        run=lambda event, origin: dict(event),
+        torch=SimpleNamespace(
+            cuda=SimpleNamespace(
+                max_memory_reserved=lambda: 0, max_memory_allocated=lambda: 0
+            )
+        ),
+    )
+    monkeypatch.setattr(campaign, "Stimulus", lambda: stimulus)
+    monkeypatch.setattr(campaign, "wait_until", lambda deadline: None)
+    monkeypatch.setattr(campaign, "SHUTDOWN_TIMEOUT_SECONDS", 0.1, raising=False)
+    with pytest.raises(RuntimeError, match="graceful shutdown"):
+        campaign.capture(tmp_path / "run", binary)
+    audit = json.loads(
+        (tmp_path / "run/raw/session-01/stimulus-audit.json").read_text()
+    )
+    assert audit["status"] == "shutdown_timeout"
+    assert len(audit["actual_schedule"]) > 0

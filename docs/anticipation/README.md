@@ -2,6 +2,8 @@
 
 This experiment forecasts changes in observed GPU temperature and power at one and five seconds. Its five inputs are VRAM occupancy (MiB), GPU power (W), GPU temperature (C), graphics clock (MHz), and memory clock (MHz). Graphics clock is not SM clock; occupancy is not utilization. The existing exp-025 model is lineage only: its inputs and task do not support a direct performance comparison.
 
+Despite its name, `gaming-telemetry` records workstation sensors during these automated PyTorch workloads. No game needs to be running; the collector is explicitly labeled `WORKLOAD_CLASS=ai-compute`.
+
 The binding protocol is [campaign-spec.md](campaign-spec.md). The campaign fixes 12 sessions before acquisition, each with 20 seconds idle, 110 seconds of seeded compute/transfer/rest bursts, and 20 seconds recovery. Sessions 1–6 train, 7–9 validate, 10–12 test. All five model families share the same eligible examples and five-second history requirement. At least 500 eligible examples are required in each actual session; failed captures produce an incomplete campaign, never a reassigned split.
 
 ## Environments and preflight
@@ -31,13 +33,13 @@ spikenaut-etl prepare-anticipation --input /path/to/unique-run/campaign.json \
 
 ETL retains source timestamps, sample ages, invalid frames, segment boundaries, source hashes, and immutable split assignments. Inputs are causal 100 ms frames with maximum source age 200 ms. Targets are the first actual observation at or after the frame deadline with at most 100 ms lateness. Invalid gaps interrupt history and neural state. Normalization uses training sessions only and records constant features and held-out values outside training ranges.
 
-Training and evaluation share a 1,200-second maximum budget. Run baseline fitting first, then give Julia the remaining budget, including process startup/loading. Julia runs the six arm/seed combinations round-robin for up to 20 epochs and reserves 15% of its remaining budget for evaluation. It retains completed validation-selected checkpoints and labels unfinished work. The readout uses normalized exponential spike traces, four-output squared error, and time-resolved SynapticDistill OTTT. Hidden weights remain fixed. Each checkpoint includes input/target normalization, feature and output contracts, time constants in seconds, and source hashes.
+Training and evaluation share a 1,200-second maximum budget. The evaluation wrapper fits baselines first, then gives Julia the remaining budget, including process startup/loading. It refuses an existing evaluation directory, enforces the process deadline, and writes budget/unfinished-run evidence. Julia runs the six arm/seed combinations round-robin for up to 20 epochs and reserves 15% of its remaining budget for evaluation. It retains completed validation-selected checkpoints and labels unfinished work. The readout uses normalized exponential spike traces, four-output squared error, and time-resolved SynapticDistill OTTT. Hidden weights remain fixed. Each checkpoint includes input/target normalization, feature and output contracts, time constants in seconds, and source hashes.
 
 ```bash
-julia --startup-file=no tools/anticipation/train.jl \
-  /path/to/unique-run/prepared/prepared.json /path/to/unique-run/results/snn REMAINING_SECONDS
-python -m tools.anticipation.report /path/to/unique-run/prepared/prepared.json \
-  /path/to/unique-run/results
+python -m tools.anticipation.evaluate /path/to/unique-run/prepared/prepared.json \
+  /path/to/unique-run/results --julia-version 1.12.7 --budget-seconds 1200
+# Optional exported PNG/SVG charts require Matplotlib:
+python -m tools.anticipation.plot /path/to/unique-run/results
 ```
 
 The report selects the strongest baseline using validation only. Primary error is the equally weighted mean over sessions of temperature/power five-second MAE divided by training target standard deviation. Physical MAE/RMSE are also averaged over session metrics, with every session retained separately in JSON. A promising run needs at least 5% lower primary error and no more than 5% degradation on either five-second target. Every seed is reported; three test sessions support only a pilot conclusion.
@@ -52,3 +54,9 @@ spikenaut-etl audit-v3 --input /path/to/Spikenaut-SNN-Telemetry \
 The additive `v3-forecast-eligible-v1` view preserves published splits and original source indices. It audits state/outcome joins, identifiers, sensor values, and existing 64-sample targets without compressing gaps. Missing timestamps, rewards, and actions remain missing. Historical sample horizons cannot be scored as seconds. Do not rebalance the published test split based on its observed distribution.
 
 Raw captures, checkpoints, predictions, manifests, and reports stay local for this pilot. Dataset publication and shipped model-bank replacement are separate delivery steps.
+
+The separate `Anticipation Python` CI job installs the pinned dependencies in
+`tools/anticipation/requirements-test.txt` and exercises failure handling and
+scientific metrics without a GPU. The collector-format integration additionally
+needs PyArrow and the sibling ETL package. Julia checks use the explicitly loaded
+SynapticDistill dependency; a CUDA GPU is needed only for real acquisition.

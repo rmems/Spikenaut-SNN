@@ -12,6 +12,7 @@ import signal
 import subprocess
 import time
 
+SHUTDOWN_TIMEOUT_SECONDS = 30
 MATRIX_SIZE = 2048
 TRANSFER_ELEMENTS = 16 * 1024 * 1024
 
@@ -153,9 +154,11 @@ def capture(root, collector):
         "sessions": [],
     }
     write_json(root / "capture-status.json", status)
+    active_session = None
     try:
         stimulus = Stimulus()
         for session in campaign["sessions"]:
+            active_session = session["session_id"]
             stimulus.seed(session["seed"])
             directory = Path(session["path"])
             directory.mkdir(parents=True, exist_ok=False)
@@ -167,6 +170,7 @@ def capture(root, collector):
                 POLL_INTERVAL_MS="100",
             )
             actual = []
+            started = None
             with (directory / "collector.log").open("w") as log:
                 process = subprocess.Popen(
                     [str(collector)], env=env, stdout=log, stderr=log
@@ -201,25 +205,30 @@ def capture(root, collector):
                     if process.poll() is not None:
                         raise RuntimeError("collector exited before scheduled shutdown")
                 finally:
+                    record = {
+                        "session_id": session["session_id"],
+                        "started_at_utc": started,
+                        "actual_schedule": actual,
+                        "status": "shutdown_requested",
+                        "peak_cuda_reserved_bytes": stimulus.torch.cuda.max_memory_reserved(),
+                        "peak_cuda_allocated_bytes": stimulus.torch.cuda.max_memory_allocated(),
+                    }
+                    write_json(directory / "stimulus-audit.json", record)
                     if process.poll() is None:
                         process.send_signal(signal.SIGINT)
                     try:
-                        exit_code = process.wait(timeout=30)
+                        exit_code = process.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
                     except subprocess.TimeoutExpired:
                         process.kill()
-                        process.wait()
+                        record["collector_exit_code"] = process.wait()
+                        record["status"] = "shutdown_timeout"
+                        write_json(directory / "stimulus-audit.json", record)
                         raise RuntimeError(
                             "collector failed graceful shutdown; capture incomplete"
                         ) from None
             manifest = json.loads((directory / "session_manifest.json").read_text())
-            record = {
-                "session_id": session["session_id"],
-                "started_at_utc": started,
-                "actual_schedule": actual,
-                "collector_exit_code": exit_code,
-                "peak_cuda_reserved_bytes": stimulus.torch.cuda.max_memory_reserved(),
-                "peak_cuda_allocated_bytes": stimulus.torch.cuda.max_memory_allocated(),
-            }
+            record["collector_exit_code"] = exit_code
+            record["status"] = "collector_stopped"
             write_json(directory / "stimulus-audit.json", record)
             if (
                 exit_code
@@ -227,6 +236,8 @@ def capture(root, collector):
                 or manifest.get("parquet_write_failures") != 0
             ):
                 raise RuntimeError("collector manifest incomplete or write failures")
+            record["status"] = "complete"
+            write_json(directory / "stimulus-audit.json", record)
             status["sessions"].append(record)
             write_json(root / "capture-status.json", status)
             print(
@@ -237,6 +248,13 @@ def capture(root, collector):
     except BaseException as error:
         status["status"] = "incomplete"
         status["reason"] = f"{type(error).__name__}: {error}"
+        status["failed_session_id"] = active_session
+        attempted = {s["session_id"] for s in status["sessions"]} | {active_session}
+        status["not_attempted_session_ids"] = [
+            s["session_id"]
+            for s in campaign["sessions"]
+            if s["session_id"] not in attempted
+        ]
         raise
     finally:
         write_json(root / "capture-status.json", status)

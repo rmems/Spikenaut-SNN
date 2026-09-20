@@ -135,6 +135,7 @@ def baselines(data, output):
             output / (name + "-checkpoint.json"),
             {
                 "schema_version": "ridge-forecast-v1",
+                "feature_map_id": data["feature_map_id"],
                 "feature_map": data["feature_map"],
                 "target_names": data.get("target_names", TARGETS),
                 "normalization": norm,
@@ -285,6 +286,69 @@ def comparison(prepared_path, output, baseline_results=None):
         "Primary = average of temperature/power five-second MAE divided by training target standard deviations, with sessions weighted equally.",
         "Physical MAE and RMSE at both horizons, per-session errors, normalization, rejection reasons, spikes and silent neurons are retained in the machine-readable artifacts.",
     ]
+    scored = [(name, value) for name, value in base.items()]
+    scored += [(f"{r['arm']} / {r['seed']}", r) for r in report["runs"] if "test" in r]
+    lines += [
+        "",
+        "## Physical-unit test errors",
+        "",
+        "Values below average the per-session metrics with equal session weights.",
+        "",
+        "| Model | Target | MAE | RMSE |",
+        "|---|---|---:|---:|",
+    ]
+    labels = [
+        "Temperature +1s (C)",
+        "Power +1s (W)",
+        "Temperature +5s (C)",
+        "Power +5s (W)",
+    ]
+    for name, value in scored:
+        for i, label in enumerate(labels):
+            lines.append(
+                f"| {name} | {label} | {value['test']['mae'][i]:.5f} | {value['test']['rmse'][i]:.5f} |"
+            )
+    session_ids = sorted(
+        {sid for _, value in scored for sid in value["test"]["per_session"]}
+    )
+    lines += [
+        "",
+        "## Every test session",
+        "",
+        "| Model | " + " | ".join(session_ids) + " |",
+        "|---|" + "---:|" * len(session_ids),
+    ]
+    for name, value in scored:
+        cells = [
+            f"{value['test']['per_session'][sid]['primary']:.5f}" for sid in session_ids
+        ]
+        lines.append("| " + name + " | " + " | ".join(cells) + " |")
+    lines += [
+        "",
+        "## Variation across seeds",
+        "",
+        "| Arm | Mean primary | Standard deviation | Minimum | Maximum |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    for arm, values in report["seed_variation"].items():
+        lines.append(
+            f"| {arm} | {values['mean_primary']:.5f} | {values['std_primary']:.5f} | {values['min_primary']:.5f} | {values['max_primary']:.5f} |"
+        )
+    lines += [
+        "",
+        "## Spike activity",
+        "",
+        "Diagnostics combine validation and test ticks, including warm-up.",
+        "",
+        "| Arm | Seed | Silent neurons | Mean rate per neuron (Hz) |",
+        "|---|---:|---:|---:|",
+    ]
+    for run in report["runs"]:
+        diagnostic = run.get("diagnostics")
+        if diagnostic:
+            lines.append(
+                f"| {run['arm']} | {run['seed']} | {len(diagnostic['silent_neurons'])} | {np.mean(diagnostic['spike_rate_hz']):.5f} |"
+            )
     write_json(output / "comparison.json", report)
     (output / "report.md").write_text("\n".join(lines) + "\n")
     return report

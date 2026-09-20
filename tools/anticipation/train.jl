@@ -225,7 +225,8 @@ function campaign(prepared_path, output, budget_seconds; started=monotonic_secon
         "synaptic_distill_ottt_sha256"=>bytes2hex(sha256(read(joinpath(dirname(pathof(SynapticDistill)),"rules","ottt.jl")))),
         "synaptic_distill_utils_sha256"=>bytes2hex(sha256(read(joinpath(dirname(pathof(SynapticDistill)),"utils.jl")))),
         "prepared_sha256"=>bytes2hex(sha256(read(prepared_path))),
-        "source_provenance"=>prepared["provenance"], "feature_map"=>prepared["feature_map"],
+        "source_provenance"=>prepared["provenance"], "feature_map_id"=>prepared["feature_map_id"],
+        "feature_map"=>prepared["feature_map"],
         "target_names"=>prepared["target_names"], "input_normalization"=>prepared["normalization"],
         "selection"=>"validation equal-session mean 5s standardized MAE", "learning_rate"=>LEARNING_RATE)
     models = [new_model(arm,seed) for seed in (123,456,789) for arm in ("uniform","mixed")]

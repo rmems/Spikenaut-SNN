@@ -93,6 +93,7 @@ function prepared_fixture()
     end
     Dict("schema_version"=>"anticipation-prepared-v1","sessions"=>sessions,
         "normalization"=>merge(target_normalization(rows),Dict("fit_split"=>"train","x_mean"=>zeros(5),"x_std"=>ones(5))),
+        "feature_map_id"=>"anticipation-observed-gpu-v1",
         "feature_map"=>["vram","power","temperature","graphics_clock","memory_clock"],
         "target_names"=>["temperature_delta_1s_c","power_delta_1s_w","temperature_delta_5s_c","power_delta_5s_w"],
         "provenance"=>Dict("fixture"=>true))
@@ -109,6 +110,8 @@ end
         @test all(r->isfile(joinpath(path,"runs",r["predictions"])), report["runs"])
         curve = AnticipationTrainer.JSON3.read(read(joinpath(path,"runs","uniform-123","learning_curves.json"),String))
         @test all(c->haskey(c,:train_loss) && haskey(c,:validation_loss), curve)
+        checkpoint = AnticipationTrainer.JSON3.read(read(joinpath(path,"runs","uniform-123","checkpoint.json"),String))
+        @test get(checkpoint.metadata, :feature_map_id, nothing) == "anticipation-observed-gpu-v1"
         stopped = campaign(prepared,joinpath(path,"stopped"),0)
         @test all(r->r["status"]=="unfinished" && r["epochs_completed"]==0, stopped["runs"])
     end
