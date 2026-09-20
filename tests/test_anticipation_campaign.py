@@ -229,3 +229,57 @@ time.sleep(30)
     )
     assert audit["status"] == "shutdown_timeout"
     assert len(audit["actual_schedule"]) > 0
+
+
+def test_audit_write_failure_still_stops_collector(tmp_path, monkeypatch):
+    from tools.anticipation import campaign
+    from types import SimpleNamespace
+    import sys
+
+    binary = tmp_path / "collector"
+    binary.write_text(
+        "#!"
+        + sys.executable
+        + "\n"
+        + """import os,json,time
+from pathlib import Path
+(Path(os.environ['SESSION_DIR'])/'session_manifest.json').write_text('{}')
+time.sleep(30)
+"""
+    )
+    binary.chmod(0o755)
+    stimulus = SimpleNamespace(
+        seed=lambda seed: None,
+        run=lambda event, origin: dict(event),
+        torch=SimpleNamespace(
+            cuda=SimpleNamespace(
+                max_memory_reserved=lambda: 0, max_memory_allocated=lambda: 0
+            )
+        ),
+    )
+    monkeypatch.setattr(campaign, "Stimulus", lambda: stimulus)
+    monkeypatch.setattr(campaign, "wait_until", lambda deadline: None)
+    original_write = campaign.write_json
+
+    def broken_audit(path, value):
+        if path.name == "stimulus-audit.json":
+            raise OSError("audit disk error")
+        original_write(path, value)
+
+    monkeypatch.setattr(campaign, "write_json", broken_audit)
+    original_popen = campaign.subprocess.Popen
+    children = []
+
+    def launch(*args, **kwargs):
+        child = original_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(campaign.subprocess, "Popen", launch)
+    with pytest.raises(OSError, match="audit disk error"):
+        campaign.capture(tmp_path / "run", binary)
+    stopped = children[0].poll() is not None
+    if not stopped:  # Clean up a regression's real process before asserting.
+        children[0].kill()
+        children[0].wait()
+    assert stopped, "audit failure must not orphan the collector"

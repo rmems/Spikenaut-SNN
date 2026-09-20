@@ -210,22 +210,29 @@ def capture(root, collector):
                         "started_at_utc": started,
                         "actual_schedule": actual,
                         "status": "shutdown_requested",
-                        "peak_cuda_reserved_bytes": stimulus.torch.cuda.max_memory_reserved(),
-                        "peak_cuda_allocated_bytes": stimulus.torch.cuda.max_memory_allocated(),
                     }
-                    write_json(directory / "stimulus-audit.json", record)
-                    if process.poll() is None:
-                        process.send_signal(signal.SIGINT)
                     try:
-                        exit_code = process.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        record["collector_exit_code"] = process.wait()
-                        record["status"] = "shutdown_timeout"
+                        record["peak_cuda_reserved_bytes"] = (
+                            stimulus.torch.cuda.max_memory_reserved()
+                        )
+                        record["peak_cuda_allocated_bytes"] = (
+                            stimulus.torch.cuda.max_memory_allocated()
+                        )
                         write_json(directory / "stimulus-audit.json", record)
-                        raise RuntimeError(
-                            "collector failed graceful shutdown; capture incomplete"
-                        ) from None
+                    finally:
+                        # Collector cleanup is mandatory even if diagnostics or disk writes fail.
+                        if process.poll() is None:
+                            process.send_signal(signal.SIGINT)
+                        try:
+                            exit_code = process.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            record["collector_exit_code"] = process.wait()
+                            record["status"] = "shutdown_timeout"
+                            write_json(directory / "stimulus-audit.json", record)
+                            raise RuntimeError(
+                                "collector failed graceful shutdown; capture incomplete"
+                            ) from None
             manifest = json.loads((directory / "session_manifest.json").read_text())
             record["collector_exit_code"] = exit_code
             record["status"] = "collector_stopped"
