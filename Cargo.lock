@@ -19,9 +19,9 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "axon-encoder"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8cb7affb1e0b7e9c1dc56da16119d9076abba50ab86254aa9b5765e5bb0c26e"
+checksum = "84884f43a993de339fe850116c5a3b78c488da1a0793a3c4ebd3bdbbfeff3cc6"
 dependencies = [
  "rand",
 ]
