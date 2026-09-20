@@ -191,7 +191,7 @@ CLAIMS: tuple[Claim, ...] = (
         ),
         required=(
             "[`plasticity-lab`]",
-            "0.2.0",
+            "0.2.1",
             "optional feature `training`",
             "synthetic seeded `HostNetwork`",
             "real in-memory weight deltas",

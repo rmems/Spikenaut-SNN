@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Optional host-side training sessions through `plasticity-lab` 0.2.
+//! Optional host-side training sessions through `plasticity-lab` 0.2.1.
 //!
 //! [`HostTrainingSession`] applies the published trainer only to the synthetic,
 //! non-negative [`crate::HostNetwork`] experiment. It never loads, rewrites, or

@@ -588,8 +588,8 @@ fn nir_rs_resolves_from_crates_io() {
         "nir-rs must come from the crates.io registry, got:\n{entry}",
     );
     assert!(
-        entry.contains("version = \"0.4."),
-        "nir-rs must resolve to 0.4.x, got:\n{entry}",
+        entry.contains("version = \"0.4.4\""),
+        "nir-rs must resolve to the reviewed 0.4.4 release, got:\n{entry}",
     );
 }
 
@@ -614,9 +614,9 @@ fn plasticity_training_remains_optional_and_off_by_default() {
     );
     assert!(
         manifest.lines().any(|line| {
-            line.trim() == "plasticity-lab = { version = \"0.2\", optional = true }"
+            line.trim() == "plasticity-lab = { version = \"0.2.1\", optional = true }"
         }),
-        "plasticity-lab must remain an optional 0.2 dependency",
+        "plasticity-lab must remain an optional 0.2.1 dependency",
     );
 }
 

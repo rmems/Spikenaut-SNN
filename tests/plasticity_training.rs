@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Feature-gated host training contract for `plasticity-lab` 0.2.
+//! Feature-gated host training contract for `plasticity-lab` 0.2.1.
 
 #![cfg(feature = "training")]
 
@@ -139,7 +139,7 @@ fn reset_preserves_a_non_default_training_configuration() {
 }
 
 #[test]
-fn plasticity_lab_resolves_from_crates_io_at_zero_two() {
+fn plasticity_lab_resolves_from_crates_io_at_zero_two_one() {
     let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
         .expect("read Cargo.lock");
     let entry = lock
@@ -152,7 +152,7 @@ fn plasticity_lab_resolves_from_crates_io_at_zero_two() {
         "plasticity-lab must resolve from crates.io, got:\n{entry}"
     );
     assert!(
-        entry.contains("version = \"0.2."),
-        "plasticity-lab must resolve to 0.2.x, got:\n{entry}"
+        entry.contains("version = \"0.2.1\""),
+        "plasticity-lab must resolve to the reviewed 0.2.1 release, got:\n{entry}"
     );
 }

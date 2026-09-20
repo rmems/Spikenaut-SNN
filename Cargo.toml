@@ -54,7 +54,7 @@ corpus-ipc = { version = "0.1", default-features = false }
 kinetic-signals = "0.4"
 limbic-critic = "0.3"
 neuromod = "0.6"
-nir-rs = "0.4.3"
-plasticity-lab = { version = "0.2", optional = true }
+nir-rs = "0.4.4"
+plasticity-lab = { version = "0.2.1", optional = true }
 silicon-bridge = { version = "0.3", default-features = false }
 synaptic-wiring = "0.3"

@@ -293,9 +293,9 @@ dependencies = [
 
 [[package]]
 name = "nir-rs"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d8fed797cf76b6b07a5624a426956e8d5c88cb889e01764ebb7dfde069d7f86"
+checksum = "781fb461c661ef87d0d94b29a40792862b9df5179209f42fd1bb43cce6b20be9"
 dependencies = [
  "indexmap",
  "thiserror 2.0.20",
@@ -324,9 +324,9 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "plasticity-lab"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c94f234f4e2ceba10fbb74b3af72572068e8f818471da9f578ec981b91c24b7"
+checksum = "557c71ef72a6101f63ba7c1b845cc6b6ccdb5c2b8e1bc66149192d0eb4f6130d"
 dependencies = [
  "neuromod",
  "rand",
