@@ -1,0 +1,37 @@
+rust-toolchain.toml
+  s_353b11f7e8c155::t_c94211446209e9 2-3
+README.md
+  s_353b11f7e8c155::t_c94211446209e9 355,572,580
+src/graph.rs
+  s_353b11f7e8c155::t_c94211446209e9 35
+tests/plasticity_training.rs
+  s_353b11f7e8c155::t_6cecca8a2b4576 3
+  s_353b11f7e8c155::t_74da82e57b3ea5 142,155-156
+tests/nir_graph.rs
+  s_353b11f7e8c155::t_74da82e57b3ea5 591-592
+  s_353b11f7e8c155::t_6cecca8a2b4576 617,619
+tools/check_model_card.py
+  s_353b11f7e8c155::t_db718c62b89897 194
+.github/workflows/ci.yml
+  s_353b11f7e8c155::t_c94211446209e9 42-43
+Cargo.toml
+  s_353b11f7e8c155::t_c94211446209e9 57-58
+src/training.rs
+  s_353b11f7e8c155::t_6cecca8a2b4576 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "26565a982a6abda21f031365971863c5a7f19de0",
+  "prompts": {},
+  "sessions": {
+    "s_353b11f7e8c155": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0ae6a-c05e-77c2-bed9-8ad2ea069ba8",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": null
+    }
+  }
+}
