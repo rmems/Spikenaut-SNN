@@ -14,6 +14,7 @@ use std::path::Path;
 use axon_encoder::Encoder;
 use axon_encoder::encoders::RateEncoder;
 use axon_encoder::error::EncoderError;
+use axon_encoder::time::{TickOffset, Timebase};
 use axon_encoder::types::EncodedOutput;
 use spikenaut_snn::encode::{
     BASE_RATE_HZ, CHANNEL_COUNT, CHANNEL_MAP, DT_SECONDS, INPUT_RANGE, LIVE_COLUMNS,
@@ -95,6 +96,33 @@ fn a_sixteen_wide_frame_encodes_without_panicking() {
         );
         assert!(spike.polarity, "rate encoding emits positive spikes only");
     }
+}
+
+/// The 1 kHz streaming path reports its physical tick explicitly and keeps
+/// every emitted timestamp relative to the call that produced it.
+#[test]
+fn the_one_kilohertz_rate_path_has_call_relative_timestamps() {
+    let mut encoder = RateEncoder::try_new(BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, DT_SECONDS)
+        .expect("the shipped configuration is a valid RateEncoder");
+    let model = encoder.time_model();
+
+    assert_eq!(model.step_ticks(), 1);
+    assert_eq!(model.span_ticks(), 1);
+    assert_eq!(model.timebase(), Some(Timebase::MILLISECOND));
+
+    let saturated = [INPUT_RANGE.1; CHANNEL_COUNT];
+    let output = (0..5)
+        .map(|_| encoder.encode_step(&saturated))
+        .last()
+        .expect("five deterministic ticks produce one output");
+    assert_eq!(output.spikes.len(), CHANNEL_COUNT);
+    assert!(
+        output
+            .spikes
+            .iter()
+            .all(|spike| spike.timestamp == TickOffset::ZERO),
+        "streaming spikes must start at the emitting call's tick zero",
+    );
 }
 
 /// The crate-root live map is the exp-025 sensors, and the coin encoder
@@ -400,10 +428,10 @@ fn the_wrapper_matches_a_bare_rate_encoder() {
 
 /// The reason the wrapper validates instead of trusting the encoder underneath.
 ///
-/// Handed a raw `NaN`, `axon-encoder` 0.4.0 maps the channel to a 0 Hz rate for
-/// that step; a future 0.4.x could instead let it through into the accumulator,
-/// which is the poisoning this fix is about. Either way the observable result is
-/// the same and the assertion below holds: the bad channel drops *below* the
+/// Handed a raw `NaN`, `axon-encoder` 0.5.0 maps the channel to a 0 Hz rate for
+/// that step. The wrapper validates before it reaches the accumulator, so the
+/// observable result is the same even if a future patch changes that handling:
+/// the bad channel drops *below* the
 /// [`BASE_RATE_HZ`] liveness floor, and the floor is non-zero precisely so a
 /// live-but-idle feed stays distinguishable from a dead one. Its healthy twin
 /// keeps firing, so nothing downstream can tell the frame was ever bad — on the
@@ -662,7 +690,7 @@ fn the_batch_path_rejects_non_finite_frames_too() {
     assert!(output.spikes.len() <= CHANNEL_COUNT);
 }
 
-/// Acceptance criterion from issue #9: `axon-encoder` resolves to 0.4.x from
+/// Acceptance criterion from issue #9: `axon-encoder` resolves to 0.5.0 from
 /// crates.io, not from a git or sibling-path pin, and it does not depend on
 /// `neuromod` or `silicon-bridge`. Both are sibling declared deps, not
 /// transitives of this encoder.
@@ -681,10 +709,10 @@ fn axon_encoder_resolves_from_crates_io() {
         "axon-encoder must come from the crates.io registry, got:\n{entry}",
     );
     assert!(
-        entry.contains(r#"version = "0.4."#),
-        "axon-encoder must resolve to 0.4.x, got:\n{entry}",
+        entry.contains(r#"version = "0.5.0"#),
+        "axon-encoder must resolve to the reviewed 0.5.0 release, got:\n{entry}",
     );
-    // The `"0.4"` requirement is `>=0.4.0, <0.5.0`; nothing may pin a checkout.
+    // The `"0.5"` requirement is `>=0.5.0, <0.6.0`; nothing may pin a checkout.
     assert!(
         !lock.contains("source = \"git+") && !lock.contains("[[patch"),
         "every locked package must come from the registry",

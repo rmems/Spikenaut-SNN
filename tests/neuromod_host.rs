@@ -53,7 +53,7 @@ fn neuromod_resolves_from_crates_io() {
         entry.contains(r#"source = "registry+https://github.com/rust-lang/crates.io-index""#),
         "neuromod must come from the crates.io registry, got:\n{entry}",
     );
-    // Same series check as axon-encoder's `"0.4"` caret: `version = "0.6.`
+    // Same series check as axon-encoder's `"0.5"` caret: `version = "0.6.`
     // matches 0.6.0 and 0.6.10, not 0.7.0.
     assert!(
         entry.contains(r#"version = "0.6."#),

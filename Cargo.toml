@@ -22,9 +22,9 @@ training = ["dep:plasticity-lab"]
 # nir-rs: the `hdf5` feature (`.nir` file I/O) links the system libhdf5 and is
 # left off on purpose; the in-memory graph model has no native dependencies.
 #
-# axon-encoder: 0.4.x is experimental pre-1.0, so `"0.4"` is `>=0.4.0, <0.5.0`.
-# Default features are empty; the optional `serde` and `ndarray` features are
-# left off.
+# axon-encoder: 0.5.x is experimental pre-1.0, so `"0.5"` is `>=0.5.0, <0.6.0`.
+# Default features are empty; the optional `serde`, `ndarray`, and `wasm-js`
+# features are left off.
 #
 # neuromod: 0.6.x is experimental pre-1.0, so `"0.6"` is `>=0.6.0, <0.7.0`.
 # Declared from crates.io (issue #5). Host-side experiments only — they do
@@ -49,7 +49,7 @@ training = ["dep:plasticity-lab"]
 # silicon-bridge: checked signed Q8.8 parameter encoding only. Its optional
 # UART feature stays disabled; live board transport remains a separate gate.
 [dependencies]
-axon-encoder = "0.4"
+axon-encoder = "0.5"
 corpus-ipc = { version = "0.1", default-features = false }
 kinetic-signals = "0.4"
 limbic-critic = "0.3"
