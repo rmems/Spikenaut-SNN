@@ -79,8 +79,10 @@ deadline at 120 seconds from sensor capture start. Prompts name each input and
 output by absolute path while expected answers remain only in the parent harness,
 outside the agent-visible scratch directory. Python candidates run only during
 verification inside a Bubblewrap namespace with no network and read-only mounts
-for the interpreter, candidate, and parent-owned verifier. Verification fails
-closed when Bubblewrap is unavailable. This verifier sandbox does not turn the
+for the interpreter, candidate, and parent-owned verifier. The child also has
+fixed address-space, process-count, file-size, and CPU-time limits in addition
+to the five-second parent timeout. Verification fails closed when Bubblewrap or
+`prlimit` is unavailable. This verifier sandbox does not turn the
 Hermes process itself into a general filesystem sandbox. A session is not accepted
 as an agent workload unless the stream confirms the configured local model, at
 least one permitted tool call, and a terminal result. Plain stdout diagnostics are

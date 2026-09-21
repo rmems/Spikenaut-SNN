@@ -58,6 +58,7 @@ def ollama_server(
         "model": "gemma4:12b",
         "context": 262144,
         "ps_failures_after_load": ps_failures_after_load,
+        "ps_drip_interval_after_load": ps_drip_interval_after_load,
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -126,9 +127,9 @@ def ollama_server(
                             "context_length": 1024,
                         }
                     )
-                if state["loaded"] and ps_drip_interval_after_load:
+                if state["loaded"] and state["ps_drip_interval_after_load"]:
                     return self._drip_json(
-                        {"models": models}, ps_drip_interval_after_load
+                        {"models": models}, state["ps_drip_interval_after_load"]
                     )
                 return self._json({"models": models})
             self.send_error(404)
@@ -576,6 +577,30 @@ def test_python_verifier_requires_completion_sentinel(tmp_path):
     assert verification["stdout"] == ""
 
 
+def test_python_candidate_cannot_exit_the_parent_assertion(tmp_path):
+    from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
+
+    session = next(
+        item
+        for item in build_hermes_campaign(tmp_path)["sessions"]
+        if item["task"]["family"] == "python-bugfix"
+    )
+    stimulus = HermesStimulus(
+        tmp_path, hermes_executable=tmp_path / "hermes", runtime=FakeRuntime()
+    )
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+    (Path(session["scratch_path"]) / "transform.py").write_text(
+        "import os\nprint('ok', flush=True)\nos._exit(0)\n"
+    )
+
+    verification = stimulus._verify_fixture(session)
+
+    assert verification["status"] == "failed"
+    assert verification["exit_code"] == 0
+    assert verification["stdout"] == "ok\n"
+
+
 def test_python_verifier_sandbox_blocks_host_writes_and_network(tmp_path):
     from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
 
@@ -621,6 +646,42 @@ def test_python_verifier_sandbox_blocks_host_writes_and_network(tmp_path):
 
     assert verification["status"] == "passed"
     assert outside.exists() is False
+
+
+def test_python_verifier_sandbox_applies_resource_limits(tmp_path):
+    from tools.anticipation.hermes_campaign import (
+        HermesStimulus,
+        VERIFIER_AS_LIMIT_BYTES,
+        VERIFIER_CPU_LIMIT_SECONDS,
+        VERIFIER_FSIZE_LIMIT_BYTES,
+        VERIFIER_NPROC_LIMIT,
+        build_hermes_campaign,
+    )
+
+    session = next(
+        item
+        for item in build_hermes_campaign(tmp_path)["sessions"]
+        if item["task"]["family"] == "python-bugfix"
+    )
+    stimulus = HermesStimulus(
+        tmp_path, hermes_executable=tmp_path / "hermes", runtime=FakeRuntime()
+    )
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+    candidate = Path(session["scratch_path"]) / "transform.py"
+    candidate.write_text(
+        "import resource\n"
+        f"assert resource.getrlimit(resource.RLIMIT_AS)[0] == {VERIFIER_AS_LIMIT_BYTES}\n"
+        f"assert resource.getrlimit(resource.RLIMIT_NPROC)[0] == {VERIFIER_NPROC_LIMIT}\n"
+        f"assert resource.getrlimit(resource.RLIMIT_FSIZE)[0] == {VERIFIER_FSIZE_LIMIT_BYTES}\n"
+        f"assert resource.getrlimit(resource.RLIMIT_CPU)[0] == {VERIFIER_CPU_LIMIT_SECONDS}\n"
+        "def normalize(words):\n"
+        "    return [word.strip().lower() for word in words if word.strip()]\n"
+    )
+
+    verification = stimulus._verify_fixture(session)
+
+    assert verification["status"] == "passed"
 
 
 def test_out_of_scope_path_is_audited_and_prevents_task_success(tmp_path):
@@ -789,23 +850,27 @@ def test_graceful_sigterm_is_valid_timeboxed_workload_with_partial_usage(
     assert Path(record["stderr_path"]).exists()
 
 
-def test_session_deadline_records_shorter_effective_timebox(tmp_path):
+def test_session_deadline_records_shorter_effective_timebox(tmp_path, monkeypatch):
     from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
 
     fake = tmp_path / "bin" / "hermes"
+    ready = tmp_path / "hermes-ready"
     fake.parent.mkdir()
     fake.write_text(
         "#!" + os.sys.executable + "\n"
         "import json,signal,time\n"
+        "from pathlib import Path\n"
         "def stop(*_):\n"
         " print(json.dumps({'type':'result','session_id':'s','exit_code':130,'tokens':{'input':0,'output':0},'error':'Interrupted'}),flush=True)\n"
         " raise SystemExit(130)\n"
         "signal.signal(signal.SIGTERM,stop)\n"
         "print(json.dumps({'type':'system','subtype':'init','session_id':'s','model':'gemma4:12b'}),flush=True)\n"
         "print(json.dumps({'type':'tool_use','name':'read_file','tool_call_id':'c','input':{'path':'input.csv'}}),flush=True)\n"
+        f"Path({str(ready)!r}).touch()\n"
         "while True: time.sleep(.01)\n"
     )
     fake.chmod(0o755)
+    _wait_for_fixture_ready_before_timeout(monkeypatch, ready)
     session = build_hermes_campaign(tmp_path)["sessions"][0]
     Path(session["path"]).mkdir(parents=True)
     stimulus = HermesStimulus(
@@ -1632,6 +1697,29 @@ def test_durable_cleanup_bounds_each_dripping_status_request(tmp_path):
         assert report["state"] == "terminal_failure"
         assert "end-to-end deadline" in report["final_error"]
         assert state["loaded"] is True
+
+
+def test_normal_cleanup_bounds_a_dripping_status_request():
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    with ollama_server() as (endpoint, state):
+        runtime = OllamaRuntime(
+            endpoint=endpoint,
+            request_timeout_seconds=0.02,
+            durable_cleanup_timeout_seconds=0.1,
+        )
+        runtime.prepare()
+        runtime.select("granite4.2:8b", 131072)
+        state["ps_drip_interval_after_load"] = 0.01
+        started = time.monotonic()
+
+        with pytest.raises(TimeoutError, match="end-to-end deadline"):
+            runtime.close()
+
+        assert time.monotonic() - started < 0.5
+        assert state["loaded"] is True
+        state["ps_drip_interval_after_load"] = 0
+        assert runtime.close() == {"model": "granite4.2:8b", "unloaded": True}
 
 
 def test_runtime_slow_failed_preload_returns_bounded_and_finishes_cleanup():

@@ -32,6 +32,10 @@ PRELOAD_COMPLETION_TIMEOUT_SECONDS = 180
 DURABLE_CLEANUP_TIMEOUT_SECONDS = 30
 DURABLE_CLEANUP_INITIAL_BACKOFF_SECONDS = 0.05
 DURABLE_CLEANUP_MAX_BACKOFF_SECONDS = 1.0
+VERIFIER_AS_LIMIT_BYTES = 512 * 1024 * 1024
+VERIFIER_NPROC_LIMIT = 8192
+VERIFIER_FSIZE_LIMIT_BYTES = 1024 * 1024
+VERIFIER_CPU_LIMIT_SECONDS = 4
 MODEL_PLAN = (
     ("gemma4:12b", 262144),
     ("granite4.2:8b", 131072),
@@ -636,6 +640,7 @@ class OllamaRuntime:
         owned_model = self._owned_model
         if owned_model is None:
             return {"model": self.model, "unloaded": False}
+        cleanup_deadline = time.monotonic() + self.durable_cleanup_timeout_seconds
 
         if self._load_outcome_uncertain:
             completed = self._wait_for_preload_completion()
@@ -645,13 +650,13 @@ class OllamaRuntime:
                 self._load_outcome_uncertain = False
                 return {"model": owned_model, "unloaded": True}
 
-            self._unload_exact(owned_model)
+            self._unload_exact(owned_model, cleanup_deadline)
             self._owned_model = None
             self._load_outcome_uncertain = False
             return {"model": owned_model, "unloaded": True}
 
         try:
-            resident = self._models()
+            resident = self._models(cleanup_deadline)
         except BaseException:
             resident = None
         if resident is not None and not any(
@@ -666,7 +671,7 @@ class OllamaRuntime:
                 )
             self._owned_model = None
             return {"model": owned_model, "unloaded": False}
-        self._unload_exact(owned_model)
+        self._unload_exact(owned_model, cleanup_deadline)
         self._owned_model = None
         self._load_outcome_uncertain = False
         return {"model": owned_model, "unloaded": True}
@@ -790,9 +795,10 @@ class HermesStimulus:
                 "def normalize(words):\n"
                 "    return sorted(w.strip().upper() for w in words if w.strip())\n"
             )
-            verifier = Path(session["hermes_home"]) / "harness-verifier.py"
+            verifier = Path(session["hermes_home"]) / "harness-runner.py"
             verifier.write_text(
                 "import importlib.util\n"
+                "import json\n"
                 "from pathlib import Path\n"
                 "import sys\n"
                 "candidate = Path(sys.argv[1])\n"
@@ -800,14 +806,14 @@ class HermesStimulus:
                 "assert spec is not None and spec.loader is not None\n"
                 "module = importlib.util.module_from_spec(spec)\n"
                 "spec.loader.exec_module(module)\n"
-                "assert module.normalize([' Beta ', '', 'ALPHA', ' gamma ']) == "
-                "['beta', 'alpha', 'gamma']\n"
-                "print('ok')\n"
+                "result = module.normalize([' Beta ', '', 'ALPHA', ' gamma '])\n"
+                "print(json.dumps(result, separators=(',', ':')))\n"
             )
             return {
                 "kind": "fixed-python-test",
                 "path": str(verifier),
                 "sha256": hashlib.sha256(verifier.read_bytes()).hexdigest(),
+                "expected": ["beta", "alpha", "gamma"],
             }
         return {
             "kind": "json-output",
@@ -962,6 +968,9 @@ class HermesStimulus:
             sandbox = shutil.which("bwrap")
             if sandbox is None:
                 raise RuntimeError("bubblewrap is required for Python verification")
+            limiter = shutil.which("prlimit")
+            if limiter is None:
+                raise RuntimeError("prlimit is required for Python verification")
             runtime_roots = []
             for root in (
                 Path("/usr"),
@@ -978,6 +987,12 @@ class HermesStimulus:
                 ]
                 runtime_roots.append(root)
             command = [
+                limiter,
+                f"--as={VERIFIER_AS_LIMIT_BYTES}",
+                f"--nproc={VERIFIER_NPROC_LIMIT}",
+                f"--fsize={VERIFIER_FSIZE_LIMIT_BYTES}",
+                f"--cpu={VERIFIER_CPU_LIMIT_SECONDS}",
+                "--",
                 sandbox,
                 "--die-with-parent",
                 "--new-session",
@@ -999,7 +1014,7 @@ class HermesStimulus:
                 (
                     "--ro-bind",
                     str(verifier),
-                    "/harness/verifier.py",
+                    "/harness/runner.py",
                     "--ro-bind",
                     str(Path(session["scratch_path"]) / "transform.py"),
                     "/work/transform.py",
@@ -1014,7 +1029,7 @@ class HermesStimulus:
                     str(Path(sys.executable).resolve()),
                     "-I",
                     "-B",
-                    "/harness/verifier.py",
+                    "/harness/runner.py",
                     "/work/transform.py",
                 )
             )
@@ -1026,11 +1041,9 @@ class HermesStimulus:
                 timeout=5,
                 check=False,
             )
-            verified = (
-                completed.returncode == 0
-                and completed.stdout == "ok\n"
-                and completed.stderr == ""
-            )
+            expected_stdout = json.dumps(plan["expected"], separators=(",", ":")) + "\n"
+            verified = completed.returncode == 0 and completed.stderr == ""
+            verified = verified and completed.stdout == expected_stdout
             return {
                 "status": "passed" if verified else "failed",
                 "kind": "fixed-python-test",
