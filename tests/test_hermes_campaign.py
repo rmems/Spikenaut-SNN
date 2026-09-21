@@ -1044,6 +1044,58 @@ def test_capture_waits_for_owned_late_preload_and_returns_with_model_absent(tmp_
         assert preload["keep_alive"] == "180s"
 
 
+def test_capture_reconciles_load_after_preload_request_timeout(tmp_path):
+    from tools.anticipation.campaign import capture
+    from tools.anticipation.hermes_campaign import (
+        HermesStimulus,
+        OllamaRuntime,
+        build_hermes_campaign,
+    )
+
+    collector = tmp_path / "collector"
+    collector.write_bytes(b"not started because preload fails")
+    hermes = tmp_path / "hermes"
+    hermes.write_text("not started because preload fails")
+    root = tmp_path / "capture"
+    plan = build_hermes_campaign(root)
+    plan["sessions"] = plan["sessions"][:1]
+
+    with ollama_server(preload_visibility_delay=0.2) as (endpoint, state):
+        runtime = OllamaRuntime(
+            endpoint=endpoint,
+            preload_timeout_seconds=0.01,
+            preload_completion_timeout_seconds=0.05,
+            preload_keep_alive_seconds=0.1,
+            cleanup_reconciliation_timeout_seconds=0.5,
+        )
+        started = time.monotonic()
+
+        with pytest.raises(TimeoutError, match="timed out"):
+            capture(
+                root,
+                collector,
+                campaign=plan,
+                stimulus_factory=lambda: HermesStimulus(
+                    root, hermes_executable=hermes, runtime=runtime
+                ),
+            )
+
+        assert time.monotonic() - started >= 0.15
+        assert state["loaded"] is False
+        status = json.loads((root / "capture-status.json").read_text())
+        assert status["stimulus_cleanup"] == {
+            "model": "gemma4:12b",
+            "unloaded": True,
+        }
+        unloads = [
+            request
+            for request in state["requests"]
+            if request[0:2] == ("POST", "/api/generate")
+            and request[2].get("keep_alive") == 0
+        ]
+        assert unloads
+
+
 def test_runtime_permanent_preload_hang_fails_bounded_and_keeps_ownership():
     from tools.anticipation.hermes_campaign import OllamaRuntime
 
@@ -1052,6 +1104,7 @@ def test_runtime_permanent_preload_hang_fails_bounded_and_keeps_ownership():
             endpoint=endpoint,
             preload_timeout_seconds=0.01,
             preload_completion_timeout_seconds=0.05,
+            cleanup_reconciliation_timeout_seconds=0.05,
         )
         runtime.prepare()
         with pytest.raises(TimeoutError, match="timed out"):

@@ -201,6 +201,7 @@ class OllamaRuntime:
         request_timeout_seconds=15,
         preload_completion_timeout_seconds=PRELOAD_COMPLETION_TIMEOUT_SECONDS,
         preload_keep_alive_seconds=PRELOAD_KEEP_ALIVE_SECONDS,
+        cleanup_reconciliation_timeout_seconds=None,
     ):
         self.endpoint = _local_endpoint(endpoint)
         self.model = model
@@ -208,6 +209,12 @@ class OllamaRuntime:
         self.request_timeout_seconds = request_timeout_seconds
         self.preload_completion_timeout_seconds = preload_completion_timeout_seconds
         self.preload_keep_alive_seconds = preload_keep_alive_seconds
+        self.cleanup_reconciliation_timeout_seconds = (
+            max(preload_completion_timeout_seconds, preload_keep_alive_seconds)
+            + request_timeout_seconds
+            if cleanup_reconciliation_timeout_seconds is None
+            else cleanup_reconciliation_timeout_seconds
+        )
         self._owned_model = None
         self._load_outcome_uncertain = False
         self._preload_thread = None
@@ -293,6 +300,31 @@ class OllamaRuntime:
         remaining = max(0.0, self._preload_deadline - time.monotonic())
         self._preload_thread.join(remaining + 0.1)
         return not self._preload_thread.is_alive()
+
+    def _reconcile_uncertain_load(self, model):
+        """Wait for a timed-out server load, then remove the exact owned model."""
+        deadline = time.monotonic() + self.cleanup_reconciliation_timeout_seconds
+        last_error = None
+        while True:
+            try:
+                resident = self._models()
+                if self._contains_model(resident, model):
+                    self._unload_exact(model)
+                    return
+            except BaseException as error:
+                last_error = error
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.05, remaining))
+
+        message = (
+            f"Ollama model {model} cleanup remains uncertain; "
+            "timed-out preload never became observable during reconciliation"
+        )
+        if last_error is not None:
+            raise RuntimeError(message) from last_error
+        raise RuntimeError(message)
 
     def prepare(self):
         existing = self._models()
@@ -387,18 +419,10 @@ class OllamaRuntime:
         if self._load_outcome_uncertain:
             completed = self._wait_for_preload_completion()
             if not completed or "error" in self._preload_outcome:
-                try:
-                    self._unload_exact(owned_model)
-                except BaseException:
-                    pass
-                error = self._preload_outcome.get("error")
-                message = (
-                    f"Ollama model {owned_model} cleanup remains uncertain; "
-                    "preload request completion was not confirmed"
-                )
-                if error is not None:
-                    raise RuntimeError(message) from error
-                raise RuntimeError(message)
+                self._reconcile_uncertain_load(owned_model)
+                self._owned_model = None
+                self._load_outcome_uncertain = False
+                return {"model": owned_model, "unloaded": True}
 
             self._unload_exact(owned_model)
             self._owned_model = None
