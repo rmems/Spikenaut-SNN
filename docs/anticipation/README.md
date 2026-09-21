@@ -61,7 +61,7 @@ error without confirmed request completion remains a hard cleanup failure; an
 empty residency query is not reported as proof of cleanup. The finite lease is
 defense in depth if the client exits. This follows Ollama v0.33.3's
 [unload path](https://github.com/ollama/ollama/blob/v0.33.3/server/routes.go#L377-L387)
-and [canceled-load cleanup](https://github.com/ollama/ollama/blob/v0.33.3/server/sched.go#L1598-L1615)
+and [canceled-load cleanup](https://github.com/ollama/ollama/blob/v0.33.3/server/sched.go#L686-L706)
 without assuming pending loads serialize behind later unload requests. These
 lease and completion limits are recorded in the campaign resource envelope and
 successful runtime metadata.
