@@ -223,6 +223,7 @@ def test_session_files_config_and_argv_are_hermetic_and_bounded(tmp_path):
     )
     assert env["PATH"] == "/bin" and env["HOME"] == "/home/test"
     assert env["HERMES_HOME"] == session["hermes_home"]
+    assert env["HERMES_SAFE_MODE"] == "1"
     assert env["OPENAI_API_KEY"] == "no-key-required"
     assert "AWS_SECRET_ACCESS_KEY" not in env
 

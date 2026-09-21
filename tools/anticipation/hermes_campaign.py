@@ -466,6 +466,9 @@ class HermesStimulus:
         env.update(
             {
                 "HERMES_HOME": session["hermes_home"],
+                # Skip all bundled and user plugin discovery without passing
+                # --safe-mode, which would also discard this isolated config.
+                "HERMES_SAFE_MODE": "1",
                 "OPENAI_API_KEY": "no-key-required",
                 "OPENAI_BASE_URL": self.endpoint + "/v1",
             }
