@@ -31,6 +31,55 @@ spikenaut-etl prepare-anticipation --input /path/to/unique-run/campaign.json \
   --output /path/to/unique-run/prepared
 ```
 
+### Hermes agent workload variant
+
+The separate `hermes-ollama-inference-v1` acquisition protocol measures the same
+five collector sensors and retains the same 12-session split, timing, ETL,
+forecast models, and training budget. Its active stimulus is one real, bounded
+Hermes file-processing task per session instead of the PyTorch microbenchmark.
+This is a distinct dataset source and must not be pooled with the controlled
+PyTorch campaign.
+
+The runner cycles `gemma4:12b`, `granite4.2:8b`, and
+`Ornith-1.5-9B:latest` across the 12 sessions. Before each collector starts, it
+reads the model architecture and maximum context from Ollama `/api/show`, loads
+that exact maximum, and verifies the effective `/api/ps` context. It records
+total, GPU-resident, and derived CPU-resident model bytes without requiring full GPU residency. It
+never reduces the context, downloads a model, selects another model after a
+failure, or falls back to direct generation. `muse-glimmer:30b` and
+`nemotron-3.5-lightning:30b` are explicitly excluded.
+
+Hermes runs with a fresh per-session `HERMES_HOME`, a dedicated synthetic
+scratch directory, local custom-provider configuration, no provider fallback,
+and only the `terminal` and `file` toolsets. Ambient rules, profiles, memories,
+skills, plugins, MCP servers, and provider credentials are excluded. Each task
+uses `--max-turns 4`, an 80-second Hermes run budget, and an independent hard
+deadline at 120 seconds from sensor capture start. A session is not accepted as
+an agent workload unless the stream records at least one tool call. Budget
+limited runs retain their truthful status; process errors and hard timeouts make
+the campaign incomplete. The runner unloads only the model it loaded and
+verifies removal during cleanup.
+
+Use a new output directory. Do not point this runner at an existing controlled
+campaign or at a user Hermes profile:
+
+```bash
+python -m tools.anticipation.hermes_campaign \
+  /path/to/Spikenaut-SNN/artifacts/unique-hermes-run \
+  --collector /path/to/gaming-telemetry/target/release/gaming-telemetry
+spikenaut-etl prepare-anticipation \
+  --input /path/to/unique-hermes-run/campaign.json \
+  --output /path/to/unique-hermes-run/prepared
+```
+
+The three named models must already be installed and the local endpoint must be
+`127.0.0.1:11434`. The runner refuses to start if any model is already resident,
+because unloading a user-owned model would disrupt another session. Maximum
+context allocation can use both GPU and system memory and may fail on the local
+machine; such a failure is recorded and stops the campaign rather than silently
+changing the protocol. The original PyTorch invocation and its 2 GiB allocation
+limit remain unchanged and apply only to that original protocol.
+
 ETL retains source timestamps, sample ages, invalid frames, segment boundaries, source hashes, and immutable split assignments. Inputs are causal 100 ms frames with maximum source age 200 ms. Targets are the first actual observation at or after the frame deadline with at most 100 ms lateness. Invalid gaps interrupt history and neural state. Normalization uses training sessions only and records constant features and held-out values outside training ranges.
 
 Training and evaluation share a 1,200-second maximum budget. The evaluation wrapper fits baselines first, then gives Julia the remaining budget, including process startup/loading. It refuses an existing evaluation directory, enforces the process deadline, and writes budget/unfinished-run evidence. Julia runs the six arm/seed combinations round-robin for up to 20 epochs and reserves 15% of its remaining budget for evaluation. It retains completed validation-selected checkpoints and labels unfinished work. The readout uses normalized exponential spike traces, four-output squared error, and time-resolved SynapticDistill OTTT. Hidden weights remain fixed. Each checkpoint includes input/target normalization, feature and output contracts, time constants in seconds, and source hashes.

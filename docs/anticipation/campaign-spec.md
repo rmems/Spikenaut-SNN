@@ -30,6 +30,12 @@ The local Julia trainer loads successfully, and PyTorch can access the RTX 5080 
 - Assign sessions before capture: **1–6 training, 7–9 validation, 10–12 test**. Give each session a distinct stimulus seed. Record workload schedules for auditing; exclude schedules, session identifiers, and elapsed-run position from model inputs.
 - Finalize each recording with a graceful collector shutdown. Require complete manifests, zero reported write failures, and sufficient valid windows in every assigned session. A deficient capture produces an incomplete campaign report rather than a silently changed split.
 
+The controlled PyTorch stimulus above remains the binding original protocol.
+The separately identified `hermes-ollama-inference-v1` variant in
+[README.md](README.md) uses the same sensor, split, timing, ETL, and forecasting
+contracts but different active-workload provenance. Captures from the two
+protocols remain separate.
+
 ## Forecasting contract and training experiments
 
 Create a separate experimental feature map using five observed quantities: **VRAM used, GPU power, GPU temperature, graphics clock, and memory clock**. Preserve their actual meanings; VRAM occupancy is not memory utilization, and graphics clock is not SM clock.

@@ -10,6 +10,7 @@ from pathlib import Path
 import random
 import signal
 import subprocess
+import sys
 import time
 
 SHUTDOWN_TIMEOUT_SECONDS = 30
@@ -138,9 +139,9 @@ class Stimulus:
         )
 
 
-def capture(root, collector):
+def capture(root, collector, *, campaign=None, stimulus_factory=None):
     root, collector = Path(root).resolve(), Path(collector).resolve()
-    campaign = build_campaign(root)
+    campaign = build_campaign(root) if campaign is None else dict(campaign)
     campaign["collector_sha256"] = sha256(collector)
     # Fail before allocating or recording if any capture has already been attempted.
     if (root / "campaign.json").exists():
@@ -155,13 +156,20 @@ def capture(root, collector):
     }
     write_json(root / "capture-status.json", status)
     active_session = None
+    stimulus = None
+    completed_all_sessions = False
     try:
-        stimulus = Stimulus()
+        stimulus = (stimulus_factory or Stimulus)()
+        if hasattr(stimulus, "prepare"):
+            status["stimulus_preflight"] = stimulus.prepare()
+            write_json(root / "capture-status.json", status)
         for session in campaign["sessions"]:
             active_session = session["session_id"]
-            stimulus.seed(session["seed"])
+            runtime_metadata = stimulus.seed(session["seed"])
             directory = Path(session["path"])
             directory.mkdir(parents=True, exist_ok=False)
+            if hasattr(stimulus, "prepare_session"):
+                stimulus.prepare_session(session)
             env = dict(
                 os.environ,
                 SESSION_DIR=str(directory),
@@ -171,6 +179,7 @@ def capture(root, collector):
             )
             actual = []
             started = None
+            audit_key = campaign.get("actual_audit_key", "actual_schedule")
             with (directory / "collector.log").open("w") as log:
                 process = subprocess.Popen(
                     [str(collector)], env=env, stdout=log, stderr=log
@@ -197,27 +206,37 @@ def capture(root, collector):
                         flush=True,
                     )
                     wait_until(origin + 20)
-                    for event in session["schedule"]:
+                    events = session.get("schedule")
+                    if events is None:
+                        events = [session["task"]]
+                    for event in events:
                         if process.poll() is not None:
                             raise RuntimeError("collector exited during stimuli")
-                        actual.append(stimulus.run(event, origin))
+                        result = stimulus.run(event, origin)
+                        if result is not None:
+                            actual.append(result)
                     wait_until(origin + 150)
                     if process.poll() is not None:
                         raise RuntimeError("collector exited before scheduled shutdown")
                 finally:
+                    if hasattr(stimulus, "session_records"):
+                        actual = stimulus.session_records()
                     record = {
                         "session_id": session["session_id"],
                         "started_at_utc": started,
-                        "actual_schedule": actual,
+                        audit_key: actual,
                         "status": "shutdown_requested",
                     }
+                    if runtime_metadata is not None:
+                        record["stimulus_runtime"] = runtime_metadata
                     try:
-                        record["peak_cuda_reserved_bytes"] = (
-                            stimulus.torch.cuda.max_memory_reserved()
-                        )
-                        record["peak_cuda_allocated_bytes"] = (
-                            stimulus.torch.cuda.max_memory_allocated()
-                        )
+                        if hasattr(stimulus, "torch"):
+                            record["peak_cuda_reserved_bytes"] = (
+                                stimulus.torch.cuda.max_memory_reserved()
+                            )
+                            record["peak_cuda_allocated_bytes"] = (
+                                stimulus.torch.cuda.max_memory_allocated()
+                            )
                         write_json(directory / "stimulus-audit.json", record)
                     finally:
                         # Collector cleanup is mandatory even if diagnostics or disk writes fail.
@@ -251,7 +270,8 @@ def capture(root, collector):
                 json.dumps({"session": session["session_id"], "state": "complete"}),
                 flush=True,
             )
-        status["status"] = "complete"
+        completed_all_sessions = True
+        status["status"] = "finalizing"
     except BaseException as error:
         status["status"] = "incomplete"
         status["reason"] = f"{type(error).__name__}: {error}"
@@ -264,7 +284,20 @@ def capture(root, collector):
         ]
         raise
     finally:
+        had_active_error = sys.exc_info()[0] is not None
+        cleanup_error = None
+        if stimulus is not None and hasattr(stimulus, "close"):
+            try:
+                status["stimulus_cleanup"] = stimulus.close()
+            except BaseException as error:
+                cleanup_error = error
+                status["status"] = "incomplete"
+                status["cleanup_error"] = f"{type(error).__name__}: {error}"
+        if completed_all_sessions and cleanup_error is None:
+            status["status"] = "complete"
         write_json(root / "capture-status.json", status)
+        if cleanup_error is not None and not had_active_error:
+            raise cleanup_error
 
 
 if __name__ == "__main__":
