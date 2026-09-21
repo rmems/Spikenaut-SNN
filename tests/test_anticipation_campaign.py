@@ -376,3 +376,20 @@ time.sleep(30)
         children[0].kill()
         children[0].wait()
     assert stopped, "audit failure must not orphan the collector"
+
+
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
+def test_json_writer_preserves_staging_link_target(tmp_path, link_kind):
+    from tools.anticipation.campaign import write_json
+
+    destination = tmp_path / "report.json"
+    sentinel = tmp_path / "source.json"
+    sentinel.write_text("source sentinel")
+    staging = tmp_path / "report.json.tmp"
+    if link_kind == "symlink":
+        staging.symlink_to(sentinel)
+    else:
+        staging.hardlink_to(sentinel)
+    write_json(destination, {"complete": True})
+    assert sentinel.read_text() == "source sentinel"
+    assert destination.read_text() == '{\n  "complete": true\n}\n'

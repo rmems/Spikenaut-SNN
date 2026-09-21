@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import time
+import tempfile
 
 SHUTDOWN_TIMEOUT_SECONDS = 30
 MATRIX_SIZE = 2048
@@ -70,9 +71,14 @@ def build_campaign(root):
 def write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
-    temporary.replace(path)
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(json.dumps(value, indent=2, allow_nan=False) + "\n")
+            stream.close()
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def sha256(path):
