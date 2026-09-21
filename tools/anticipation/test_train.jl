@@ -116,3 +116,18 @@ end
         @test all(r->r["status"]=="unfinished" && r["epochs_completed"]==0, stopped["runs"])
     end
 end
+
+@testset "JSON publication does not follow predictable staging links" begin
+    for link_kind in (:symlink, :hardlink)
+        mktempdir() do directory
+            sentinel = joinpath(directory, "sentinel.json")
+            write(sentinel, "source evidence")
+            destination = joinpath(directory, "checkpoint.json")
+            staging = destination * ".tmp"
+            link_kind == :symlink ? symlink(sentinel, staging) : hardlink(sentinel, staging)
+            AnticipationTrainer.write_json(destination, Dict("complete" => true))
+            @test read(sentinel, String) == "source evidence"
+            @test AnticipationTrainer.JSON3.read(read(destination, String)).complete
+        end
+    end
+end

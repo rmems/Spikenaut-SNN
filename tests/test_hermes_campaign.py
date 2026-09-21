@@ -300,8 +300,9 @@ def test_explicit_hermes_error_is_infrastructure_failure(tmp_path):
     stimulus = HermesStimulus(tmp_path, hermes_executable=fake, runtime=FakeRuntime())
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
+    origin = time.monotonic() - 20
     with pytest.raises(RuntimeError, match="explicit error"):
-        stimulus.run(session["task"], time.monotonic() - 20)
+        stimulus.run(session["task"], origin)
 
 
 def test_out_of_scope_path_is_audited_and_prevents_task_success(tmp_path):
@@ -362,8 +363,9 @@ def test_empty_or_unsupported_tool_name_is_rejected(tmp_path, name):
     stimulus = HermesStimulus(tmp_path, hermes_executable=fake, runtime=FakeRuntime())
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
+    origin = time.monotonic() - 20
     with pytest.raises(RuntimeError, match="unsupported or empty"):
-        stimulus.run(session["task"], time.monotonic() - 20)
+        stimulus.run(session["task"], origin)
 
 
 def test_malformed_object_like_stream_line_fails_but_diagnostic_does_not():
@@ -386,8 +388,9 @@ def test_no_tool_call_or_cli_error_marks_task_incomplete(tmp_path):
     stimulus = HermesStimulus(tmp_path, hermes_executable=fake, runtime=FakeRuntime())
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
+    origin = __import__("time").monotonic() - 20
     with pytest.raises(RuntimeError, match="tool call"):
-        stimulus.run(session["task"], __import__("time").monotonic() - 20)
+        stimulus.run(session["task"], origin)
     assert stimulus.session_records()[0]["status"] == "invalid"
 
 
@@ -418,8 +421,9 @@ def test_tool_call_without_terminal_result_is_incomplete(tmp_path):
     stimulus = HermesStimulus(tmp_path, hermes_executable=fake, runtime=FakeRuntime())
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
+    origin = __import__("time").monotonic() - 20
     with pytest.raises(RuntimeError, match="terminal result"):
-        stimulus.run(session["task"], __import__("time").monotonic() - 20)
+        stimulus.run(session["task"], origin)
     assert stimulus.session_records()[0]["status"] == "invalid"
 
 

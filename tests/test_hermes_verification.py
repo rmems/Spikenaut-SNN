@@ -103,6 +103,9 @@ def test_python_verifier_sandbox_blocks_host_writes_and_network(tmp_path):
         "    return [word.strip().lower() for word in words if word.strip()]\n"
     )
 
+    _install_trusted_sandbox_probe(
+        stimulus, Path(session["scratch_path"], "transform.py").read_text()
+    )
     try:
         verification = stimulus._verify_fixture(session)
         with pytest.raises(TimeoutError):
@@ -145,6 +148,9 @@ def test_python_verifier_sandbox_applies_resource_limits(tmp_path):
         "    return [word.strip().lower() for word in words if word.strip()]\n"
     )
 
+    _install_trusted_sandbox_probe(
+        stimulus, Path(session["scratch_path"], "transform.py").read_text()
+    )
     verification = stimulus._verify_fixture(session)
 
     assert verification["status"] == "passed"
@@ -174,6 +180,9 @@ def test_python_verifier_denies_candidate_fork(tmp_path):
         "        os._exit(0)\n"
         "    os.waitpid(pid, 0)\n"
         "    raise AssertionError('candidate fork was allowed')\n"
+    )
+    _install_trusted_sandbox_probe(
+        stimulus, Path(session["scratch_path"], "transform.py").read_text()
     )
     assert stimulus._verify_fixture(session)["status"] == "passed"
 
@@ -234,3 +243,97 @@ def test_verifier_outer_capture_rejects_oversized_stream(stream):
     command = [sys.executable, "-c", f"import sys; sys.{stream}.write('x' * 65537)"]
     with pytest.raises(RuntimeError, match="output exceeded 65536 bytes"):
         _run_verifier(command)
+
+
+def test_python_candidate_cannot_forge_all_worker_results(tmp_path):
+    from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
+
+    session = next(
+        s
+        for s in build_hermes_campaign(tmp_path)["sessions"]
+        if s["task"]["family"] == "python-bugfix"
+    )
+    stimulus = HermesStimulus(
+        tmp_path, hermes_executable=tmp_path / "hermes", runtime=FakeRuntime()
+    )
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+    Path(session["scratch_path"], "transform.py").write_text(
+        "import sys,json,os\n"
+        "def normalize(words):\n"
+        "    frame = sys._getframe()\n"
+        "    while 'inputs' not in frame.f_locals:\n"
+        "        frame = frame.f_back\n"
+        "    values = frame.f_locals['inputs']\n"
+        "    print(json.dumps([[w.strip().lower() for w in row if w.strip()] for row in values]), flush=True)\n"
+        "    os._exit(0)\n"
+    )
+    assert stimulus._verify_fixture(session)["status"] == "failed"
+
+
+def _install_trusted_sandbox_probe(stimulus, probe):
+    """Only test-owned code replaces the trusted runner, never an agent candidate."""
+    import hashlib
+    from tools.anticipation import verifier_runner
+
+    runner = Path(stimulus._verifier_plan["path"])
+    trusted = (
+        Path(verifier_runner.__file__)
+        .read_text()
+        .split('if __name__ == "__main__":')[0]
+    )
+    runner.write_text(
+        trusted
+        + "\nrestrict_candidate()\n"
+        + probe
+        + "\nprint(json.dumps(normalize([' Beta ', '', 'ALPHA', ' gamma ']), separators=(',', ':')))\n"
+    )
+    stimulus._verifier_plan["sha256"] = hashlib.sha256(runner.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def normalize(words):\n    return [w.strip().lower() for w in words if w.strip()]\n",
+        "def normalize(words):\n    result = []\n    for word in words:\n        word = word.strip().lower()\n        if word:\n            result.append(word)\n    return result\n",
+    ],
+)
+def test_python_verifier_accepts_pure_normalization(tmp_path, source):
+    assert _verify_candidate_source(tmp_path, source)["status"] == "passed"
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "hidden = __builtins__",
+        "hidden = normalize.__globals__",
+        "hidden = ().__class__.__base__.__subclasses__()",
+        "hidden = globals()",
+        "print('forged result')",
+        "import sys",
+    ],
+)
+def test_python_verifier_rejects_worker_access(tmp_path, statement):
+    source = (
+        "def normalize(words):\n    "
+        + statement
+        + "\n    return [w.strip().lower() for w in words if w.strip()]\n"
+    )
+    assert _verify_candidate_source(tmp_path, source)["status"] == "failed"
+
+
+def _verify_candidate_source(tmp_path, source):
+    from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
+
+    session = next(
+        s
+        for s in build_hermes_campaign(tmp_path)["sessions"]
+        if s["task"]["family"] == "python-bugfix"
+    )
+    stimulus = HermesStimulus(
+        tmp_path, hermes_executable=tmp_path / "hermes", runtime=FakeRuntime()
+    )
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+    Path(session["scratch_path"], "transform.py").write_text(source)
+    return stimulus._verify_fixture(session)

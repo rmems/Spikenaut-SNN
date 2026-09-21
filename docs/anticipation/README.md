@@ -88,8 +88,15 @@ for the interpreter, candidate, and parent-owned verifier. A trusted parent runn
 supplies fresh randomized normalization cases to a
 subordinate candidate process and compares its untrusted results against answers
 computed only in the parent. The worker receives no attestation secret or expected
-answers. This is functional testing of sampled behavior, not proof of arbitrary
-Python execution or general correctness. The sandbox omits `/proc`, and the worker
+answers. The `pure-normalization-v1` contract accepts a single `normalize` function
+using a bounded AST subset: string/list operations, assignments, conditionals,
+loops and comprehensions. Imports, I/O, reflection, private names, arbitrary calls
+and nested functions are rejected before compilation. Only the listed pure
+builtins and normalization methods are reachable from candidate code, so it
+cannot inspect or impersonate its caller or write to the result channel. Ordinary
+list-comprehension and loop solutions are covered by positive tests; frame and
+builtins escapes are covered by negative tests. This is functional testing of
+sampled behavior, not proof of general correctness. The sandbox omits `/proc`, and the worker
 installs a libseccomp filter before importing candidate code that denies process
 creation, cross-process memory access, and signaling. Address-space, CPU, and
 file-size limits apply to the sandbox; outer stdout/stderr go to size-limited

@@ -187,11 +187,15 @@ end
 matrix_rows(m) = [collect(m[i,:]) for i in axes(m,1)]
 function write_json(path, data)
     mkpath(dirname(path))
-    temp = path * ".tmp"
-    open(temp, "w") do io
+    temp, io = mktemp(dirname(path); cleanup=false)
+    try
         JSON3.write(io, data)
+        close(io)
+        mv(temp, path; force=true)
+    finally
+        close(io)
+        rm(temp; force=true)
     end
-    mv(temp, path; force=true)
 end
 function save_checkpoint(path, model, norm; metadata=Dict())
     write_json(path, Dict("schema_version"=>"anticipation-snn-checkpoint-v1",

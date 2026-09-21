@@ -8,17 +8,20 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import random
-import shutil
 import signal
 import subprocess
-import sys
 import time
-import tempfile
 
 from tools.anticipation.campaign import capture
 
 from .ollama_runtime import OllamaRuntime as OllamaRuntime, _local_endpoint
+
+from .hermes_protocol import build_hermes_campaign as build_hermes_campaign, _prompt
+from .task_verification import (
+    write_fixture,
+    verify_fixture,
+    _run_verifier as _run_verifier,
+)
 
 
 PROTOCOL_ID = "hermes-ollama-inference-v4"
@@ -57,72 +60,6 @@ def _signal_process_group(process, signal_number):
         os.killpg(process.pid, signal_number)
     except ProcessLookupError:
         pass
-
-
-def _prompt(family, records, target_tokens, seed, scratch):
-    scratch = Path(scratch).resolve()
-    common = (
-        f"Work only in the scratch directory {scratch}. Do not use the network, install "
-        "anything, access other directories, or run repository operations. Use the enabled "
-        "file tools to perform the task; the harness will verify the output. Then answer concisely. "
-        f"The synthetic fixture seed is {seed}. "
-    )
-    if family == "csv-aggregation":
-        return common + (
-            f"Read all {records} data rows in {scratch / 'input.csv'} "
-            f"(approximately {target_tokens} input "
-            "tokens), aggregate amount by category, and "
-            f"write {scratch / 'output.json'} as an object with alphabetically sorted category "
-            "keys and numeric totals."
-        )
-    if family == "json-transformation":
-        return common + (
-            f"Read all {records} records in {scratch / 'input.json'} "
-            f"(approximately {target_tokens} input "
-            "tokens), retain enabled records, sort by id, "
-            f"and write {scratch / 'output.json'} containing objects with id and score fields. "
-            "The harness will run the fixed verifier."
-        )
-    return common + (
-        f"Read the {records}-line {scratch / 'specification.txt'} "
-        f"(approximately {target_tokens} input tokens) plus {scratch / 'transform.py'}. "
-        f"Fix the small bug in {scratch / 'transform.py'} so it follows the specification. "
-        "The harness will verify the result outside the scratch directory."
-    )
-
-
-def build_hermes_campaign(root):
-    root = Path(root).resolve()
-    sessions = _hermes_sessions(root)
-    return {
-        "schema_version": "anticipation-campaign-v1",
-        "protocol_id": PROTOCOL_ID,
-        "feature_map_id": "anticipation-observed-gpu-v1",
-        "workload_class": "ai-compute",
-        "actual_audit_key": "actual_bot_tasks",
-        "duration_s": 150,
-        "active_window_s": [20, 130],
-        "poll_interval_ms": 100,
-        "min_examples_per_session": 500,
-        "models": [
-            {"model": model, "advertised_context_length": context}
-            for model, context in MODEL_PLAN
-        ],
-        "excluded_models": sorted(EXCLUDED_MODELS),
-        "model_resource_envelope": {
-            "resident_models": 1,
-            "concurrent_agent_runs": 1,
-            "context_policy": "advertised-architecture-maximum",
-            "preload_keep_alive_seconds": PRELOAD_KEEP_ALIVE_SECONDS,
-            "preload_completion_timeout_seconds": PRELOAD_COMPLETION_TIMEOUT_SECONDS,
-        },
-        "training_budget_seconds": 1200,
-        "promising_criterion": {
-            "primary_improvement": 0.05,
-            "max_target_degradation": 0.05,
-        },
-        "sessions": sessions,
-    }
 
 
 class HermesStimulus:
@@ -168,7 +105,7 @@ class HermesStimulus:
         self.model = model
         return dict(self._runtime_metadata)
 
-    def _write_config(self, home, context_length, scratch):
+    def _write_config(self, home, context_length):
         api_base = self.endpoint + "/v1"
         home.mkdir(parents=True, exist_ok=False)
         (home / "config.yaml").write_text(
@@ -200,42 +137,7 @@ class HermesStimulus:
         )
 
     def _write_fixture(self, session, scratch):
-        family = session["task"]["family"]
-        count = session["task"]["fixture_records"]
-        rng = random.Random(session["seed"])
-        if family == "csv-aggregation":
-            rows = ["category,amount"]
-            totals = {}
-            for _ in range(count):
-                category = rng.choice(("alpha", "beta", "delta", "gamma"))
-                amount = rng.randint(1, 99)
-                rows.append(f"{category},{amount}")
-                totals[category] = totals.get(category, 0) + amount
-            (scratch / "input.csv").write_text("\n".join(rows) + "\n")
-            expected = dict(sorted(totals.items()))
-        elif family == "json-transformation":
-            records = [
-                {
-                    "id": f"item-{i:05}",
-                    "score": rng.randint(0, 1000),
-                    "enabled": rng.choice((True, False)),
-                }
-                for i in range(count)
-            ]
-            rng.shuffle(records)
-            (scratch / "input.json").write_text(json.dumps(records, indent=2) + "\n")
-            expected = [
-                {"id": r["id"], "score": r["score"]}
-                for r in sorted(records, key=lambda x: x["id"])
-                if r["enabled"]
-            ]
-        else:
-            return _python_fixture(session, scratch, count)
-        return {
-            "kind": "json-output",
-            "path": str(scratch / "output.json"),
-            "expected": expected,
-        }
+        return write_fixture(session, scratch)
 
     def prepare_session(self, session):
         if self._seed != session["seed"]:
@@ -244,9 +146,7 @@ class HermesStimulus:
         scratch = Path(session["scratch_path"])
         if self._runtime_metadata is None or self.model != session["model"]:
             raise RuntimeError("session model does not match selected Ollama runtime")
-        self._write_config(
-            home, self._runtime_metadata["advertised_context_length"], scratch
-        )
+        self._write_config(home, self._runtime_metadata["advertised_context_length"])
         scratch.mkdir(parents=True, exist_ok=False)
         self._verifier_plan = self._write_fixture(session, scratch)
         prompt = _prompt(
@@ -365,32 +265,7 @@ class HermesStimulus:
         return outside
 
     def _verify_fixture(self, session):
-        plan = self._verifier_plan
-        if not isinstance(plan, dict):
-            return {"status": "failed", "reason": "missing verifier plan"}
-        try:
-            if plan["kind"] == "json-output":
-                return _verify_json_output(plan)
-            verifier = Path(plan["path"])
-            if hashlib.sha256(verifier.read_bytes()).hexdigest() != plan["sha256"]:
-                return {"status": "failed", "reason": "fixed verifier was modified"}
-            command = self._verification_command(session, verifier)
-            completed = _run_verifier(command)
-            expected_stdout = json.dumps(plan["expected"], separators=(",", ":")) + "\n"
-            verified = completed.returncode == 0 and completed.stderr == ""
-            verified = verified and completed.stdout == expected_stdout
-            return {
-                "status": "passed" if verified else "failed",
-                "kind": "fixed-python-test",
-                "exit_code": completed.returncode,
-                "stdout": completed.stdout,
-                "stderr": completed.stderr,
-            }
-        except BaseException as error:
-            return {
-                "status": "failed",
-                "reason": f"{type(error).__name__}: {error}",
-            }
+        return verify_fixture(session, self._verifier_plan)
 
     def run(self, event, origin):
         session = self._session
@@ -455,57 +330,6 @@ class HermesStimulus:
 
     def close(self):
         return self.runtime.close()
-
-    @staticmethod
-    def _verification_command(session, verifier):
-        sandbox, limiter = _verification_tools()
-        runtime_roots = _verification_runtime_roots()
-        command = [
-            limiter,
-            f"--as={VERIFIER_AS_LIMIT_BYTES}",
-            f"--nproc={VERIFIER_NPROC_LIMIT}",
-            f"--fsize={VERIFIER_FSIZE_LIMIT_BYTES}",
-            f"--cpu={VERIFIER_CPU_LIMIT_SECONDS}",
-            "--",
-            sandbox,
-            "--die-with-parent",
-            "--new-session",
-            "--unshare-all",
-            "--clearenv",
-            "--dev",
-            "/dev",
-            "--tmpfs",
-            "/tmp",
-        ]
-        for root in runtime_roots:
-            command.extend(("--ro-bind", str(root), str(root)))
-        loader_cache = Path("/etc/ld.so.cache")
-        if loader_cache.exists():
-            command.extend(("--ro-bind", str(loader_cache), str(loader_cache)))
-        command.extend(
-            (
-                "--ro-bind",
-                str(verifier),
-                "/harness/runner.py",
-                "--ro-bind",
-                str(Path(session["scratch_path"]) / "transform.py"),
-                "/work/transform.py",
-                "--chdir",
-                "/work",
-                "--setenv",
-                "HOME",
-                "/tmp",
-                "--setenv",
-                "PATH",
-                "/usr/bin:/bin",
-                str(Path(sys.executable).resolve()),
-                "-I",
-                "-B",
-                "/harness/runner.py",
-                "/work/transform.py",
-            )
-        )
-        return command
 
     def _communicate_task(self, process, event, origin, record):
         timeboxed = forced_kill = False
@@ -635,91 +459,6 @@ class HermesStimulus:
         return pending_error
 
 
-def _hermes_sessions(root):
-    sessions = []
-    families = (
-        "csv-aggregation",
-        "json-transformation",
-        "python-bugfix",
-        "json-transformation",
-        "python-bugfix",
-        "csv-aggregation",
-        "python-bugfix",
-        "csv-aggregation",
-        "json-transformation",
-        "csv-aggregation",
-        "json-transformation",
-        "python-bugfix",
-    )
-    token_targets = (1024, 8192, 16384) * 4
-    for i in range(1, 13):
-        sessions.append(_hermes_session(root, i, families[i - 1], token_targets[i - 1]))
-    return sessions
-
-
-def _hermes_session(root, i, family, target_tokens):
-    seed = 2026092000 + i
-    records = max(
-        32,
-        target_tokens
-        // {"csv-aggregation": 4, "json-transformation": 18, "python-bugfix": 14}[
-            family
-        ],
-    )
-    model, advertised_context = MODEL_PLAN[(i - 1) % len(MODEL_PLAN)]
-    scratch = root / "hermes" / f"session-{i:02}" / "scratch"
-    prompt = _prompt(family, records, target_tokens, seed, scratch)
-    return {
-        "session_id": f"session-{i:02}",
-        "split": "train" if i <= 6 else "validation" if i <= 9 else "test",
-        "seed": seed,
-        "model": model,
-        "advertised_context_length": advertised_context,
-        "path": str(root / "raw" / f"session-{i:02}"),
-        "hermes_home": str(root / "hermes" / f"session-{i:02}" / "home"),
-        "scratch_path": str(root / "hermes" / f"session-{i:02}" / "scratch"),
-        "prompt_path": str(root / "hermes" / f"session-{i:02}" / "prompt.txt"),
-        "task": {
-            "family": family,
-            "fixture_records": records,
-            "input_target_tokens": target_tokens,
-            "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
-            "start_s": 20.0,
-            "hard_deadline_s": 120.0,
-            "termination_grace_s": SIGTERM_GRACE_SECONDS,
-            "cleanup_deadline_s": 130.0,
-        },
-    }
-
-
-def _verification_runtime_roots():
-    runtime_roots = []
-    for root in (
-        Path("/usr"),
-        Path("/lib"),
-        Path("/lib64"),
-        Path(sys.base_prefix).resolve(),
-    ):
-        if not root.exists() or any(
-            root.is_relative_to(bound) for bound in runtime_roots
-        ):
-            continue
-        runtime_roots = [
-            bound for bound in runtime_roots if not bound.is_relative_to(root)
-        ]
-        runtime_roots.append(root)
-    return runtime_roots
-
-
-def _verify_json_output(plan):
-    actual = json.loads(Path(plan["path"]).read_text())
-    if actual != plan["expected"]:
-        return {"status": "failed", "reason": "output mismatch"}
-    if isinstance(plan["expected"], dict) and list(actual) != list(plan["expected"]):
-        return {"status": "failed", "reason": "output key order mismatch"}
-    return {"status": "passed", "kind": "direct-json-comparison"}
-
-
 def _resolve_tool_path(value, scratch):
     resolved = Path(value)
     if not resolved.is_absolute():
@@ -775,47 +514,6 @@ def _terminal_events(events):
     return result, init
 
 
-def _run_verifier(command):
-    # Regular files are subject to the sandbox RLIMIT_FSIZE. Never accumulate
-    # candidate-controlled outer stdout/stderr in an unbounded host pipe.
-    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-        completed = subprocess.run(
-            command, stdout=stdout, stderr=stderr, timeout=5, check=False
-        )
-        captured = []
-        for stream in (stdout, stderr):
-            stream.seek(0)
-            value = stream.read(65537)
-            if len(value) > 65536:
-                raise RuntimeError("verifier output exceeded 65536 bytes")
-            captured.append(value.decode("utf-8", errors="replace"))
-    return subprocess.CompletedProcess(command, completed.returncode, *captured)
-
-
-def _python_fixture(session, scratch, count):
-    lines = [
-        "Specification: normalize each input word by stripping surrounding whitespace, "
-        "convert it to lowercase, discard empty values, and preserve input order."
-    ]
-    lines.extend(
-        f"Example note {i:04}: normalization is deterministic and must not sort values."
-        for i in range(1, count)
-    )
-    (scratch / "specification.txt").write_text("\n".join(lines) + "\n")
-    (scratch / "transform.py").write_text(
-        "def normalize(words):\n"
-        "    return sorted(w.strip().upper() for w in words if w.strip())\n"
-    )
-    verifier = Path(session["hermes_home"]) / "harness-runner.py"
-    verifier.write_bytes(Path(__file__).with_name("verifier_runner.py").read_bytes())
-    return {
-        "kind": "fixed-python-test",
-        "path": str(verifier),
-        "sha256": hashlib.sha256(verifier.read_bytes()).hexdigest(),
-        "expected": ["beta", "alpha", "gamma"],
-    }
-
-
 def _task_record(event, started_mono, origin, runtime_metadata):
     return {
         "family": event["family"],
@@ -825,16 +523,6 @@ def _task_record(event, started_mono, origin, runtime_metadata):
         "status": "running",
         "runtime": dict(runtime_metadata or {}),
     }
-
-
-def _verification_tools():
-    sandbox = shutil.which("bwrap")
-    if sandbox is None:
-        raise RuntimeError("bubblewrap is required for Python verification")
-    limiter = shutil.which("prlimit")
-    if limiter is None:
-        raise RuntimeError("prlimit is required for Python verification")
-    return sandbox, limiter
 
 
 def main(argv=None):

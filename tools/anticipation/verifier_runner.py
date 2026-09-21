@@ -67,17 +67,103 @@ def validate_function(function):
     assert all(argument.annotation is None for argument in arguments)
 
 
+SAFE_BUILTINS = {
+    "list": list,
+    "tuple": tuple,
+    "str": str,
+    "len": len,
+    "bool": bool,
+    "sorted": sorted,
+    "reversed": reversed,
+}
+SAFE_METHODS = {"strip", "lower", "upper", "append"}
+SAFE_NODES = {
+    ast.Module,
+    ast.FunctionDef,
+    ast.arguments,
+    ast.arg,
+    ast.Return,
+    ast.Assign,
+    ast.For,
+    ast.If,
+    ast.Expr,
+    ast.Pass,
+    ast.Break,
+    ast.Continue,
+    ast.ListComp,
+    ast.GeneratorExp,
+    ast.comprehension,
+    ast.Name,
+    ast.Load,
+    ast.Store,
+    ast.Call,
+    ast.Attribute,
+    ast.Constant,
+    ast.List,
+    ast.Tuple,
+    ast.Subscript,
+    ast.Slice,
+    ast.Compare,
+    ast.Eq,
+    ast.NotEq,
+    ast.In,
+    ast.NotIn,
+    ast.BoolOp,
+    ast.And,
+    ast.Or,
+    ast.UnaryOp,
+    ast.Not,
+    ast.IfExp,
+}
+
+
+def validate_expression(node):
+    if type(node) not in SAFE_NODES:
+        raise ValueError(f"unsupported candidate syntax: {type(node).__name__}")
+    if isinstance(node, ast.Name) and node.id.startswith("_"):
+        raise ValueError("private names are not available to candidates")
+    if isinstance(node, ast.Attribute):
+        if node.attr not in SAFE_METHODS or not isinstance(node.ctx, ast.Load):
+            raise ValueError("only normalization methods are available")
+    if isinstance(node, ast.Call):
+        validate_call(node)
+
+
+def validate_call(node):
+    if isinstance(node.func, ast.Name):
+        if node.func.id not in SAFE_BUILTINS:
+            raise ValueError("candidate called an unsupported function")
+    elif not isinstance(node.func, ast.Attribute):
+        raise ValueError("candidate called an unsupported expression")
+    if node.keywords:
+        raise ValueError("candidate keyword calls are unsupported")
+
+
 def load_candidate(candidate):
-    tree = ast.parse(candidate.read_text(), filename=str(candidate))
-    allowed = (ast.FunctionDef, ast.Import, ast.ImportFrom)
-    assert tree.body and all(isinstance(node, allowed) for node in tree.body)
-    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
-    assert sum(node.name == "normalize" for node in functions) == 1
-    for function in functions:
-        validate_function(function)
-    namespace = {}
+    source = candidate.read_bytes()
+    if len(source) > 65536:
+        raise ValueError("candidate source exceeds 64 KiB")
+    tree = ast.parse(source, filename=str(candidate))
+    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.FunctionDef):
+        raise ValueError("candidate must define only the pure normalize function")
+    function = tree.body[0]
+    if function.name != "normalize":
+        raise ValueError("candidate must define normalize")
+    validate_function(function)
+    validate_candidate_tree(tree, function)
+    namespace = {"__builtins__": dict(SAFE_BUILTINS)}
     exec(compile(tree, str(candidate), "exec"), namespace)
     return namespace["normalize"]
+
+
+def validate_candidate_tree(tree, function):
+    nodes = list(ast.walk(tree))
+    if len(nodes) > 2048:
+        raise ValueError("candidate syntax exceeds the node budget")
+    for node in nodes:
+        if isinstance(node, ast.FunctionDef) and node is not function:
+            raise ValueError("nested candidate functions are unsupported")
+        validate_expression(node)
 
 
 def candidate_worker(candidate):
@@ -102,13 +188,13 @@ def test_inputs():
     ]
 
 
-def verify(candidate):
+def verify():
     inputs = test_inputs()
     expected = [
         [word.strip().lower() for word in words if word.strip()] for words in inputs
     ]
     child = subprocess.Popen(
-        [sys.executable, "-I", "-B", __file__, "--child", str(candidate)],
+        [sys.executable, "-I", "-B", "/harness/runner.py", "--child"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -129,7 +215,10 @@ def verify(candidate):
 
 
 if __name__ == "__main__":
-    if sys.argv[1] == "--child":
-        candidate_worker(Path(sys.argv[2]))
+    candidate = Path("/work/transform.py")
+    if sys.argv[1:] == ["--child"]:
+        candidate_worker(candidate)
+    elif not sys.argv[1:]:
+        verify()
     else:
-        verify(Path(sys.argv[1]))
+        raise SystemExit("unsupported verifier arguments")

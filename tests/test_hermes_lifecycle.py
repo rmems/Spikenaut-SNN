@@ -153,8 +153,9 @@ def test_timebox_requires_interrupted_terminal_result(tmp_path, monkeypatch):
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
 
+    origin = time.monotonic() - 20
     with pytest.raises(RuntimeError, match="without an Interrupted terminal result"):
-        stimulus.run(session["task"], time.monotonic() - 20)
+        stimulus.run(session["task"], origin)
 
 
 def test_sigterm_without_terminal_result_is_not_valid_timebox(tmp_path, monkeypatch):
@@ -193,8 +194,9 @@ def test_sigterm_without_terminal_result_is_not_valid_timebox(tmp_path, monkeypa
     )
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
+    origin = time.monotonic() - 20
     with pytest.raises(RuntimeError, match="terminal result"):
-        stimulus.run(session["task"], time.monotonic() - 20)
+        stimulus.run(session["task"], origin)
 
 
 def test_timebox_requiring_sigkill_is_invalid_even_with_prior_result(
@@ -231,8 +233,9 @@ def test_timebox_requiring_sigkill_is_invalid_even_with_prior_result(
     )
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
+    origin = time.monotonic() - 20
     with pytest.raises(RuntimeError, match="SIGKILL"):
-        stimulus.run(session["task"], time.monotonic() - 20)
+        stimulus.run(session["task"], origin)
 
 
 def test_process_group_signal_race_preserves_timebox_cleanup(tmp_path, monkeypatch):
@@ -290,8 +293,9 @@ def test_process_group_signal_race_preserves_timebox_cleanup(tmp_path, monkeypat
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
 
+    origin = time.monotonic() - 20
     with pytest.raises(RuntimeError, match="SIGKILL"):
-        stimulus.run(session["task"], time.monotonic() - 20)
+        stimulus.run(session["task"], origin)
 
     assert runtime.closed is True
 
@@ -389,8 +393,9 @@ def test_final_signal_race_preserves_original_error_and_model_cleanup(
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
 
+    origin = time.monotonic() - 20
     with pytest.raises(RuntimeError, match="malformed object-like"):
-        stimulus.run(session["task"], time.monotonic() - 20)
+        stimulus.run(session["task"], origin)
 
     assert runtime.closed is True
 
@@ -424,8 +429,9 @@ def test_model_cleanup_after_session_deadline_invalidates_workload(tmp_path):
     stimulus = HermesStimulus(tmp_path, hermes_executable=fake, runtime=FakeRuntime())
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
+    origin = time.monotonic() - 20
     with pytest.raises(RuntimeError, match="cleanup exceeded"):
-        stimulus.run(session["task"], time.monotonic() - 20)
+        stimulus.run(session["task"], origin)
     assert stimulus.session_records()[0]["workload_status"] == "invalid"
 
 
