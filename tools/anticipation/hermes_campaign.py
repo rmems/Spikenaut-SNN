@@ -41,6 +41,7 @@ ALLOWED_TOOLS = {
     "patch",
     "search_files",
 }
+_DEFAULT_REQUEST_TIMEOUT = object()
 
 
 def _signal_process_group(process, signal_number):
@@ -221,8 +222,10 @@ class OllamaRuntime:
         self._preload_done = None
         self._preload_outcome = None
         self._preload_deadline = None
+        self._cleanup_thread = None
+        self._cleanup_error = None
 
-    def _request(self, method, path, payload=None, *, timeout=None):
+    def _request(self, method, path, payload=None, *, timeout=_DEFAULT_REQUEST_TIMEOUT):
         data = None if payload is None else json.dumps(payload).encode()
         request = Request(
             self.endpoint + path,
@@ -232,7 +235,11 @@ class OllamaRuntime:
         )
         with urlopen(
             request,
-            timeout=self.request_timeout_seconds if timeout is None else timeout,
+            timeout=(
+                self.request_timeout_seconds
+                if timeout is _DEFAULT_REQUEST_TIMEOUT
+                else timeout
+            ),
         ) as response:
             result = json.loads(response.read())
         if not isinstance(result, dict):
@@ -275,7 +282,10 @@ class OllamaRuntime:
                         "keep_alive": f"{self.preload_keep_alive_seconds}s",
                         "options": {"num_ctx": context_length},
                     },
-                    timeout=self.preload_completion_timeout_seconds,
+                    # Keep the accepted server operation tracked after the
+                    # logical deadline. Cleanup must know when it actually
+                    # finishes before it can prove the model absent.
+                    timeout=None,
                 )
                 if response.get("done") is not True:
                     raise RuntimeError(
@@ -322,9 +332,33 @@ class OllamaRuntime:
             f"Ollama model {model} cleanup remains uncertain; "
             "timed-out preload never became observable during reconciliation"
         )
+        self._start_durable_cleanup(model)
         if last_error is not None:
             raise RuntimeError(message) from last_error
         raise RuntimeError(message)
+
+    def _start_durable_cleanup(self, model):
+        """Keep the process alive until the accepted preload can be reconciled."""
+        if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
+            return
+        self._cleanup_error = None
+
+        def finish_cleanup():
+            try:
+                self._preload_thread.join()
+                if self._contains_model(self._models(), model):
+                    self._unload_exact(model)
+                self._owned_model = None
+                self._load_outcome_uncertain = False
+            except BaseException as error:
+                self._cleanup_error = error
+
+        self._cleanup_thread = threading.Thread(
+            target=finish_cleanup,
+            name=f"ollama-cleanup-{model}",
+            daemon=False,
+        )
+        self._cleanup_thread.start()
 
     def prepare(self):
         existing = self._models()

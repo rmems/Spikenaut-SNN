@@ -1096,7 +1096,50 @@ def test_capture_reconciles_load_after_preload_request_timeout(tmp_path):
         assert unloads
 
 
-def test_runtime_permanent_preload_hang_fails_bounded_and_keeps_ownership():
+def test_durable_cleanup_outlives_reconciliation_deadline(tmp_path):
+    from tools.anticipation.campaign import capture
+    from tools.anticipation.hermes_campaign import (
+        HermesStimulus,
+        OllamaRuntime,
+        build_hermes_campaign,
+    )
+
+    collector = tmp_path / "collector"
+    collector.write_bytes(b"not started because preload fails")
+    hermes = tmp_path / "hermes"
+    hermes.write_text("not started because preload fails")
+    root = tmp_path / "capture"
+    plan = build_hermes_campaign(root)
+    plan["sessions"] = plan["sessions"][:1]
+
+    with ollama_server(preload_visibility_delay=0.2) as (endpoint, state):
+        runtime = OllamaRuntime(
+            endpoint=endpoint,
+            preload_timeout_seconds=0.01,
+            preload_completion_timeout_seconds=0.02,
+            preload_keep_alive_seconds=0.1,
+            cleanup_reconciliation_timeout_seconds=0.05,
+        )
+
+        with pytest.raises(TimeoutError, match="timed out"):
+            capture(
+                root,
+                collector,
+                campaign=plan,
+                stimulus_factory=lambda: HermesStimulus(
+                    root, hermes_executable=hermes, runtime=runtime
+                ),
+            )
+
+        status = json.loads((root / "capture-status.json").read_text())
+        assert "cleanup remains uncertain" in status["cleanup_error"]
+        runtime._cleanup_thread.join(1)
+        assert runtime._cleanup_thread.is_alive() is False
+        assert runtime._cleanup_error is None
+        assert state["loaded"] is False
+
+
+def test_runtime_slow_failed_preload_returns_bounded_and_finishes_cleanup():
     from tools.anticipation.hermes_campaign import OllamaRuntime
 
     with ollama_server(preload_never_completes_delay=0.3) as (endpoint, state):
@@ -1114,7 +1157,10 @@ def test_runtime_permanent_preload_hang_fails_bounded_and_keeps_ownership():
         with pytest.raises(RuntimeError, match="cleanup remains uncertain"):
             runtime.close()
         assert time.monotonic() - started < 0.2
+        runtime._cleanup_thread.join(1)
         assert runtime._preload_thread.is_alive() is False
+        assert runtime._cleanup_thread.is_alive() is False
+        assert runtime._cleanup_error is None
         assert state["loaded"] is False
 
 
