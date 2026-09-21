@@ -2,7 +2,9 @@
 
 This experiment forecasts changes in observed GPU temperature and power at one and five seconds. Its five inputs are VRAM occupancy (MiB), GPU power (W), GPU temperature (C), graphics clock (MHz), and memory clock (MHz). Graphics clock is not SM clock; occupancy is not utilization. The existing exp-025 model is lineage only: its inputs and task do not support a direct performance comparison.
 
-Despite its name, `gaming-telemetry` records workstation sensors during these automated PyTorch workloads. No game needs to be running; the collector is explicitly labeled `WORKLOAD_CLASS=ai-compute`.
+Despite its name, `gaming-telemetry` records workstation sensors during automated PyTorch or Hermes/Ollama workloads. No game needs to be running; the collector is explicitly labeled `WORKLOAD_CLASS=ai-compute`.
+
+Completed results are available for the separate [controlled-compute campaign](pilot-2026-09-21-compute.md) and [maximum-context Hermes/Ollama campaign](pilot-2026-09-21-hermes.md). Both completed all 12 recordings and six SNN training runs; neither met the predeclared improvement criterion. Their captures, checkpoints, and predictions remain separate local artifacts.
 
 The binding protocol is [campaign-spec.md](campaign-spec.md). The campaign fixes 12 sessions before acquisition, each with 20 seconds idle, 110 seconds of seeded compute/transfer/rest bursts, and 20 seconds recovery. Sessions 1–6 train, 7–9 validate, 10–12 test. All five model families share the same eligible examples and five-second history requirement. At least 500 eligible examples are required in each actual session; failed captures produce an incomplete campaign, never a reassigned split.
 
