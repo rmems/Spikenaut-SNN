@@ -1,0 +1,28 @@
+tests/test_anticipation_campaign.py
+  s_176a15af4e07cc::t_681e83967b5204 233
+tests/test_hermes_campaign.py
+  s_176a15af4e07cc::t_74c9aec1e017c4 670
+  s_176a15af4e07cc::t_681e83967b5204 51,95-102,137,1400-1405
+tools/anticipation/evaluate.py
+  s_176a15af4e07cc::t_1180eec9d21920 75
+tools/anticipation/campaign.py
+  s_176a15af4e07cc::t_1180eec9d21920 260-263
+tools/anticipation/hermes_campaign.py
+  s_176a15af4e07cc::t_1180eec9d21920 302-303,305-310,910-912
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "36cdd18d9b7bca1d08d8738862cd154d6d25c93f",
+  "prompts": {},
+  "sessions": {
+    "s_176a15af4e07cc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c10b-f3fe-7eb1-83a0-3423737857f2",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Raul Cardenas Montoya <montoyaraul34@gmail.com>"
+    }
+  }
+}
