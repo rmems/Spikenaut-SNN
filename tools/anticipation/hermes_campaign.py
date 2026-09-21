@@ -24,6 +24,7 @@ DEFAULT_MODEL = "gemma4:12b"
 DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
 DEFAULT_HERMES = Path("/home/raulmc/.hermes/hermes-agent/venv/bin/hermes")
 HARD_TIMEOUT_SECONDS = 100.0
+SIGTERM_GRACE_SECONDS = 5.0
 MODEL_PLAN = (
     ("gemma4:12b", 262144),
     ("granite4.2:8b", 131072),
@@ -123,6 +124,7 @@ def build_hermes_campaign(root):
                     "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
                     "start_s": 20.0,
                     "hard_deadline_s": 120.0,
+                    "termination_grace_s": SIGTERM_GRACE_SECONDS,
                     "cleanup_deadline_s": 130.0,
                 },
             }
@@ -680,9 +682,12 @@ class HermesStimulus:
             except subprocess.TimeoutExpired:
                 timeboxed = True
                 record["parent_stop_reason"] = "100s_agent_timebox"
+                record["termination_grace_s"] = event["termination_grace_s"]
                 os.killpg(process.pid, signal.SIGTERM)
                 try:
-                    stdout, stderr = process.communicate(timeout=2)
+                    stdout, stderr = process.communicate(
+                        timeout=event["termination_grace_s"]
+                    )
                 except subprocess.TimeoutExpired:
                     forced_kill = True
                     os.killpg(process.pid, signal.SIGKILL)

@@ -179,6 +179,7 @@ def test_protocol_is_separate_deterministic_and_every_split_has_each_task(tmp_pa
         } == {"csv-aggregation", "json-transformation", "python-bugfix"}
     assert all(len(s["task"]["prompt_sha256"]) == 64 for s in one["sessions"])
     assert len({s["task"]["prompt_sha256"] for s in one["sessions"]}) == 12
+    assert all(s["task"]["termination_grace_s"] == 5.0 for s in one["sessions"])
     assert [s["task"]["input_target_tokens"] for s in one["sessions"][:6]] == [
         1024,
         8192,
@@ -556,7 +557,9 @@ def test_graceful_sigterm_is_valid_timeboxed_workload_with_partial_usage(tmp_pat
         "print(json.dumps({'type':'system','subtype':'init','session_id':'s','model':'gemma4:12b'}),flush=True)\n"
         "print(json.dumps({'type':'tool_use','name':'read_file','tool_call_id':'c','input':{'path':'input.csv'}}),flush=True)\n"
         "def stop(*_):\n"
-        " print(json.dumps({'type':'result','session_id':'s','exit_code':130,'tokens':{'input':0,'output':0},'error':'Interrupted'}),flush=True); raise SystemExit(130)\n"
+        " print(json.dumps({'type':'result','session_id':'s','exit_code':130,'tokens':{'input':0,'output':0},'error':'Interrupted'}),flush=True)\n"
+        " time.sleep(2.2)\n"
+        " raise SystemExit(130)\n"
         "signal.signal(signal.SIGTERM,stop)\n"
         "while True: time.sleep(.01)\n"
     )
@@ -637,6 +640,7 @@ def test_timebox_requiring_sigkill_is_invalid_even_with_prior_result(tmp_path):
     )
     fake.chmod(0o755)
     session = build_hermes_campaign(tmp_path)["sessions"][0]
+    session["task"]["termination_grace_s"] = 0.05
     Path(session["path"]).mkdir(parents=True)
     stimulus = HermesStimulus(
         tmp_path,

@@ -65,7 +65,7 @@ An ordinary nonzero bot result remains a valid hardware workload when the
 stream has positive usage and no explicit infrastructure error, while its task
 outcome is recorded as incomplete. At the 100-second outer limit, the parent
 sends SIGTERM. An interrupted run is accepted as `timeboxed` only when Hermes
-emits its terminal result and exits during the two-second grace period without
+emits its terminal result and exits during the five-second grace period without
 SIGKILL. Its zero token counters are labeled partial rather than interpreted as
 zero work. Task completion comes only from the known fixture verifier, never
 from generated text. The runner unloads and verifies its exact owned model after

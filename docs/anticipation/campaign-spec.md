@@ -35,8 +35,11 @@ The separately identified `hermes-ollama-inference-v2` variant in
 [README.md](README.md) uses the same sensor, split, timing, ETL, and forecasting
 contracts but different active-workload provenance. Version 2 predeclares the
 100-second Hermes process limit as a normal timebox when SIGTERM produces a
-terminal result and graceful exit, records bot-task verification independently
-from hardware-workload validity, and unloads the session model before recovery.
+terminal result and exit within the predeclared five-second grace period,
+records bot-task verification independently from hardware-workload validity,
+and unloads the session model before recovery. Model cleanup must still finish
+by capture second 130.
+
 Captures from the two protocols remain separate.
 
 ## Forecasting contract and training experiments
