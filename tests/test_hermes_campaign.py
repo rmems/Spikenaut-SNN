@@ -903,6 +903,43 @@ def test_runtime_reconciles_load_that_appears_after_initial_timeout_probe():
         assert [request[2]["model"] for request in unloads] == ["gemma4:12b"]
 
 
+def test_runtime_retains_uncertain_ownership_past_reconcile_window():
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    with ollama_server(preload_visibility_delay=0.2) as (endpoint, state):
+        runtime = OllamaRuntime(
+            endpoint=endpoint,
+            preload_timeout_seconds=0.01,
+            load_reconcile_timeout_seconds=0.03,
+            load_reconcile_poll_seconds=0.005,
+        )
+        runtime.prepare()
+        with pytest.raises(TimeoutError, match="timed out"):
+            runtime.select("gemma4:12b", 262144)
+
+        with pytest.raises(RuntimeError, match="cleanup remains uncertain"):
+            runtime.close()
+
+        visibility_deadline = time.monotonic() + 0.5
+        while not state["loaded"] and time.monotonic() < visibility_deadline:
+            time.sleep(0.005)
+        assert state["loaded"] is True
+
+        cleanup = runtime.close()
+        assert cleanup == {"model": "gemma4:12b", "unloaded": True}
+        assert state["loaded"] is False
+        unloads = [
+            request
+            for request in state["requests"]
+            if request[0:2] == ("POST", "/api/generate")
+            and request[2].get("keep_alive") == 0
+        ]
+        assert [request[2]["model"] for request in unloads] == [
+            "gemma4:12b",
+            "gemma4:12b",
+        ]
+
+
 def test_runtime_model_switch_validation_failure_cleans_new_model():
     from tools.anticipation.hermes_campaign import OllamaRuntime
 

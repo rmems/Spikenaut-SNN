@@ -229,6 +229,17 @@ class OllamaRuntime:
             raise RuntimeError("Ollama /api/ps response omitted models")
         return models
 
+    @staticmethod
+    def _contains_model(models, model):
+        return any(
+            (entry.get("model") or entry.get("name")) == model for entry in models
+        )
+
+    def _unload_exact(self, model):
+        self._request("POST", "/api/generate", {"model": model, "keep_alive": 0})
+        if self._contains_model(self._models(), model):
+            raise RuntimeError(f"Ollama model {model} remained resident after unload")
+
     def prepare(self):
         existing = self._models()
         if existing:
@@ -325,34 +336,36 @@ class OllamaRuntime:
 
         if self._load_outcome_uncertain:
             deadline = time.monotonic() + self.load_reconcile_timeout_seconds
+            observed = False
             while True:
                 try:
                     resident = self._models()
                 except BaseException:
                     resident = None
-                if resident is not None and any(
-                    (entry.get("model") or entry.get("name")) == owned_model
-                    for entry in resident
-                ):
+                if resident is not None and self._contains_model(resident, owned_model):
+                    observed = True
                     break
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(self.load_reconcile_poll_seconds)
 
-            # Send the exact-name unload even if the pending load never became
-            # visible. Ollama serializes this with work for the same model, while
-            # the identity prevents cleanup from unloading unrelated residents.
-            self._request(
-                "POST", "/api/generate", {"model": owned_model, "keep_alive": 0}
-            )
-            remaining = self._models()
-            if any(
-                (entry.get("model") or entry.get("name")) == owned_model
-                for entry in remaining
-            ):
+            if not observed:
+                try:
+                    self._unload_exact(owned_model)
+                except BaseException as error:
+                    raise RuntimeError(
+                        f"Ollama model {owned_model} cleanup remains uncertain; "
+                        "ownership retained"
+                    ) from error
+                # An empty observation does not prove that the timed-out load
+                # cannot finish later. Keep ownership so a later close can
+                # reconcile and unload the exact model once it becomes visible.
                 raise RuntimeError(
-                    f"Ollama model {owned_model} remained resident after unload"
+                    f"Ollama model {owned_model} cleanup remains uncertain; "
+                    "ownership retained"
                 )
+
+            self._unload_exact(owned_model)
             self._owned_model = None
             self._load_outcome_uncertain = False
             return {"model": owned_model, "unloaded": True}
@@ -367,15 +380,7 @@ class OllamaRuntime:
         ):
             self._owned_model = None
             return {"model": owned_model, "unloaded": False}
-        self._request("POST", "/api/generate", {"model": owned_model, "keep_alive": 0})
-        remaining = self._models()
-        if any(
-            (entry.get("model") or entry.get("name")) == owned_model
-            for entry in remaining
-        ):
-            raise RuntimeError(
-                f"Ollama model {owned_model} remained resident after unload"
-            )
+        self._unload_exact(owned_model)
         self._owned_model = None
         self._load_outcome_uncertain = False
         return {"model": owned_model, "unloaded": True}
