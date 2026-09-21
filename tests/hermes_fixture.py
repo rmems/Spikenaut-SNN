@@ -26,7 +26,7 @@ class FakeRuntime:
             "residency": {"size": 10, "size_vram": 6, "context_length": context},
         }
 
-    def close(self):
+    def close(self, *, deadline=None):
         return {"model": "test", "unloaded": True}
 
 

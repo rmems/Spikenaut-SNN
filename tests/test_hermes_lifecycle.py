@@ -244,9 +244,9 @@ def test_process_group_signal_race_preserves_timebox_cleanup(tmp_path, monkeypat
     class TrackingRuntime(FakeRuntime):
         closed = False
 
-        def close(self):
+        def close(self, *, deadline=None):
             self.closed = True
-            return super().close()
+            return super().close(deadline=deadline)
 
     class RacedProcess:
         pid = 12345
@@ -359,9 +359,9 @@ def test_final_signal_race_preserves_original_error_and_model_cleanup(
     class TrackingRuntime(FakeRuntime):
         closed = False
 
-        def close(self):
+        def close(self, *, deadline=None):
             self.closed = True
-            return super().close()
+            return super().close(deadline=deadline)
 
     class ExitedProcess:
         pid = 12345

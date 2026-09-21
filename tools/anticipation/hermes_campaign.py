@@ -20,7 +20,6 @@ from .hermes_protocol import build_hermes_campaign as build_hermes_campaign, _pr
 from .task_verification import (
     write_fixture,
     verify_fixture,
-    _run_verifier as _run_verifier,
 )
 
 
@@ -440,7 +439,9 @@ class HermesStimulus:
                 process.wait()
                 record["forced_kill"] = True
         try:
-            record["model_cleanup"] = self.runtime.close()
+            record["model_cleanup"] = self.runtime.close(
+                deadline=origin + event["cleanup_deadline_s"]
+            )
             record["model_cleanup_end_s"] = time.monotonic() - origin
             if record["model_cleanup_end_s"] > event["cleanup_deadline_s"]:
                 raise RuntimeError(

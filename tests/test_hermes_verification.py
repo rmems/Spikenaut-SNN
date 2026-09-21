@@ -238,7 +238,7 @@ def test_python_verifier_caps_outer_output(tmp_path):
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
 def test_verifier_outer_capture_rejects_oversized_stream(stream):
     import sys
-    from tools.anticipation.hermes_campaign import _run_verifier
+    from tools.anticipation.task_verification import _run_verifier
 
     command = [sys.executable, "-c", f"import sys; sys.{stream}.write('x' * 65537)"]
     with pytest.raises(RuntimeError, match="output exceeded 65536 bytes"):

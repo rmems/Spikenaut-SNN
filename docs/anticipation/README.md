@@ -110,6 +110,12 @@ as an agent workload unless the stream confirms the configured local model, at
 least one permitted tool call, and a terminal result. Plain stdout diagnostics are
 retained alongside parsed JSON events; malformed object-like lines are rejected.
 
+Session cleanup receives the absolute 130-second acquisition deadline. If an
+Ollama response exhausts that remaining budget, the session fails immediately
+while a bounded, non-daemon worker retains ownership and reconciles the model.
+This lets collector shutdown proceed without waiting for another full HTTP
+cleanup budget. Deferred cleanup never counts as confirmed model absence.
+
 An ordinary nonzero bot result remains a valid hardware workload when the
 stream has positive usage and no explicit infrastructure error, while its task
 outcome is recorded as incomplete. At the 100-second outer limit, the parent

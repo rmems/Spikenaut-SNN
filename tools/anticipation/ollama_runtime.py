@@ -325,14 +325,27 @@ class OllamaRuntime:
             model, architecture, context_length, resident, show
         )
 
-    def close(self):
+    def close(self, *, deadline=None):
         owned_model = self._owned_model
         if owned_model is None:
             return {"model": self.model, "unloaded": False}
         if self._load_outcome_uncertain:
-            return self._close_uncertain(owned_model)
-
+            return self._close_uncertain(owned_model, deadline=deadline)
         cleanup_deadline = time.monotonic() + self.durable_cleanup_timeout_seconds
+        if deadline is None:
+            return self._close_loaded(owned_model, cleanup_deadline)
+        return self._close_session_model(owned_model, min(deadline, cleanup_deadline))
+
+    def _close_session_model(self, owned_model, deadline):
+        try:
+            return self._close_loaded(owned_model, deadline)
+        except TimeoutError:
+            # Return control so the collector can stop on its acquisition clock;
+            # retain ownership and reconcile the model in the supervised worker.
+            self._start_durable_cleanup(owned_model)
+            raise
+
+    def _close_loaded(self, owned_model, cleanup_deadline):
         try:
             resident = self._models(cleanup_deadline)
         except BaseException:
@@ -477,7 +490,12 @@ class OllamaRuntime:
                 "cleanup: " + ", ".join(str(name) for name in names)
             )
 
-    def _close_uncertain(self, owned_model):
+    def _close_uncertain(self, owned_model, *, deadline=None):
+        if deadline is not None:
+            self._start_durable_cleanup(owned_model)
+            raise TimeoutError(
+                "owned model cleanup exceeded session budget: preload remains uncertain"
+            )
         completed = self._wait_for_preload_completion()
         if not completed or "error" in self._preload_outcome:
             self._reconcile_uncertain_load(owned_model)
