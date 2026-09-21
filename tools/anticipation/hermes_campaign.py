@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timedelta, timezone
 import hashlib
+from http.client import HTTPConnection
 import json
 import os
 from pathlib import Path
 import random
+import shutil
 import signal
 import socket
 import subprocess
@@ -16,7 +18,6 @@ import sys
 import threading
 import time
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
 
 from tools.anticipation.campaign import capture
 
@@ -80,9 +81,9 @@ def _prompt(family, records, target_tokens, seed, scratch):
         )
     return common + (
         f"Read the {records}-line {scratch / 'specification.txt'} "
-        f"(approximately {target_tokens} input tokens) plus {scratch / 'transform.py'} and "
-        f"{scratch / 'test_transform.py'}. Fix the small bug in {scratch / 'transform.py'} so "
-        "it follows the specification. Do not modify the verifier; the harness will run it."
+        f"(approximately {target_tokens} input tokens) plus {scratch / 'transform.py'}. "
+        f"Fix the small bug in {scratch / 'transform.py'} so it follows the specification. "
+        "The harness will verify the result outside the scratch directory."
     )
 
 
@@ -273,47 +274,59 @@ class OllamaRuntime:
         deadline_seconds=None,
     ):
         data = None if payload is None else json.dumps(payload).encode()
-        request = Request(
-            self.endpoint + path,
-            data=data,
-            method=method,
-            headers={"Content-Type": "application/json"},
-        )
         socket_timeout = (
             self.request_timeout_seconds
             if timeout is _DEFAULT_REQUEST_TIMEOUT
             else timeout
         )
+        if deadline_seconds is not None and deadline_seconds <= 0:
+            raise TimeoutError(f"Ollama {path} exceeded its end-to-end deadline")
+        if deadline_seconds is not None:
+            socket_timeout = min(socket_timeout, deadline_seconds)
         expired = threading.Event()
+        endpoint = urlsplit(self.endpoint)
+        connection = HTTPConnection(
+            endpoint.hostname, endpoint.port, timeout=socket_timeout
+        )
         responses = []
 
         def expire_request():
             expired.set()
+            sockets = [connection.sock]
             for active_response in responses:
                 raw = getattr(getattr(active_response, "fp", None), "raw", None)
-                active_socket = getattr(raw, "_sock", None)
-                if active_socket is not None:
-                    try:
-                        active_socket.shutdown(socket.SHUT_RDWR)
-                    except OSError:
-                        pass
-                    active_socket.close()
+                sockets.append(getattr(raw, "_sock", None))
+            for active_socket in {item for item in sockets if item is not None}:
                 try:
-                    active_response.close()
+                    active_socket.shutdown(socket.SHUT_RDWR)
                 except OSError:
                     pass
+                active_socket.close()
+            connection.close()
 
         timer = None
         if deadline_seconds is not None:
             timer = threading.Timer(deadline_seconds, expire_request)
             timer.daemon = True
             timer.start()
-            socket_timeout = min(socket_timeout, deadline_seconds)
         try:
             try:
-                with urlopen(request, timeout=socket_timeout) as response:
-                    responses.append(response)
+                connection.request(
+                    method,
+                    path,
+                    body=data,
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                responses.append(response)
+                try:
                     body = response.read()
+                    if not 200 <= response.status < 300:
+                        raise RuntimeError(
+                            f"HTTP Error {response.status}: Ollama {path} request failed"
+                        )
+                finally:
+                    response.close()
             except BaseException as error:
                 if expired.is_set():
                     raise TimeoutError(
@@ -328,12 +341,24 @@ class OllamaRuntime:
         finally:
             if timer is not None:
                 timer.cancel()
+            connection.close()
         if not isinstance(result, dict):
             raise RuntimeError(f"Ollama {path} returned a non-object response")
         return result
 
-    def _models(self):
-        models = self._request("GET", "/api/ps").get("models")
+    @staticmethod
+    def _remaining(deadline):
+        if deadline is None:
+            return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Ollama cleanup exceeded its end-to-end deadline")
+        return remaining
+
+    def _models(self, deadline=None):
+        models = self._request(
+            "GET", "/api/ps", deadline_seconds=self._remaining(deadline)
+        ).get("models")
         if not isinstance(models, list):
             raise RuntimeError("Ollama /api/ps response omitted models")
         return models
@@ -344,9 +369,14 @@ class OllamaRuntime:
             (entry.get("model") or entry.get("name")) == model for entry in models
         )
 
-    def _unload_exact(self, model):
-        self._request("POST", "/api/generate", {"model": model, "keep_alive": 0})
-        remaining = self._models()
+    def _unload_exact(self, model, deadline=None):
+        self._request(
+            "POST",
+            "/api/generate",
+            {"model": model, "keep_alive": 0},
+            deadline_seconds=self._remaining(deadline),
+        )
+        remaining = self._models(deadline)
         if self._contains_model(remaining, model):
             raise RuntimeError(f"Ollama model {model} remained resident after unload")
         if remaining:
@@ -415,9 +445,9 @@ class OllamaRuntime:
         last_error = None
         while True:
             try:
-                resident = self._models()
+                resident = self._models(deadline)
                 if self._contains_model(resident, model):
-                    self._unload_exact(model)
+                    self._unload_exact(model, deadline)
                     return
             except BaseException as error:
                 last_error = error
@@ -458,14 +488,33 @@ class OllamaRuntime:
             backoff = DURABLE_CLEANUP_INITIAL_BACKOFF_SECONDS
             last_error = None
             while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    if last_error is None:
+                        last_error = TimeoutError(
+                            "Ollama cleanup exceeded its end-to-end deadline"
+                        )
+                    final_error = f"{type(last_error).__name__}: {last_error}"
+                    self._cleanup_error = RuntimeError(
+                        f"Ollama model {model} durable cleanup could not confirm "
+                        f"absence after {self.durable_cleanup_timeout_seconds}s; "
+                        f"last error: {final_error}"
+                    )
+                    self._write_cleanup_report(
+                        model,
+                        "terminal_failure",
+                        retry_deadline_utc=retry_deadline_utc,
+                        final_error=final_error,
+                    )
+                    return
                 try:
                     if self._preload_thread.is_alive():
                         raise RuntimeError(
                             "Ollama preload transport exceeded its end-to-end deadline"
                         )
-                    resident = self._models()
+                    resident = self._models(deadline)
                     if self._contains_model(resident, model):
-                        self._unload_exact(model)
+                        self._unload_exact(model, deadline)
                     elif resident:
                         names = [
                             entry.get("model") or entry.get("name")
@@ -487,21 +536,8 @@ class OllamaRuntime:
                     last_error = error
 
                 remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    final_error = f"{type(last_error).__name__}: {last_error}"
-                    self._cleanup_error = RuntimeError(
-                        f"Ollama model {model} durable cleanup could not confirm "
-                        f"absence after {self.durable_cleanup_timeout_seconds}s; "
-                        f"last error: {final_error}"
-                    )
-                    self._write_cleanup_report(
-                        model,
-                        "terminal_failure",
-                        retry_deadline_utc=retry_deadline_utc,
-                        final_error=final_error,
-                    )
-                    return
-                time.sleep(min(backoff, remaining))
+                if remaining > 0:
+                    time.sleep(min(backoff, remaining))
                 backoff = min(backoff * 2, DURABLE_CLEANUP_MAX_BACKOFF_SECONDS)
 
         self._cleanup_thread = threading.Thread(
@@ -754,12 +790,20 @@ class HermesStimulus:
                 "def normalize(words):\n"
                 "    return sorted(w.strip().upper() for w in words if w.strip())\n"
             )
-            (scratch / "test_transform.py").write_text(
-                "from transform import normalize\n"
-                "assert normalize([' Beta ', '', 'ALPHA', ' gamma ']) == ['beta', 'alpha', 'gamma']\n"
+            verifier = Path(session["hermes_home"]) / "harness-verifier.py"
+            verifier.write_text(
+                "import importlib.util\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                "candidate = Path(sys.argv[1])\n"
+                "spec = importlib.util.spec_from_file_location('candidate_transform', candidate)\n"
+                "assert spec is not None and spec.loader is not None\n"
+                "module = importlib.util.module_from_spec(spec)\n"
+                "spec.loader.exec_module(module)\n"
+                "assert module.normalize([' Beta ', '', 'ALPHA', ' gamma ']) == "
+                "['beta', 'alpha', 'gamma']\n"
                 "print('ok')\n"
             )
-            verifier = scratch / "test_transform.py"
             return {
                 "kind": "fixed-python-test",
                 "path": str(verifier),
@@ -915,10 +959,67 @@ class HermesStimulus:
             verifier = Path(plan["path"])
             if hashlib.sha256(verifier.read_bytes()).hexdigest() != plan["sha256"]:
                 return {"status": "failed", "reason": "fixed verifier was modified"}
+            sandbox = shutil.which("bwrap")
+            if sandbox is None:
+                raise RuntimeError("bubblewrap is required for Python verification")
+            runtime_roots = []
+            for root in (
+                Path("/usr"),
+                Path("/lib"),
+                Path("/lib64"),
+                Path(sys.base_prefix).resolve(),
+            ):
+                if not root.exists() or any(
+                    root.is_relative_to(bound) for bound in runtime_roots
+                ):
+                    continue
+                runtime_roots = [
+                    bound for bound in runtime_roots if not bound.is_relative_to(root)
+                ]
+                runtime_roots.append(root)
+            command = [
+                sandbox,
+                "--die-with-parent",
+                "--new-session",
+                "--unshare-all",
+                "--clearenv",
+                "--proc",
+                "/proc",
+                "--dev",
+                "/dev",
+                "--tmpfs",
+                "/tmp",
+            ]
+            for root in runtime_roots:
+                command.extend(("--ro-bind", str(root), str(root)))
+            loader_cache = Path("/etc/ld.so.cache")
+            if loader_cache.exists():
+                command.extend(("--ro-bind", str(loader_cache), str(loader_cache)))
+            command.extend(
+                (
+                    "--ro-bind",
+                    str(verifier),
+                    "/harness/verifier.py",
+                    "--ro-bind",
+                    str(Path(session["scratch_path"]) / "transform.py"),
+                    "/work/transform.py",
+                    "--chdir",
+                    "/work",
+                    "--setenv",
+                    "HOME",
+                    "/tmp",
+                    "--setenv",
+                    "PATH",
+                    "/usr/bin:/bin",
+                    str(Path(sys.executable).resolve()),
+                    "-I",
+                    "-B",
+                    "/harness/verifier.py",
+                    "/work/transform.py",
+                )
+            )
             completed = subprocess.run(
-                [sys.executable, str(verifier)],
-                cwd=session["scratch_path"],
-                env=self.environment(session),
+                command,
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

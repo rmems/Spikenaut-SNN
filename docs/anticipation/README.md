@@ -10,7 +10,7 @@ The binding protocol is [campaign-spec.md](campaign-spec.md). The campaign fixes
 
 ## Environments and preflight
 
-Use Python with NumPy and PyArrow for ETL/reporting, Python with CUDA-enabled PyTorch for acquisition, and Julia with SynapticDistill and JSON3. These can be separate environments. No shipped model-bank or GPU thermal/power settings are changed.
+Use Python with NumPy and PyArrow for ETL/reporting, Python with CUDA-enabled PyTorch for acquisition, and Julia with SynapticDistill and JSON3. These can be separate environments. The Hermes variant also requires Bubblewrap (`bwrap`) to verify agent-written Python without host filesystem or network access. No shipped model-bank or GPU thermal/power settings are changed.
 
 Build the existing `gaming-telemetry` collector with `cargo build --release --bin gaming-telemetry`. Install the sibling ETL PR with its `v3` extras. Record repository commits and source hashes with each run. For Julia, use the checked-out SynapticDistill project and its scripts environment (both are read-only dependencies):
 
@@ -77,10 +77,14 @@ skills, plugins, MCP servers, and provider credentials are excluded. Each task
 uses `--max-turns 4`, an 80-second Hermes run budget, and an independent hard
 deadline at 120 seconds from sensor capture start. Prompts name each input and
 output by absolute path while expected answers remain only in the parent harness,
-outside the agent-visible scratch directory. A session is not accepted as an agent
-workload unless the stream confirms the configured local model, at least one
-permitted tool call, and a terminal result. Plain stdout diagnostics are retained
-alongside parsed JSON events; malformed object-like lines are rejected.
+outside the agent-visible scratch directory. Python candidates run only during
+verification inside a Bubblewrap namespace with no network and read-only mounts
+for the interpreter, candidate, and parent-owned verifier. Verification fails
+closed when Bubblewrap is unavailable. This verifier sandbox does not turn the
+Hermes process itself into a general filesystem sandbox. A session is not accepted
+as an agent workload unless the stream confirms the configured local model, at
+least one permitted tool call, and a terminal result. Plain stdout diagnostics are
+retained alongside parsed JSON events; malformed object-like lines are rejected.
 
 An ordinary nonzero bot result remains a valid hardware workload when the
 stream has positive usage and no explicit infrastructure error, while its task

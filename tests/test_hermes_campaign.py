@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import socket
 import subprocess
 import threading
 import time
@@ -46,6 +47,8 @@ def ollama_server(
     extra_resident=False,
     ps_failures_after_load=0,
     preload_drip_interval=0,
+    preload_header_drip_interval=0,
+    ps_drip_interval_after_load=0,
 ):
     state = {
         "loaded": initially_loaded,
@@ -69,6 +72,28 @@ def ollama_server(
             self.end_headers()
             try:
                 self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def _drip_json(self, value, interval, *, include_headers=False):
+            body = json.dumps(value).encode()
+            if include_headers:
+                payload = (
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    + f"Content-Length: {len(body)}\r\n\r\n".encode()
+                    + body
+                )
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                payload = body
+            try:
+                for byte in payload:
+                    self.wfile.write(bytes([byte]))
+                    self.wfile.flush()
+                    time.sleep(interval)
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
@@ -100,6 +125,10 @@ def ollama_server(
                             "model": "unowned:latest",
                             "context_length": 1024,
                         }
+                    )
+                if state["loaded"] and ps_drip_interval_after_load:
+                    return self._drip_json(
+                        {"models": models}, ps_drip_interval_after_load
                     )
                 return self._json({"models": models})
             self.send_error(404)
@@ -141,20 +170,12 @@ def ollama_server(
                 if preload_response_delay:
                     time.sleep(preload_response_delay)
             response = {"done": True, "response": "", "load_duration": 10}
-            if preload_drip_interval:
-                body = json.dumps(response).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                try:
-                    for byte in body:
-                        self.wfile.write(bytes([byte]))
-                        self.wfile.flush()
-                        time.sleep(preload_drip_interval)
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
-                return
+            if preload_header_drip_interval and payload.get("keep_alive") != 0:
+                return self._drip_json(
+                    response, preload_header_drip_interval, include_headers=True
+                )
+            if preload_drip_interval and payload.get("keep_alive") != 0:
+                return self._drip_json(response, preload_drip_interval)
             self._json(response)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -540,6 +561,12 @@ def test_python_verifier_requires_completion_sentinel(tmp_path):
     )
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
+    verifier = Path(stimulus._verifier_plan["path"])
+    scratch = Path(session["scratch_path"])
+    assert not verifier.is_relative_to(scratch)
+    assert not any(
+        "['beta', 'alpha', 'gamma']" in path.read_text() for path in scratch.iterdir()
+    )
     (Path(session["scratch_path"]) / "transform.py").write_text("raise SystemExit(0)\n")
 
     verification = stimulus._verify_fixture(session)
@@ -547,6 +574,53 @@ def test_python_verifier_requires_completion_sentinel(tmp_path):
     assert verification["status"] == "failed"
     assert verification["exit_code"] == 0
     assert verification["stdout"] == ""
+
+
+def test_python_verifier_sandbox_blocks_host_writes_and_network(tmp_path):
+    from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
+
+    session = next(
+        item
+        for item in build_hermes_campaign(tmp_path)["sessions"]
+        if item["task"]["family"] == "python-bugfix"
+    )
+    stimulus = HermesStimulus(
+        tmp_path, hermes_executable=tmp_path / "hermes", runtime=FakeRuntime()
+    )
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+    outside = tmp_path / "outside.txt"
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    listener.settimeout(0.1)
+    port = listener.getsockname()[1]
+    candidate = Path(session["scratch_path"]) / "transform.py"
+    candidate.write_text(
+        "from pathlib import Path\n"
+        "import socket\n"
+        "try:\n"
+        f"    Path({str(outside)!r}).write_text('escaped')\n"
+        "except OSError:\n"
+        "    pass\n"
+        "try:\n"
+        f"    with socket.create_connection(('127.0.0.1', {port}), timeout=.05) as client:\n"
+        "        client.sendall(b'escaped')\n"
+        "except OSError:\n"
+        "    pass\n"
+        "def normalize(words):\n"
+        "    return [word.strip().lower() for word in words if word.strip()]\n"
+    )
+
+    try:
+        verification = stimulus._verify_fixture(session)
+        with pytest.raises(TimeoutError):
+            listener.accept()
+    finally:
+        listener.close()
+
+    assert verification["status"] == "passed"
+    assert outside.exists() is False
 
 
 def test_out_of_scope_path_is_audited_and_prevents_task_success(tmp_path):
@@ -754,23 +828,27 @@ def test_session_deadline_records_shorter_effective_timebox(tmp_path):
     )
 
 
-def test_timebox_requires_interrupted_terminal_result(tmp_path):
+def test_timebox_requires_interrupted_terminal_result(tmp_path, monkeypatch):
     from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
 
     fake = tmp_path / "bin" / "hermes"
+    ready = tmp_path / "hermes-ready"
     fake.parent.mkdir()
     fake.write_text(
         "#!" + os.sys.executable + "\n"
         "import json,signal,time\n"
+        "from pathlib import Path\n"
         "def stop(*_):\n"
         " print(json.dumps({'type':'result','session_id':'s','exit_code':0,'tokens':{'input':2,'output':1}}),flush=True)\n"
         " raise SystemExit(0)\n"
         "signal.signal(signal.SIGTERM,stop)\n"
         "print(json.dumps({'type':'system','subtype':'init','session_id':'s','model':'gemma4:12b'}),flush=True)\n"
         "print(json.dumps({'type':'tool_use','name':'read_file','tool_call_id':'c','input':{'path':'input.csv'}}),flush=True)\n"
+        f"Path({str(ready)!r}).touch()\n"
         "while True: time.sleep(.01)\n"
     )
     fake.chmod(0o755)
+    _wait_for_fixture_ready_before_timeout(monkeypatch, ready)
     session = build_hermes_campaign(tmp_path)["sessions"][0]
     Path(session["path"]).mkdir(parents=True)
     stimulus = HermesStimulus(
@@ -1285,6 +1363,29 @@ def test_preload_transport_has_end_to_end_deadline_despite_drip_response():
         assert state["loaded"] is False
 
 
+def test_preload_transport_deadline_cancels_dripping_response_headers():
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    with ollama_server(preload_header_drip_interval=0.01) as (endpoint, state):
+        runtime = OllamaRuntime(
+            endpoint=endpoint,
+            preload_timeout_seconds=0.2,
+            request_timeout_seconds=0.02,
+            preload_completion_timeout_seconds=0.03,
+            cleanup_reconciliation_timeout_seconds=0.2,
+        )
+        runtime.prepare()
+        started = time.monotonic()
+
+        with pytest.raises(TimeoutError, match="end-to-end deadline"):
+            runtime.select("granite4.2:8b", 131072)
+
+        assert time.monotonic() - started < 0.5
+        cleanup = runtime.close()
+        assert cleanup == {"model": "granite4.2:8b", "unloaded": True}
+        assert state["loaded"] is False
+
+
 def test_durable_cleanup_outlives_reconciliation_deadline(tmp_path):
     from tools.anticipation.campaign import capture
     from tools.anticipation.hermes_campaign import (
@@ -1483,6 +1584,54 @@ def test_durable_cleanup_records_terminal_failure_after_retry_deadline(tmp_path)
         assert report["retry_timeout_seconds"] == 0.1
         assert report["retry_deadline_utc"]
         assert "remained resident after unload" in report["final_error"]
+
+
+def test_durable_cleanup_bounds_each_dripping_status_request(tmp_path):
+    from tools.anticipation.campaign import capture
+    from tools.anticipation.hermes_campaign import (
+        HermesStimulus,
+        OllamaRuntime,
+        build_hermes_campaign,
+    )
+
+    collector = tmp_path / "collector"
+    collector.write_bytes(b"not started because preload fails")
+    hermes = tmp_path / "hermes"
+    hermes.write_text("not started because preload fails")
+    root = tmp_path / "capture"
+    plan = build_hermes_campaign(root)
+    plan["sessions"] = plan["sessions"][:1]
+
+    with ollama_server(
+        preload_visibility_delay=0.05, ps_drip_interval_after_load=0.01
+    ) as (endpoint, state):
+        runtime = OllamaRuntime(
+            endpoint=endpoint,
+            preload_timeout_seconds=0.01,
+            request_timeout_seconds=0.02,
+            preload_completion_timeout_seconds=0.02,
+            cleanup_reconciliation_timeout_seconds=0.03,
+            durable_cleanup_timeout_seconds=0.1,
+        )
+        with pytest.raises(TimeoutError, match="timed out"):
+            capture(
+                root,
+                collector,
+                campaign=plan,
+                stimulus_factory=lambda: HermesStimulus(
+                    root, hermes_executable=hermes, runtime=runtime
+                ),
+            )
+
+        runtime._cleanup_thread.join(0.5)
+        assert runtime._cleanup_thread.is_alive() is False
+        assert "durable cleanup could not confirm absence" in str(
+            runtime._cleanup_error
+        )
+        report = json.loads((root / "ollama-cleanup.json").read_text())
+        assert report["state"] == "terminal_failure"
+        assert "end-to-end deadline" in report["final_error"]
+        assert state["loaded"] is True
 
 
 def test_runtime_slow_failed_preload_returns_bounded_and_finishes_cleanup():
