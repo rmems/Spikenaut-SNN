@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import subprocess
 import threading
 import time
 
@@ -654,6 +655,115 @@ def test_timebox_requiring_sigkill_is_invalid_even_with_prior_result(tmp_path):
         stimulus.run(session["task"], time.monotonic() - 20)
 
 
+def test_process_group_signal_race_preserves_timebox_cleanup(tmp_path, monkeypatch):
+    from tools.anticipation import hermes_campaign
+
+    class TrackingRuntime(FakeRuntime):
+        closed = False
+
+        def close(self):
+            self.closed = True
+            return super().close()
+
+    class RacedProcess:
+        pid = 12345
+        returncode = None
+
+        def __init__(self):
+            self.communications = 0
+
+        def communicate(self, timeout=None):
+            self.communications += 1
+            if self.communications <= 2:
+                raise subprocess.TimeoutExpired("fake-hermes", timeout)
+            self.returncode = -9
+            return (
+                '{"type":"system","subtype":"init","model":"gemma4:12b"}\n'
+                '{"type":"tool_use","name":"read_file","input":{"path":"input.csv"}}\n'
+                '{"type":"result","exit_code":130,"error":"Interrupted","tokens":{}}\n',
+                "",
+            )
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self):
+            return self.returncode
+
+    runtime = TrackingRuntime()
+    process = RacedProcess()
+    monkeypatch.setattr(hermes_campaign.subprocess, "Popen", lambda *a, **k: process)
+    monkeypatch.setattr(
+        hermes_campaign.os,
+        "killpg",
+        lambda *args: (_ for _ in ()).throw(ProcessLookupError()),
+    )
+    session = hermes_campaign.build_hermes_campaign(tmp_path)["sessions"][0]
+    session["task"]["termination_grace_s"] = 0.01
+    Path(session["path"]).mkdir(parents=True)
+    stimulus = hermes_campaign.HermesStimulus(
+        tmp_path,
+        hermes_executable=tmp_path / "hermes",
+        hard_timeout_seconds=0.01,
+        runtime=runtime,
+    )
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+
+    with pytest.raises(RuntimeError, match="SIGKILL"):
+        stimulus.run(session["task"], time.monotonic() - 20)
+
+    assert runtime.closed is True
+
+
+def test_final_signal_race_preserves_original_error_and_model_cleanup(
+    tmp_path, monkeypatch
+):
+    from tools.anticipation import hermes_campaign
+
+    class TrackingRuntime(FakeRuntime):
+        closed = False
+
+        def close(self):
+            self.closed = True
+            return super().close()
+
+    class ExitedProcess:
+        pid = 12345
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return "{malformed\n", ""
+
+        def poll(self):
+            return None
+
+        def wait(self):
+            return 0
+
+    runtime = TrackingRuntime()
+    monkeypatch.setattr(
+        hermes_campaign.subprocess, "Popen", lambda *a, **k: ExitedProcess()
+    )
+    monkeypatch.setattr(
+        hermes_campaign.os,
+        "killpg",
+        lambda *args: (_ for _ in ()).throw(ProcessLookupError()),
+    )
+    session = hermes_campaign.build_hermes_campaign(tmp_path)["sessions"][0]
+    Path(session["path"]).mkdir(parents=True)
+    stimulus = hermes_campaign.HermesStimulus(
+        tmp_path, hermes_executable=tmp_path / "hermes", runtime=runtime
+    )
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+
+    with pytest.raises(RuntimeError, match="malformed object-like"):
+        stimulus.run(session["task"], time.monotonic() - 20)
+
+    assert runtime.closed is True
+
+
 def test_model_cleanup_after_session_deadline_invalidates_workload(tmp_path):
     from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
 
@@ -743,7 +853,7 @@ def test_runtime_cleans_model_after_preload_response_timeout():
     with ollama_server(preload_response_delay=0.15) as (endpoint, state):
         runtime = OllamaRuntime(endpoint=endpoint, preload_timeout_seconds=0.02)
         runtime.prepare()
-        with pytest.raises(Exception):
+        with pytest.raises(TimeoutError, match="timed out"):
             runtime.select("gemma4:12b", 262144)
         assert state["loaded"] is True
         cleanup = runtime.close()

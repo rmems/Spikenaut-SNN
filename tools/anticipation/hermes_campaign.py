@@ -41,6 +41,14 @@ ALLOWED_TOOLS = {
 }
 
 
+def _signal_process_group(process, signal_number):
+    """Signal a child process group unless it has already disappeared."""
+    try:
+        os.killpg(process.pid, signal_number)
+    except ProcessLookupError:
+        pass
+
+
 def _prompt(family, records, target_tokens, seed, scratch):
     scratch = Path(scratch).resolve()
     common = (
@@ -683,14 +691,14 @@ class HermesStimulus:
                 timeboxed = True
                 record["parent_stop_reason"] = "100s_agent_timebox"
                 record["termination_grace_s"] = event["termination_grace_s"]
-                os.killpg(process.pid, signal.SIGTERM)
+                _signal_process_group(process, signal.SIGTERM)
                 try:
                     stdout, stderr = process.communicate(
                         timeout=event["termination_grace_s"]
                     )
                 except subprocess.TimeoutExpired:
                     forced_kill = True
-                    os.killpg(process.pid, signal.SIGKILL)
+                    _signal_process_group(process, signal.SIGKILL)
                     stdout, stderr = process.communicate()
 
             ended_mono = time.monotonic()
@@ -803,7 +811,7 @@ class HermesStimulus:
             record.setdefault("error", f"{type(error).__name__}: {error}")
         finally:
             if process is not None and process.poll() is None:
-                os.killpg(process.pid, signal.SIGKILL)
+                _signal_process_group(process, signal.SIGKILL)
                 process.wait()
                 forced_kill = True
                 record["forced_kill"] = True

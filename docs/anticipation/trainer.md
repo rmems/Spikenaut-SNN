@@ -8,9 +8,9 @@ normalization are frozen training statistics from the prepared artifact.
 Run against the existing read-only local Julia environments:
 
 ```sh
-JULIA_LOAD_PATH=/home/raulmc/rmems/limen-return/SynapticDistill.jl:/home/raulmc/rmems/limen-return/SynapticDistill.jl/scripts:@stdlib \
+JULIA_LOAD_PATH=/path/to/SynapticDistill.jl:/path/to/SynapticDistill.jl/scripts:@stdlib \
   julia +1.12.7 --startup-file=no tools/anticipation/test_train.jl
-JULIA_LOAD_PATH=/home/raulmc/rmems/limen-return/SynapticDistill.jl:/home/raulmc/rmems/limen-return/SynapticDistill.jl/scripts:@stdlib \
+JULIA_LOAD_PATH=/path/to/SynapticDistill.jl:/path/to/SynapticDistill.jl/scripts:@stdlib \
   julia +1.12.7 --startup-file=no tools/anticipation/train.jl prepared.json output/snn 1200
 ```
 

@@ -64,6 +64,10 @@ def evaluate(
         if remaining <= 0:
             status["reason"] = "budget_exhausted_after_baselines"
             return status
+        grace = min(30.0, remaining * 0.15)
+        trainer_budget = remaining - grace
+        status["trainer_budget_seconds"] = trainer_budget
+        status["trainer_timeout_seconds"] = remaining
         command = [julia]
         if julia_version:
             command.append("+" + julia_version)
@@ -72,7 +76,7 @@ def evaluate(
             str(Path(__file__).with_name("train.jl")),
             str(prepared),
             str(snn),
-            str(remaining),
+            str(trainer_budget),
         ]
         status["trainer_command"] = command
         with (output / "training.log").open("w") as log:

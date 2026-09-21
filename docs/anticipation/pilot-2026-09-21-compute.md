@@ -8,7 +8,7 @@ The separately identified second attempt completed all 12 recordings and all six
 
 The original [protocol](campaign-spec.md) was retained: 12 × 150-second sessions, 100 ms requested polling, sessions 1–6 training / 7–9 validation / 10–12 test, five causal hardware features, one- and five-second temperature/power deltas, identical eligible examples for all models, and training-only normalization. All six SNN runs completed 20 epochs. Checkpoints were selected on validation. Hidden input weights remained fixed; the forecasting readouts learned with time-resolved SynapticDistill OTTT.
 
-Training and evaluation finished in 22.61 seconds within the shared 1,200-second budget. All collectors finalized with zero write failures. There were no invalid input frames. The ETL rejected 600 early frames without complete history, 600 late frames without future targets, and four examples whose first future observation exceeded the lateness allowance.
+Training and evaluation finished in 22.61 seconds within the shared 1,200-second budget. All collectors finalized with zero write failures. From 18,007 source rows, the ETL constructed 18,006 frames, all valid. It rejected 600 early frames without complete history, 600 late frames without future targets, and four examples whose first future observation exceeded the lateness allowance, leaving 16,802 eligible examples.
 
 ## Equal-session held-out errors
 

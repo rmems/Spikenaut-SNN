@@ -191,6 +191,82 @@ def test_evaluator_always_records_missing_input_failure(tmp_path):
     assert "FileNotFoundError" in report["reason"]
 
 
+def test_evaluator_reserves_child_startup_and_finalization_budget(
+    tmp_path, monkeypatch
+):
+    from tools.anticipation import evaluate as evaluator
+    from tools.anticipation.campaign import write_json
+
+    prepared = tmp_path / "prepared.json"
+    write_json(prepared, {"schema_version": "anticipation-prepared-v1"})
+    clock = iter((100.0, 100.0, 110.0, 110.0, 111.0, 112.0))
+    monkeypatch.setattr(evaluator.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(evaluator, "baselines", lambda data, output: {"ok": True})
+    monkeypatch.setattr(
+        evaluator,
+        "comparison",
+        lambda prepared, output, baseline_results: {"complete": True},
+    )
+
+    status = evaluator.evaluate(
+        prepared, tmp_path / "results", julia="/bin/true", budget_seconds=200
+    )
+
+    assert status["trainer_budget_seconds"] == 161.5
+    assert status["trainer_timeout_seconds"] == 190.0
+    assert float(status["trainer_command"][-1]) == 161.5
+
+
+@pytest.mark.parametrize(
+    "declared, expected",
+    [
+        (
+            ["temperature", "power", "temperature_future", "power_future"],
+            ["temperature", "power", "temperature_future", "power_future"],
+        ),
+        (
+            None,
+            [
+                "temperature_change_1s_c",
+                "power_change_1s_w",
+                "temperature_change_5s_c",
+                "power_change_5s_w",
+            ],
+        ),
+    ],
+)
+def test_comparison_uses_prepared_target_names_with_fallback(
+    tmp_path, declared, expected
+):
+    from tools.anticipation.campaign import write_json
+    from tools.anticipation.report import comparison
+
+    prepared_data = {
+        "schema_version": "anticipation-prepared-v1",
+        "normalization": {"y_std": [1, 1, 1, 1]},
+    }
+    if declared is not None:
+        prepared_data["target_names"] = declared
+    prepared = tmp_path / "prepared.json"
+    output = tmp_path / "results"
+    write_json(prepared, prepared_data)
+    baseline = {
+        "persistence": {
+            "validation": {"primary": 1.0},
+            "test": {
+                "primary": 1.0,
+                "mae": [1, 1, 1, 1],
+                "rmse": [1, 1, 1, 1],
+                "per_session": {},
+            },
+        }
+    }
+
+    result = comparison(prepared, output, baseline_results=baseline)
+
+    assert result["target_names"] == expected
+
+
 def test_shutdown_timeout_preserves_executed_stimulus_audit(tmp_path, monkeypatch):
     from tools.anticipation import campaign
     from types import SimpleNamespace

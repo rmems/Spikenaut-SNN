@@ -176,7 +176,7 @@ def comparison(prepared_path, output, baseline_results=None):
     report = {
         "schema_version": "anticipation-comparison-v1",
         "prepared_sha256": sha256(prepared_path),
-        "target_names": TARGETS,
+        "target_names": data.get("target_names", TARGETS),
         "baseline_selected_on_validation": strongest,
         "baselines": base,
         "runs": [],
