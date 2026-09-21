@@ -27,6 +27,9 @@ HARD_TIMEOUT_SECONDS = 100.0
 SIGTERM_GRACE_SECONDS = 5.0
 PRELOAD_KEEP_ALIVE_SECONDS = 180
 PRELOAD_COMPLETION_TIMEOUT_SECONDS = 180
+DURABLE_CLEANUP_TIMEOUT_SECONDS = 30
+DURABLE_CLEANUP_INITIAL_BACKOFF_SECONDS = 0.05
+DURABLE_CLEANUP_MAX_BACKOFF_SECONDS = 1.0
 MODEL_PLAN = (
     ("gemma4:12b", 262144),
     ("granite4.2:8b", 131072),
@@ -203,6 +206,7 @@ class OllamaRuntime:
         preload_completion_timeout_seconds=PRELOAD_COMPLETION_TIMEOUT_SECONDS,
         preload_keep_alive_seconds=PRELOAD_KEEP_ALIVE_SECONDS,
         cleanup_reconciliation_timeout_seconds=None,
+        durable_cleanup_timeout_seconds=DURABLE_CLEANUP_TIMEOUT_SECONDS,
     ):
         self.endpoint = _local_endpoint(endpoint)
         self.model = model
@@ -216,6 +220,7 @@ class OllamaRuntime:
             if cleanup_reconciliation_timeout_seconds is None
             else cleanup_reconciliation_timeout_seconds
         )
+        self.durable_cleanup_timeout_seconds = durable_cleanup_timeout_seconds
         self._owned_model = None
         self._load_outcome_uncertain = False
         self._preload_thread = None
@@ -344,14 +349,30 @@ class OllamaRuntime:
         self._cleanup_error = None
 
         def finish_cleanup():
-            try:
-                self._preload_thread.join()
-                if self._contains_model(self._models(), model):
-                    self._unload_exact(model)
-                self._owned_model = None
-                self._load_outcome_uncertain = False
-            except BaseException as error:
-                self._cleanup_error = error
+            self._preload_thread.join()
+            deadline = time.monotonic() + self.durable_cleanup_timeout_seconds
+            backoff = DURABLE_CLEANUP_INITIAL_BACKOFF_SECONDS
+            last_error = None
+            while True:
+                try:
+                    if self._contains_model(self._models(), model):
+                        self._unload_exact(model)
+                    self._owned_model = None
+                    self._load_outcome_uncertain = False
+                    return
+                except BaseException as error:
+                    last_error = error
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._cleanup_error = RuntimeError(
+                        f"Ollama model {model} durable cleanup could not confirm "
+                        f"absence after {self.durable_cleanup_timeout_seconds}s; "
+                        f"last error: {type(last_error).__name__}: {last_error}"
+                    )
+                    return
+                time.sleep(min(backoff, remaining))
+                backoff = min(backoff * 2, DURABLE_CLEANUP_MAX_BACKOFF_SECONDS)
 
         self._cleanup_thread = threading.Thread(
             target=finish_cleanup,

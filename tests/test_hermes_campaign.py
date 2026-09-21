@@ -1139,6 +1139,87 @@ def test_durable_cleanup_outlives_reconciliation_deadline(tmp_path):
         assert state["loaded"] is False
 
 
+def test_durable_cleanup_retries_transient_status_failure(tmp_path):
+    from tools.anticipation.campaign import capture
+    from tools.anticipation.hermes_campaign import (
+        HermesStimulus,
+        OllamaRuntime,
+        build_hermes_campaign,
+    )
+
+    collector = tmp_path / "collector"
+    collector.write_bytes(b"not started because preload fails")
+    hermes = tmp_path / "hermes"
+    hermes.write_text("not started because preload fails")
+    root = tmp_path / "capture"
+    plan = build_hermes_campaign(root)
+    plan["sessions"] = plan["sessions"][:1]
+
+    with ollama_server(preload_visibility_delay=0.2, ps_failures_after_load=1) as (
+        endpoint,
+        state,
+    ):
+        runtime = OllamaRuntime(
+            endpoint=endpoint,
+            preload_timeout_seconds=0.01,
+            preload_completion_timeout_seconds=0.02,
+            preload_keep_alive_seconds=0.1,
+            cleanup_reconciliation_timeout_seconds=0.05,
+        )
+
+        with pytest.raises(TimeoutError, match="timed out"):
+            capture(
+                root,
+                collector,
+                campaign=plan,
+                stimulus_factory=lambda: HermesStimulus(
+                    root, hermes_executable=hermes, runtime=runtime
+                ),
+            )
+
+        status = json.loads((root / "capture-status.json").read_text())
+        assert "cleanup remains uncertain" in status["cleanup_error"]
+        runtime._cleanup_thread.join(1)
+        assert runtime._cleanup_thread.is_alive() is False
+        assert runtime._cleanup_error is None
+        assert state["loaded"] is False
+        unloads = [
+            request
+            for request in state["requests"]
+            if request[0:2] == ("POST", "/api/generate")
+            and request[2].get("keep_alive") == 0
+        ]
+        assert len(unloads) == 1
+
+
+def test_durable_cleanup_records_terminal_failure_after_retry_deadline(tmp_path):
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    with ollama_server(preload_visibility_delay=0.2, unload_sticks=True) as (
+        endpoint,
+        state,
+    ):
+        runtime = OllamaRuntime(
+            endpoint=endpoint,
+            preload_timeout_seconds=0.01,
+            preload_completion_timeout_seconds=0.02,
+            cleanup_reconciliation_timeout_seconds=0.05,
+            durable_cleanup_timeout_seconds=0.1,
+        )
+        runtime.prepare()
+        with pytest.raises(TimeoutError, match="timed out"):
+            runtime.select("gemma4:12b", 262144)
+        with pytest.raises(RuntimeError, match="cleanup remains uncertain"):
+            runtime.close()
+
+        runtime._cleanup_thread.join(1)
+        assert runtime._cleanup_thread.is_alive() is False
+        assert "durable cleanup could not confirm absence" in str(
+            runtime._cleanup_error
+        )
+        assert state["loaded"] is True
+
+
 def test_runtime_slow_failed_preload_returns_bounded_and_finishes_cleanup():
     from tools.anticipation.hermes_campaign import OllamaRuntime
 
