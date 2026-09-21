@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import random
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -20,7 +21,7 @@ from urllib.request import Request, urlopen
 from tools.anticipation.campaign import capture
 
 
-PROTOCOL_ID = "hermes-ollama-inference-v3"
+PROTOCOL_ID = "hermes-ollama-inference-v4"
 DEFAULT_MODEL = "gemma4:12b"
 DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
 HARD_TIMEOUT_SECONDS = 100.0
@@ -230,6 +231,7 @@ class OllamaRuntime:
         self._preload_done = None
         self._preload_outcome = None
         self._preload_deadline = None
+        self._preload_transport_deadline = None
         self._cleanup_thread = None
         self._cleanup_error = None
 
@@ -261,7 +263,15 @@ class OllamaRuntime:
                 f"could not persist Ollama cleanup report: {error}"
             )
 
-    def _request(self, method, path, payload=None, *, timeout=_DEFAULT_REQUEST_TIMEOUT):
+    def _request(
+        self,
+        method,
+        path,
+        payload=None,
+        *,
+        timeout=_DEFAULT_REQUEST_TIMEOUT,
+        deadline_seconds=None,
+    ):
         data = None if payload is None else json.dumps(payload).encode()
         request = Request(
             self.endpoint + path,
@@ -269,15 +279,55 @@ class OllamaRuntime:
             method=method,
             headers={"Content-Type": "application/json"},
         )
-        with urlopen(
-            request,
-            timeout=(
-                self.request_timeout_seconds
-                if timeout is _DEFAULT_REQUEST_TIMEOUT
-                else timeout
-            ),
-        ) as response:
-            result = json.loads(response.read())
+        socket_timeout = (
+            self.request_timeout_seconds
+            if timeout is _DEFAULT_REQUEST_TIMEOUT
+            else timeout
+        )
+        expired = threading.Event()
+        responses = []
+
+        def expire_request():
+            expired.set()
+            for active_response in responses:
+                raw = getattr(getattr(active_response, "fp", None), "raw", None)
+                active_socket = getattr(raw, "_sock", None)
+                if active_socket is not None:
+                    try:
+                        active_socket.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    active_socket.close()
+                try:
+                    active_response.close()
+                except OSError:
+                    pass
+
+        timer = None
+        if deadline_seconds is not None:
+            timer = threading.Timer(deadline_seconds, expire_request)
+            timer.daemon = True
+            timer.start()
+            socket_timeout = min(socket_timeout, deadline_seconds)
+        try:
+            try:
+                with urlopen(request, timeout=socket_timeout) as response:
+                    responses.append(response)
+                    body = response.read()
+            except BaseException as error:
+                if expired.is_set():
+                    raise TimeoutError(
+                        f"Ollama {path} exceeded {deadline_seconds}s end-to-end deadline"
+                    ) from error
+                raise
+            if expired.is_set():
+                raise TimeoutError(
+                    f"Ollama {path} exceeded {deadline_seconds}s end-to-end deadline"
+                )
+            result = json.loads(body)
+        finally:
+            if timer is not None:
+                timer.cancel()
         if not isinstance(result, dict):
             raise RuntimeError(f"Ollama {path} returned a non-object response")
         return result
@@ -312,6 +362,10 @@ class OllamaRuntime:
         self._preload_deadline = (
             time.monotonic() + self.preload_completion_timeout_seconds
         )
+        transport_timeout = (
+            self.preload_completion_timeout_seconds + self.request_timeout_seconds
+        )
+        self._preload_transport_deadline = time.monotonic() + transport_timeout
 
         def request_model():
             try:
@@ -328,10 +382,8 @@ class OllamaRuntime:
                     # Outlive the logical deadline long enough to observe a
                     # normal server completion, but keep the non-daemon worker
                     # bounded if Ollama never finishes the response.
-                    timeout=(
-                        self.preload_completion_timeout_seconds
-                        + self.request_timeout_seconds
-                    ),
+                    timeout=transport_timeout,
+                    deadline_seconds=transport_timeout,
                 )
                 if response.get("done") is not True:
                     raise RuntimeError(
@@ -346,7 +398,7 @@ class OllamaRuntime:
         self._preload_thread = threading.Thread(
             target=request_model,
             name=f"ollama-preload-{model}",
-            daemon=False,
+            daemon=True,
         )
         self._preload_thread.start()
 
@@ -391,7 +443,10 @@ class OllamaRuntime:
         self._write_cleanup_report(model, "waiting_for_preload")
 
         def finish_cleanup():
-            self._preload_thread.join()
+            transport_remaining = max(
+                0.0, self._preload_transport_deadline - time.monotonic()
+            )
+            self._preload_thread.join(transport_remaining + 0.1)
             deadline = time.monotonic() + self.durable_cleanup_timeout_seconds
             retry_deadline_utc = (
                 datetime.now(timezone.utc)
@@ -404,8 +459,22 @@ class OllamaRuntime:
             last_error = None
             while True:
                 try:
-                    if self._contains_model(self._models(), model):
+                    if self._preload_thread.is_alive():
+                        raise RuntimeError(
+                            "Ollama preload transport exceeded its end-to-end deadline"
+                        )
+                    resident = self._models()
+                    if self._contains_model(resident, model):
                         self._unload_exact(model)
+                    elif resident:
+                        names = [
+                            entry.get("model") or entry.get("name")
+                            for entry in resident
+                        ]
+                        raise RuntimeError(
+                            "unexpected Ollama models remained resident during durable "
+                            "cleanup: " + ", ".join(str(name) for name in names)
+                        )
                     self._owned_model = None
                     self._load_outcome_uncertain = False
                     self._write_cleanup_report(
@@ -696,12 +765,6 @@ class HermesStimulus:
                 "path": str(verifier),
                 "sha256": hashlib.sha256(verifier.read_bytes()).hexdigest(),
             }
-        (scratch / "verify.py").write_text(
-            "import json\nfrom pathlib import Path\n"
-            f"expected={expected!r}\n"
-            "actual=json.loads(Path('output.json').read_text())\n"
-            "assert actual == expected, (actual, expected)\nprint('ok')\n"
-        )
         return {
             "kind": "json-output",
             "path": str(scratch / "output.json"),
@@ -862,8 +925,13 @@ class HermesStimulus:
                 timeout=5,
                 check=False,
             )
+            verified = (
+                completed.returncode == 0
+                and completed.stdout == "ok\n"
+                and completed.stderr == ""
+            )
             return {
-                "status": "passed" if completed.returncode == 0 else "failed",
+                "status": "passed" if verified else "failed",
                 "kind": "fixed-python-test",
                 "exit_code": completed.returncode,
                 "stdout": completed.stdout,
@@ -993,6 +1061,10 @@ class HermesStimulus:
                 raise RuntimeError("Hermes timebox required SIGKILL")
             result_error = result.get("error")
             parent_interrupt = timeboxed and result_error == "Interrupted"
+            if timeboxed and not parent_interrupt:
+                raise RuntimeError(
+                    "Hermes timebox ended without an Interrupted terminal result"
+                )
             if result_error and not parent_interrupt:
                 raise RuntimeError("Hermes terminal result reported an explicit error")
             if not timeboxed and not self._positive_usage(result.get("tokens")):

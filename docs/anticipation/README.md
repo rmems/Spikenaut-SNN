@@ -36,8 +36,11 @@ spikenaut-etl prepare-anticipation --input /path/to/unique-run/campaign.json \
 ### Hermes agent workload variant
 
 The completed, sealed Hermes campaign used the `hermes-ollama-inference-v2`
-protocol. Current source emits `hermes-ollama-inference-v3`, which adds the
-finite preload lease and owned-request cleanup described below. Both variants
+protocol. The terminal-enabled source used `hermes-ollama-inference-v3`, which
+added the finite preload lease and owned-request cleanup described below.
+Current source emits `hermes-ollama-inference-v4`; it restricts Hermes to file
+tools and keeps expected fixture answers outside the agent-visible scratch
+directory. These variants
 measure the same five collector sensors and retain the same 12-session split,
 timing, ETL, forecast models, training budget, and bounded Hermes file-processing
 tasks. They are distinct dataset sources and must not be pooled with the
@@ -66,14 +69,15 @@ without assuming pending loads serialize behind later unload requests. These
 lease and completion limits are recorded in the campaign resource envelope and
 successful runtime metadata.
 
-Hermes runs with a fresh per-session `HERMES_HOME`, a dedicated synthetic
+Protocol `hermes-ollama-inference-v4` runs Hermes with a fresh per-session
+`HERMES_HOME`, a dedicated synthetic
 scratch directory, local custom-provider configuration, no provider fallback,
-and only the `terminal` and `file` toolsets. Ambient rules, profiles, memories,
+and only the `file` toolset. Ambient rules, profiles, memories,
 skills, plugins, MCP servers, and provider credentials are excluded. Each task
 uses `--max-turns 4`, an 80-second Hermes run budget, and an independent hard
-deadline at 120 seconds from sensor capture start. Hermes runs in the scratch
-directory, which is also configured as `terminal.cwd`; prompts name every input,
-output, and verifier by absolute path. A session is not accepted as an agent
+deadline at 120 seconds from sensor capture start. Prompts name each input and
+output by absolute path while expected answers remain only in the parent harness,
+outside the agent-visible scratch directory. A session is not accepted as an agent
 workload unless the stream confirms the configured local model, at least one
 permitted tool call, and a terminal result. Plain stdout diagnostics are retained
 alongside parsed JSON events; malformed object-like lines are rejected.
