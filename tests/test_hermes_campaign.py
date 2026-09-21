@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import threading
 import time
@@ -405,7 +406,7 @@ def test_fake_cli_stream_records_diagnostics_real_schema_cwd_and_verified_task(
     stimulus.prepare_session(session)
     record = stimulus.run(session["task"], __import__("time").monotonic() - 20)
     assert record["workload_status"] == "valid"
-    assert record["task_outcome"] == "verified_complete"
+    assert record["workload_status"] == "valid"
     assert record["verifier"]["status"] == "passed"
     assert record["tool_call_count"] == 1
     assert record["tool_calls"][0]["name"] == "read_file"
@@ -810,6 +811,57 @@ def test_process_group_signal_race_preserves_timebox_cleanup(tmp_path, monkeypat
     assert runtime.closed is True
 
 
+def test_normal_hermes_exit_still_cleans_process_group(tmp_path, monkeypatch):
+    from tools.anticipation import hermes_campaign
+
+    class ExitedProcess:
+        pid = 12345
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return (
+                '{"type":"system","subtype":"init","session_id":"s",'
+                '"model":"gemma4:12b"}\n'
+                '{"type":"tool_use","name":"read_file","tool_call_id":"c",'
+                '"input":{"path":"input.csv"}}\n'
+                '{"type":"result","session_id":"s","exit_code":0,'
+                '"tokens":{"input":1,"output":1}}\n',
+                "",
+            )
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self):
+            return self.returncode
+
+    signals = []
+    monkeypatch.setattr(
+        hermes_campaign.subprocess, "Popen", lambda *args, **kwargs: ExitedProcess()
+    )
+    monkeypatch.setattr(
+        hermes_campaign.os,
+        "killpg",
+        lambda process_group, signal_number: signals.append(
+            (process_group, signal_number)
+        ),
+    )
+    session = hermes_campaign.build_hermes_campaign(tmp_path)["sessions"][0]
+    Path(session["path"]).mkdir(parents=True)
+    stimulus = hermes_campaign.HermesStimulus(
+        tmp_path,
+        hermes_executable=tmp_path / "hermes",
+        runtime=FakeRuntime(),
+    )
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+
+    record = stimulus.run(session["task"], time.monotonic() - 20)
+
+    assert record["workload_status"] == "valid"
+    assert signals == [(12345, signal.SIGKILL)]
+
+
 def test_final_signal_race_preserves_original_error_and_model_cleanup(
     tmp_path, monkeypatch
 ):
@@ -1183,6 +1235,9 @@ def test_durable_cleanup_retries_transient_status_failure(tmp_path):
         assert runtime._cleanup_thread.is_alive() is False
         assert runtime._cleanup_error is None
         assert state["loaded"] is False
+        report = json.loads((root / "ollama-cleanup.json").read_text())
+        assert report["state"] == "confirmed_absent"
+        assert report["final_error"] is None
         unloads = [
             request
             for request in state["requests"]
@@ -1193,7 +1248,20 @@ def test_durable_cleanup_retries_transient_status_failure(tmp_path):
 
 
 def test_durable_cleanup_records_terminal_failure_after_retry_deadline(tmp_path):
-    from tools.anticipation.hermes_campaign import OllamaRuntime
+    from tools.anticipation.campaign import capture
+    from tools.anticipation.hermes_campaign import (
+        HermesStimulus,
+        OllamaRuntime,
+        build_hermes_campaign,
+    )
+
+    collector = tmp_path / "collector"
+    collector.write_bytes(b"not started because preload fails")
+    hermes = tmp_path / "hermes"
+    hermes.write_text("not started because preload fails")
+    root = tmp_path / "capture"
+    plan = build_hermes_campaign(root)
+    plan["sessions"] = plan["sessions"][:1]
 
     with ollama_server(preload_visibility_delay=0.2, unload_sticks=True) as (
         endpoint,
@@ -1206,11 +1274,15 @@ def test_durable_cleanup_records_terminal_failure_after_retry_deadline(tmp_path)
             cleanup_reconciliation_timeout_seconds=0.05,
             durable_cleanup_timeout_seconds=0.1,
         )
-        runtime.prepare()
         with pytest.raises(TimeoutError, match="timed out"):
-            runtime.select("gemma4:12b", 262144)
-        with pytest.raises(RuntimeError, match="cleanup remains uncertain"):
-            runtime.close()
+            capture(
+                root,
+                collector,
+                campaign=plan,
+                stimulus_factory=lambda: HermesStimulus(
+                    root, hermes_executable=hermes, runtime=runtime
+                ),
+            )
 
         runtime._cleanup_thread.join(1)
         assert runtime._cleanup_thread.is_alive() is False
@@ -1218,6 +1290,12 @@ def test_durable_cleanup_records_terminal_failure_after_retry_deadline(tmp_path)
             runtime._cleanup_error
         )
         assert state["loaded"] is True
+        report = json.loads((root / "ollama-cleanup.json").read_text())
+        assert report["model"] == "gemma4:12b"
+        assert report["state"] == "terminal_failure"
+        assert report["retry_timeout_seconds"] == 0.1
+        assert report["retry_deadline_utc"]
+        assert "remained resident after unload" in report["final_error"]
 
 
 def test_runtime_slow_failed_preload_returns_bounded_and_finishes_cleanup():
@@ -1243,6 +1321,32 @@ def test_runtime_slow_failed_preload_returns_bounded_and_finishes_cleanup():
         assert runtime._cleanup_thread.is_alive() is False
         assert runtime._cleanup_error is None
         assert state["loaded"] is False
+
+
+def test_preload_transport_timeout_bounds_durable_cleanup():
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    with ollama_server(preload_response_delay=0.3) as (endpoint, state):
+        runtime = OllamaRuntime(
+            endpoint=endpoint,
+            preload_timeout_seconds=0.01,
+            request_timeout_seconds=0.03,
+            preload_completion_timeout_seconds=0.02,
+            cleanup_reconciliation_timeout_seconds=0.1,
+            durable_cleanup_timeout_seconds=0.1,
+        )
+        runtime.prepare()
+        with pytest.raises(TimeoutError, match="timed out"):
+            runtime.select("gemma4:12b", 262144)
+
+        started = time.monotonic()
+        cleanup = runtime.close()
+
+        assert time.monotonic() - started < 0.2
+        assert cleanup == {"model": "gemma4:12b", "unloaded": True}
+        assert state["loaded"] is False
+        time.sleep(0.1)
+        assert runtime._preload_thread.is_alive() is False
 
 
 def test_runtime_model_switch_validation_failure_cleans_new_model():

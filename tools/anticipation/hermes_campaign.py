@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -207,6 +207,7 @@ class OllamaRuntime:
         preload_keep_alive_seconds=PRELOAD_KEEP_ALIVE_SECONDS,
         cleanup_reconciliation_timeout_seconds=None,
         durable_cleanup_timeout_seconds=DURABLE_CLEANUP_TIMEOUT_SECONDS,
+        cleanup_report_path=None,
     ):
         self.endpoint = _local_endpoint(endpoint)
         self.model = model
@@ -221,6 +222,11 @@ class OllamaRuntime:
             else cleanup_reconciliation_timeout_seconds
         )
         self.durable_cleanup_timeout_seconds = durable_cleanup_timeout_seconds
+        self._cleanup_report_path = (
+            Path(cleanup_report_path).resolve()
+            if cleanup_report_path is not None
+            else None
+        )
         self._owned_model = None
         self._load_outcome_uncertain = False
         self._preload_thread = None
@@ -229,6 +235,34 @@ class OllamaRuntime:
         self._preload_deadline = None
         self._cleanup_thread = None
         self._cleanup_error = None
+
+    def set_cleanup_report_path(self, path):
+        self._cleanup_report_path = Path(path).resolve()
+
+    def _write_cleanup_report(
+        self, model, state, *, retry_deadline_utc=None, final_error=None
+    ):
+        if self._cleanup_report_path is None:
+            return
+        report = {
+            "schema_version": "ollama-cleanup-v1",
+            "model": model,
+            "state": state,
+            "retry_timeout_seconds": self.durable_cleanup_timeout_seconds,
+            "retry_deadline_utc": retry_deadline_utc,
+            "final_error": final_error,
+            "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+        }
+        temporary = self._cleanup_report_path.with_name(
+            self._cleanup_report_path.name + ".tmp"
+        )
+        try:
+            temporary.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+            temporary.replace(self._cleanup_report_path)
+        except OSError as error:
+            self._cleanup_error = RuntimeError(
+                f"could not persist Ollama cleanup report: {error}"
+            )
 
     def _request(self, method, path, payload=None, *, timeout=_DEFAULT_REQUEST_TIMEOUT):
         data = None if payload is None else json.dumps(payload).encode()
@@ -287,10 +321,13 @@ class OllamaRuntime:
                         "keep_alive": f"{self.preload_keep_alive_seconds}s",
                         "options": {"num_ctx": context_length},
                     },
-                    # Keep the accepted server operation tracked after the
-                    # logical deadline. Cleanup must know when it actually
-                    # finishes before it can prove the model absent.
-                    timeout=None,
+                    # Outlive the logical deadline long enough to observe a
+                    # normal server completion, but keep the non-daemon worker
+                    # bounded if Ollama never finishes the response.
+                    timeout=(
+                        self.preload_completion_timeout_seconds
+                        + self.request_timeout_seconds
+                    ),
                 )
                 if response.get("done") is not True:
                     raise RuntimeError(
@@ -347,10 +384,18 @@ class OllamaRuntime:
         if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
             return
         self._cleanup_error = None
+        self._write_cleanup_report(model, "waiting_for_preload")
 
         def finish_cleanup():
             self._preload_thread.join()
             deadline = time.monotonic() + self.durable_cleanup_timeout_seconds
+            retry_deadline_utc = (
+                datetime.now(timezone.utc)
+                + timedelta(seconds=self.durable_cleanup_timeout_seconds)
+            ).isoformat()
+            self._write_cleanup_report(
+                model, "retrying", retry_deadline_utc=retry_deadline_utc
+            )
             backoff = DURABLE_CLEANUP_INITIAL_BACKOFF_SECONDS
             last_error = None
             while True:
@@ -359,16 +404,28 @@ class OllamaRuntime:
                         self._unload_exact(model)
                     self._owned_model = None
                     self._load_outcome_uncertain = False
+                    self._write_cleanup_report(
+                        model,
+                        "confirmed_absent",
+                        retry_deadline_utc=retry_deadline_utc,
+                    )
                     return
                 except BaseException as error:
                     last_error = error
 
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    final_error = f"{type(last_error).__name__}: {last_error}"
                     self._cleanup_error = RuntimeError(
                         f"Ollama model {model} durable cleanup could not confirm "
                         f"absence after {self.durable_cleanup_timeout_seconds}s; "
-                        f"last error: {type(last_error).__name__}: {last_error}"
+                        f"last error: {final_error}"
+                    )
+                    self._write_cleanup_report(
+                        model,
+                        "terminal_failure",
+                        retry_deadline_utc=retry_deadline_utc,
+                        final_error=final_error,
                     )
                     return
                 time.sleep(min(backoff, remaining))
@@ -519,6 +576,8 @@ class HermesStimulus:
         self.endpoint = _local_endpoint(endpoint)
         self.hard_timeout_seconds = float(hard_timeout_seconds)
         self.runtime = runtime or OllamaRuntime(endpoint=self.endpoint, model=model)
+        if hasattr(self.runtime, "set_cleanup_report_path"):
+            self.runtime.set_cleanup_report_path(self.root / "ollama-cleanup.json")
         self._seed = None
         self._session = None
         self._records = []
@@ -962,11 +1021,15 @@ class HermesStimulus:
             record.setdefault("task_outcome", "unknown")
             record.setdefault("error", f"{type(error).__name__}: {error}")
         finally:
-            if process is not None and process.poll() is None:
+            if process is not None:
+                leader_running = process.poll() is None
+                # Descendants can survive after the Hermes group leader exits.
+                # Always signal the isolated process group before model cleanup.
                 _signal_process_group(process, signal.SIGKILL)
-                process.wait()
-                forced_kill = True
-                record["forced_kill"] = True
+                if leader_running:
+                    process.wait()
+                    forced_kill = True
+                    record["forced_kill"] = True
             try:
                 record["model_cleanup"] = self.runtime.close()
                 record["model_cleanup_end_s"] = time.monotonic() - origin
