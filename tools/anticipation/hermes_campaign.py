@@ -37,8 +37,6 @@ MODEL_PLAN = (
 )
 EXCLUDED_MODELS = {"muse-glimmer:30b", "nemotron-3.5-lightning:30b"}
 ALLOWED_TOOLS = {
-    "terminal",
-    "process_manage",
     "read_file",
     "write_file",
     "patch",
@@ -60,7 +58,7 @@ def _prompt(family, records, target_tokens, seed, scratch):
     common = (
         f"Work only in the scratch directory {scratch}. Do not use the network, install "
         "anything, access other directories, or run repository operations. Use the enabled "
-        "file or terminal tools to perform the task, verify the output, then answer concisely. "
+        "file tools to perform the task; the harness will verify the output. Then answer concisely. "
         f"The synthetic fixture seed is {seed}. "
     )
     if family == "csv-aggregation":
@@ -69,7 +67,7 @@ def _prompt(family, records, target_tokens, seed, scratch):
             f"(approximately {target_tokens} input "
             "tokens), aggregate amount by category, and "
             f"write {scratch / 'output.json'} as an object with alphabetically sorted category "
-            f"keys and numeric totals. Run python {scratch / 'verify.py'} to verify the result."
+            "keys and numeric totals."
         )
     if family == "json-transformation":
         return common + (
@@ -77,14 +75,13 @@ def _prompt(family, records, target_tokens, seed, scratch):
             f"(approximately {target_tokens} input "
             "tokens), retain enabled records, sort by id, "
             f"and write {scratch / 'output.json'} containing objects with id and score fields. "
-            f"Run python {scratch / 'verify.py'} to verify the result."
+            "The harness will run the fixed verifier."
         )
     return common + (
         f"Read the {records}-line {scratch / 'specification.txt'} "
         f"(approximately {target_tokens} input tokens) plus {scratch / 'transform.py'} and "
         f"{scratch / 'test_transform.py'}. Fix the small bug in {scratch / 'transform.py'} so "
-        f"it follows the specification. Do not modify the verifier. Run python "
-        f"{scratch / 'test_transform.py'} to verify the fix."
+        "it follows the specification. Do not modify the verifier; the harness will run it."
     )
 
 
@@ -556,6 +553,12 @@ class OllamaRuntime:
             (entry.get("model") or entry.get("name")) == owned_model
             for entry in resident
         ):
+            if resident:
+                names = [entry.get("model") or entry.get("name") for entry in resident]
+                raise RuntimeError(
+                    "unexpected Ollama models remained resident while owned model was absent: "
+                    + ", ".join(str(name) for name in names)
+                )
             self._owned_model = None
             return {"model": owned_model, "unloaded": False}
         self._unload_exact(owned_model)
@@ -619,9 +622,7 @@ class HermesStimulus:
             f"  context_length: {context_length}\n"
             f"  ollama_num_ctx: {context_length}\n"
             "fallback_providers: []\n"
-            "toolsets: [terminal, file]\n"
-            "terminal:\n"
-            f"  cwd: {scratch}\n"
+            "toolsets: [file]\n"
             "mcp_servers: {}\n"
             "memory:\n"
             "  memory_enabled: false\n"
@@ -753,7 +754,7 @@ class HermesStimulus:
             session["scratch_path"],
             "--ignore-rules",
             "--toolsets",
-            "terminal,file",
+            "file",
         ]
 
     def environment(self, session, inherited=None):
@@ -907,9 +908,9 @@ class HermesStimulus:
                 stdout, stderr = process.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
                 timeboxed = True
-                record["parent_stop_reason"] = (
-                    f"{self.hard_timeout_seconds:g}s_agent_timebox"
-                )
+                record["configured_timebox_seconds"] = self.hard_timeout_seconds
+                record["effective_timebox_seconds"] = timeout
+                record["parent_stop_reason"] = f"{timeout:g}s_agent_timebox"
                 record["termination_grace_s"] = event["termination_grace_s"]
                 _signal_process_group(process, signal.SIGTERM)
                 try:

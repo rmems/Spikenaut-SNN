@@ -223,13 +223,13 @@ def test_session_files_config_and_argv_are_hermetic_and_bounded(tmp_path):
     assert "base_url: http://127.0.0.1:11434/v1" in config
     assert config.count("262144") == 2
     assert "fallback_providers: []" in config
-    assert "toolsets: [terminal, file]" in config
+    assert "toolsets: [file]" in config
+    assert "terminal:" not in config
     assert "mcp_servers: {}" in config
     assert "memory_enabled: false" in config
     assert "user_profile_enabled: false" in config
     assert "enabled: []" in config
     assert "model_upgrade_enabled: false" in config
-    assert f"cwd: {session['scratch_path']}" in config
     argv = stimulus.command(session)
     assert argv == [
         "/opt/hermes",
@@ -249,12 +249,12 @@ def test_session_files_config_and_argv_are_hermetic_and_bounded(tmp_path):
         session["scratch_path"],
         "--ignore-rules",
         "--toolsets",
-        "terminal,file",
+        "file",
     ]
     prompt = Path(session["prompt_path"]).read_text()
     assert str(Path(session["scratch_path"]) / "input.csv") in prompt
     assert str(Path(session["scratch_path"]) / "output.json") in prompt
-    assert str(Path(session["scratch_path"]) / "verify.py") in prompt
+    assert "the harness will verify the output" in prompt
     assert list(Path(session["scratch_path"]).iterdir())
 
     env = stimulus.environment(
@@ -440,13 +440,13 @@ def test_nonzero_bot_result_is_valid_workload_but_incomplete_task(tmp_path):
             },
             {
                 "type": "tool_use",
-                "name": "terminal",
+                "name": "read_file",
                 "tool_call_id": "c",
-                "input": {"command": "false"},
+                "input": {"path": "missing.csv"},
             },
             {
                 "type": "tool_result",
-                "name": "terminal",
+                "name": "read_file",
                 "tool_call_id": "c",
                 "output": "",
                 "is_error": True,
@@ -544,7 +544,7 @@ def test_out_of_scope_path_is_audited_and_prevents_task_success(tmp_path):
     assert record["out_of_scope_tool_calls"][0]["resolved"] == "/tmp/outside.txt"
 
 
-@pytest.mark.parametrize("name", ["", "web_search"])
+@pytest.mark.parametrize("name", ["", "web_search", "terminal"])
 def test_empty_or_unsupported_tool_name_is_rejected(tmp_path, name):
     from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
 
@@ -668,10 +668,51 @@ def test_graceful_sigterm_is_valid_timeboxed_workload_with_partial_usage(
     assert record["workload_status"] == "valid"
     assert record["task_outcome"] == "incomplete"
     assert record["parent_stop_reason"] == "0.05s_agent_timebox"
+    assert record["configured_timebox_seconds"] == 0.05
+    assert record["effective_timebox_seconds"] == 0.05
     assert record["framework_interruption"] == "Interrupted"
     assert record["usage_quality"] == "partial_after_parent_sigterm"
     assert Path(record["stdout_jsonl_path"]).exists()
     assert Path(record["stderr_path"]).exists()
+
+
+def test_session_deadline_records_shorter_effective_timebox(tmp_path):
+    from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
+
+    fake = tmp_path / "bin" / "hermes"
+    fake.parent.mkdir()
+    fake.write_text(
+        "#!" + os.sys.executable + "\n"
+        "import json,signal,time\n"
+        "def stop(*_):\n"
+        " print(json.dumps({'type':'result','session_id':'s','exit_code':130,'tokens':{'input':0,'output':0},'error':'Interrupted'}),flush=True)\n"
+        " raise SystemExit(130)\n"
+        "signal.signal(signal.SIGTERM,stop)\n"
+        "print(json.dumps({'type':'system','subtype':'init','session_id':'s','model':'gemma4:12b'}),flush=True)\n"
+        "print(json.dumps({'type':'tool_use','name':'read_file','tool_call_id':'c','input':{'path':'input.csv'}}),flush=True)\n"
+        "while True: time.sleep(.01)\n"
+    )
+    fake.chmod(0o755)
+    session = build_hermes_campaign(tmp_path)["sessions"][0]
+    Path(session["path"]).mkdir(parents=True)
+    stimulus = HermesStimulus(
+        tmp_path,
+        hermes_executable=fake,
+        hard_timeout_seconds=1.0,
+        runtime=FakeRuntime(),
+    )
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+    origin = time.monotonic() - 20
+    session["task"]["hard_deadline_s"] = 20.1
+
+    record = stimulus.run(session["task"], origin)
+
+    assert 0 < record["effective_timebox_seconds"] < 1.0
+    assert record["configured_timebox_seconds"] == 1.0
+    assert record["parent_stop_reason"] == (
+        f"{record['effective_timebox_seconds']:g}s_agent_timebox"
+    )
 
 
 def test_sigterm_without_terminal_result_is_not_valid_timebox(tmp_path, monkeypatch):
@@ -1372,7 +1413,8 @@ def test_runtime_never_unloads_unowned_wrong_resident_model():
         runtime.prepare()
         with pytest.raises(RuntimeError, match="unexpected resident"):
             runtime.select("granite4.2:8b", 131072)
-        assert runtime.close()["unloaded"] is False
+        with pytest.raises(RuntimeError, match="unexpected Ollama models"):
+            runtime.close()
         assert state["loaded"] is True
         assert not any(
             request[2] and request[2].get("keep_alive") == 0
