@@ -19,7 +19,7 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-from tools.anticipation.campaign import capture
+from tools.anticipation.campaign import capture, write_json
 
 
 PROTOCOL_ID = "hermes-ollama-inference-v4"
@@ -260,12 +260,8 @@ class OllamaRuntime:
             "final_error": final_error,
             "updated_at_utc": datetime.now(timezone.utc).isoformat(),
         }
-        temporary = self._cleanup_report_path.with_name(
-            self._cleanup_report_path.name + ".tmp"
-        )
         try:
-            temporary.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-            temporary.replace(self._cleanup_report_path)
+            write_json(self._cleanup_report_path, report)
         except OSError as error:
             self._cleanup_error = RuntimeError(
                 f"could not persist Ollama cleanup report: {error}"
@@ -819,6 +815,26 @@ class HermesStimulus:
                 "import sys\n"
                 "READY = 'candidate-validation-complete'\n"
                 "if sys.argv[1] == '--child':\n"
+                "    import ctypes\n"
+                "    lib = ctypes.CDLL('libseccomp.so.2')\n"
+                "    lib.seccomp_init.argtypes = [ctypes.c_uint32]\n"
+                "    lib.seccomp_init.restype = ctypes.c_void_p\n"
+                "    lib.seccomp_syscall_resolve_name.argtypes = [ctypes.c_char_p]\n"
+                "    lib.seccomp_rule_add.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_uint]\n"
+                "    lib.seccomp_load.argtypes = [ctypes.c_void_p]\n"
+                "    lib.seccomp_release.argtypes = [ctypes.c_void_p]\n"
+                "    context = lib.seccomp_init(0x7fff0000)\n"
+                "    if not context:\n"
+                "        raise RuntimeError('cannot initialize candidate seccomp filter')\n"
+                "    try:\n"
+                "        for name in (b'fork', b'vfork', b'clone', b'clone3'):\n"
+                "            number = lib.seccomp_syscall_resolve_name(name)\n"
+                "            if number >= 0 and lib.seccomp_rule_add(context, 0x00050001, number, 0) != 0:\n"
+                "                raise RuntimeError('cannot restrict candidate process creation')\n"
+                "        if lib.seccomp_load(context) != 0:\n"
+                "            raise RuntimeError('cannot load candidate seccomp filter')\n"
+                "    finally:\n"
+                "        lib.seccomp_release(context)\n"
                 "    candidate = Path(sys.argv[2])\n"
                 "    tree = ast.parse(candidate.read_text(), filename=str(candidate))\n"
                 "    allowed = (ast.FunctionDef, ast.Import, ast.ImportFrom)\n"

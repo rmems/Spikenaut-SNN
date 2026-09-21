@@ -199,12 +199,13 @@ jobs:
       - name: Install the Python verifier sandbox
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap
+          sudo apt-get install --yes bubblewrap libseccomp2
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --version
           bwrap --ro-bind / / --unshare-net -- /bin/true
       - name: Install pinned experiment test dependencies
-        run: python -m pip install -r tools/anticipation/requirements-test.txt
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r tools/anticipation/requirements-test.txt
       - name: Check capture failure paths and scientific reporting
         run: |
           command -v bwrap

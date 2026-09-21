@@ -2055,3 +2055,51 @@ def test_session_record_failure_still_finalizes_real_collector_and_global_cleanu
     status = json.loads((root / "capture-status.json").read_text())
     assert status["status"] == "incomplete"
     assert status["stimulus_cleanup"] == {"unloaded": True}
+
+
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
+def test_cleanup_report_preserves_staging_link_target(tmp_path, link_kind):
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    sentinel = tmp_path / "source.json"
+    sentinel.write_text("source sentinel")
+    staging = tmp_path / "ollama-cleanup.json.tmp"
+    if link_kind == "symlink":
+        staging.symlink_to(sentinel)
+    else:
+        staging.hardlink_to(sentinel)
+    runtime = OllamaRuntime(cleanup_report_path=tmp_path / "ollama-cleanup.json")
+    runtime._write_cleanup_report("model", "confirmed_absent")
+    assert sentinel.read_text() == "source sentinel"
+    assert (
+        json.loads((tmp_path / "ollama-cleanup.json").read_text())["state"]
+        == "confirmed_absent"
+    )
+
+
+def test_python_verifier_denies_candidate_fork(tmp_path):
+    from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
+
+    session = next(
+        item
+        for item in build_hermes_campaign(tmp_path)["sessions"]
+        if item["task"]["family"] == "python-bugfix"
+    )
+    stimulus = HermesStimulus(
+        tmp_path, hermes_executable=tmp_path / "hermes", runtime=FakeRuntime()
+    )
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+    (Path(session["scratch_path"]) / "transform.py").write_text(
+        "import os\n"
+        "def normalize(words):\n"
+        "    try:\n"
+        "        pid = os.fork()\n"
+        "    except PermissionError:\n"
+        "        return [word.strip().lower() for word in words if word.strip()]\n"
+        "    if pid == 0:\n"
+        "        os._exit(0)\n"
+        "    os.waitpid(pid, 0)\n"
+        "    raise AssertionError('candidate fork was allowed')\n"
+    )
+    assert stimulus._verify_fixture(session)["status"] == "passed"
