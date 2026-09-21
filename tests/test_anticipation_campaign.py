@@ -191,6 +191,22 @@ def test_evaluator_always_records_missing_input_failure(tmp_path):
     assert "FileNotFoundError" in report["reason"]
 
 
+def test_evaluator_refuses_partially_written_attempt_directory(tmp_path):
+    from tools.anticipation.evaluate import evaluate
+    from tools.anticipation.campaign import write_json
+
+    prepared = tmp_path / "prepared.json"
+    write_json(prepared, {"schema_version": "anticipation-prepared-v1"})
+    output = tmp_path / "results"
+    output.mkdir()
+    (output / "baselines.json").write_text("partial attempt")
+
+    with pytest.raises(FileExistsError, match="already attempted"):
+        evaluate(prepared, output, julia="must-not-run")
+
+    assert (output / "baselines.json").read_text() == "partial attempt"
+
+
 def test_evaluator_reserves_child_startup_and_finalization_budget(
     tmp_path, monkeypatch
 ):

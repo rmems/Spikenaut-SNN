@@ -281,16 +281,72 @@ def test_hermes_executable_is_explicit_for_api_and_cli(tmp_path):
     assert error.value.code == 2
 
 
-def _write_fake_hermes(path, events, exit_code=0, sleep_seconds=0):
-    path.write_text(
+def test_relative_hermes_executable_survives_scratch_working_directory(
+    tmp_path, monkeypatch
+):
+    from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
+
+    fake = tmp_path / "bin" / "hermes"
+    fake.parent.mkdir()
+    _write_fake_hermes(
+        fake,
+        [
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "s",
+                "model": "gemma4:12b",
+            },
+            {"type": "tool_use", "name": "read_file", "tool_call_id": "c", "input": {}},
+            {"type": "result", "exit_code": 0, "tokens": {"input": 1, "output": 1}},
+        ],
+    )
+    monkeypatch.chdir(tmp_path)
+    session = build_hermes_campaign(tmp_path)["sessions"][0]
+    Path(session["path"]).mkdir(parents=True)
+    stimulus = HermesStimulus(
+        tmp_path, hermes_executable=Path("bin/hermes"), runtime=FakeRuntime()
+    )
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+
+    record = stimulus.run(session["task"], time.monotonic() - 20)
+
+    assert record["workload_status"] == "valid"
+
+
+def _write_fake_hermes(path, events, exit_code=0, sleep_seconds=0, ready_path=None):
+    source = (
         "#!" + os.sys.executable + "\n"
         "import json,time\n"
+        "from pathlib import Path\n"
         f"events={events!r}\n"
         "for event in events:\n print(json.dumps(event), flush=True)\n"
-        f"time.sleep({sleep_seconds!r})\n"
-        f"raise SystemExit({exit_code})\n"
     )
+    if ready_path:
+        source += f"Path({str(ready_path)!r}).touch()\n"
+    source += f"time.sleep({sleep_seconds!r})\nraise SystemExit({exit_code})\n"
+    path.write_text(source)
     path.chmod(0o755)
+
+
+def _wait_for_fixture_ready_before_timeout(monkeypatch, ready_path):
+    real_popen = subprocess.Popen
+
+    def synchronized_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        deadline = time.monotonic() + 5
+        while not ready_path.exists():
+            if process.poll() is not None:
+                raise RuntimeError("fixture exited before signaling readiness")
+            if time.monotonic() >= deadline:
+                process.kill()
+                process.wait()
+                raise RuntimeError("fixture did not signal readiness")
+            time.sleep(0.005)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", synchronized_popen)
 
 
 def test_fake_cli_stream_records_diagnostics_real_schema_cwd_and_verified_task(
@@ -570,24 +626,30 @@ def test_tool_call_without_terminal_result_is_incomplete(tmp_path):
     assert stimulus.session_records()[0]["status"] == "invalid"
 
 
-def test_graceful_sigterm_is_valid_timeboxed_workload_with_partial_usage(tmp_path):
+def test_graceful_sigterm_is_valid_timeboxed_workload_with_partial_usage(
+    tmp_path, monkeypatch
+):
     from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
 
     fake = tmp_path / "bin" / "hermes"
+    ready = tmp_path / "hermes-ready"
     fake.parent.mkdir()
     fake.write_text(
         "#!" + os.sys.executable + "\n"
         "import json,signal,time\n"
-        "print(json.dumps({'type':'system','subtype':'init','session_id':'s','model':'gemma4:12b'}),flush=True)\n"
-        "print(json.dumps({'type':'tool_use','name':'read_file','tool_call_id':'c','input':{'path':'input.csv'}}),flush=True)\n"
+        "from pathlib import Path\n"
         "def stop(*_):\n"
         " print(json.dumps({'type':'result','session_id':'s','exit_code':130,'tokens':{'input':0,'output':0},'error':'Interrupted'}),flush=True)\n"
         " time.sleep(2.2)\n"
         " raise SystemExit(130)\n"
         "signal.signal(signal.SIGTERM,stop)\n"
+        "print(json.dumps({'type':'system','subtype':'init','session_id':'s','model':'gemma4:12b'}),flush=True)\n"
+        "print(json.dumps({'type':'tool_use','name':'read_file','tool_call_id':'c','input':{'path':'input.csv'}}),flush=True)\n"
+        f"Path({str(ready)!r}).touch()\n"
         "while True: time.sleep(.01)\n"
     )
     fake.chmod(0o755)
+    _wait_for_fixture_ready_before_timeout(monkeypatch, ready)
     session = build_hermes_campaign(tmp_path)["sessions"][0]
     Path(session["path"]).mkdir(parents=True)
     stimulus = HermesStimulus(
@@ -609,10 +671,11 @@ def test_graceful_sigterm_is_valid_timeboxed_workload_with_partial_usage(tmp_pat
     assert Path(record["stderr_path"]).exists()
 
 
-def test_sigterm_without_terminal_result_is_not_valid_timebox(tmp_path):
+def test_sigterm_without_terminal_result_is_not_valid_timebox(tmp_path, monkeypatch):
     from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
 
     fake = tmp_path / "bin/hermes"
+    ready = tmp_path / "hermes-ready"
     fake.parent.mkdir()
     _write_fake_hermes(
         fake,
@@ -631,7 +694,9 @@ def test_sigterm_without_terminal_result_is_not_valid_timebox(tmp_path):
             },
         ],
         sleep_seconds=30,
+        ready_path=ready,
     )
+    _wait_for_fixture_ready_before_timeout(monkeypatch, ready)
     session = build_hermes_campaign(tmp_path)["sessions"][0]
     Path(session["path"]).mkdir(parents=True)
     stimulus = HermesStimulus(
@@ -646,23 +711,29 @@ def test_sigterm_without_terminal_result_is_not_valid_timebox(tmp_path):
         stimulus.run(session["task"], time.monotonic() - 20)
 
 
-def test_timebox_requiring_sigkill_is_invalid_even_with_prior_result(tmp_path):
+def test_timebox_requiring_sigkill_is_invalid_even_with_prior_result(
+    tmp_path, monkeypatch
+):
     from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
 
     fake = tmp_path / "bin/hermes"
+    ready = tmp_path / "hermes-ready"
     fake.parent.mkdir()
     fake.write_text(
         "#!" + os.sys.executable + "\n"
         "import json,signal,time\n"
+        "from pathlib import Path\n"
         "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
         "for event in ["
         "{'type':'system','subtype':'init','session_id':'s','model':'gemma4:12b'},"
         "{'type':'tool_use','name':'read_file','tool_call_id':'c','input':{'path':'input.csv'}},"
         "{'type':'result','session_id':'s','exit_code':130,'tokens':{'input':0,'output':0}}]:"
         " print(json.dumps(event),flush=True)\n"
+        f"Path({str(ready)!r}).touch()\n"
         "while True: time.sleep(.01)\n"
     )
     fake.chmod(0o755)
+    _wait_for_fixture_ready_before_timeout(monkeypatch, ready)
     session = build_hermes_campaign(tmp_path)["sessions"][0]
     session["task"]["termination_grace_s"] = 0.05
     Path(session["path"]).mkdir(parents=True)

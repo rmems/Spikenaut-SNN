@@ -435,7 +435,7 @@ class HermesStimulus:
         runtime=None,
     ):
         self.root = Path(root).resolve()
-        self.hermes_executable = Path(hermes_executable)
+        self.hermes_executable = Path(hermes_executable).resolve()
         self.model = model
         self.endpoint = _local_endpoint(endpoint)
         self.hard_timeout_seconds = float(hard_timeout_seconds)

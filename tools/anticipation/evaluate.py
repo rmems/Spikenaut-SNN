@@ -41,7 +41,7 @@ def evaluate(
     started = time.monotonic()
     prepared, output = Path(prepared), Path(output)
     snn = output / "snn"
-    if (output / "budget-report.json").exists() or snn.exists():
+    if output.exists() and any(output.iterdir()):
         raise FileExistsError(
             "evaluation already attempted; never extend or replace silently"
         )
