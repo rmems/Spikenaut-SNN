@@ -87,12 +87,13 @@ def test_capture_finalization_does_not_restart_deferred_cleanup(tmp_path, monkey
         )
         plan = _cleanup_capture_plan(root)
         monkeypatch.setattr(campaign, "wait_until", lambda deadline: None)
+        collector = _graceful_fake_collector(tmp_path)
         started = time.monotonic()
         try:
             with pytest.raises(TimeoutError):
                 campaign.capture(
                     root,
-                    _graceful_fake_collector(tmp_path),
+                    collector,
                     campaign=plan,
                     stimulus_factory=lambda: stimulus,
                 )
