@@ -22,7 +22,6 @@ from tools.anticipation.campaign import capture
 PROTOCOL_ID = "hermes-ollama-inference-v2"
 DEFAULT_MODEL = "gemma4:12b"
 DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
-DEFAULT_HERMES = Path("/home/raulmc/.hermes/hermes-agent/venv/bin/hermes")
 HARD_TIMEOUT_SECONDS = 100.0
 SIGTERM_GRACE_SECONDS = 5.0
 MODEL_PLAN = (
@@ -195,12 +194,17 @@ class OllamaRuntime:
         *,
         preload_timeout_seconds=120,
         request_timeout_seconds=15,
+        load_reconcile_timeout_seconds=15,
+        load_reconcile_poll_seconds=0.1,
     ):
         self.endpoint = _local_endpoint(endpoint)
         self.model = model
         self.preload_timeout_seconds = preload_timeout_seconds
         self.request_timeout_seconds = request_timeout_seconds
+        self.load_reconcile_timeout_seconds = load_reconcile_timeout_seconds
+        self.load_reconcile_poll_seconds = load_reconcile_poll_seconds
         self._owned_model = None
+        self._load_outcome_uncertain = False
 
     def _request(self, method, path, payload=None, *, timeout=None):
         data = None if payload is None else json.dumps(payload).encode()
@@ -260,6 +264,7 @@ class OllamaRuntime:
         # this exact requested identity before the request so later cleanup can
         # reconcile that ambiguous outcome without touching another model.
         self._owned_model = model
+        self._load_outcome_uncertain = True
         try:
             self._request(
                 "POST",
@@ -274,18 +279,10 @@ class OllamaRuntime:
                 timeout=self.preload_timeout_seconds,
             )
         except BaseException:
-            try:
-                loaded_after_error = self._models()
-            except BaseException:
-                # Retain the intended identity: close() must make a bounded,
-                # exact-name cleanup attempt when residency cannot be queried.
-                raise
-            if not any(
-                (entry.get("model") or entry.get("name")) == model
-                for entry in loaded_after_error
-            ):
-                self._owned_model = None
+            # A timed-out HTTP request may still be loading the model server-side.
+            # Retain the exact identity until close() has reconciled that outcome.
             raise
+        self._load_outcome_uncertain = False
         loaded = self._models()
         if len(loaded) != 1:
             raise RuntimeError(
@@ -325,6 +322,41 @@ class OllamaRuntime:
         owned_model = self._owned_model
         if owned_model is None:
             return {"model": self.model, "unloaded": False}
+
+        if self._load_outcome_uncertain:
+            deadline = time.monotonic() + self.load_reconcile_timeout_seconds
+            while True:
+                try:
+                    resident = self._models()
+                except BaseException:
+                    resident = None
+                if resident is not None and any(
+                    (entry.get("model") or entry.get("name")) == owned_model
+                    for entry in resident
+                ):
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(self.load_reconcile_poll_seconds)
+
+            # Send the exact-name unload even if the pending load never became
+            # visible. Ollama serializes this with work for the same model, while
+            # the identity prevents cleanup from unloading unrelated residents.
+            self._request(
+                "POST", "/api/generate", {"model": owned_model, "keep_alive": 0}
+            )
+            remaining = self._models()
+            if any(
+                (entry.get("model") or entry.get("name")) == owned_model
+                for entry in remaining
+            ):
+                raise RuntimeError(
+                    f"Ollama model {owned_model} remained resident after unload"
+                )
+            self._owned_model = None
+            self._load_outcome_uncertain = False
+            return {"model": owned_model, "unloaded": True}
+
         try:
             resident = self._models()
         except BaseException:
@@ -345,6 +377,7 @@ class OllamaRuntime:
                 f"Ollama model {owned_model} remained resident after unload"
             )
         self._owned_model = None
+        self._load_outcome_uncertain = False
         return {"model": owned_model, "unloaded": True}
 
 
@@ -355,7 +388,7 @@ class HermesStimulus:
         self,
         root,
         *,
-        hermes_executable=DEFAULT_HERMES,
+        hermes_executable,
         model=DEFAULT_MODEL,
         endpoint=DEFAULT_ENDPOINT,
         hard_timeout_seconds=HARD_TIMEOUT_SECONDS,
@@ -857,7 +890,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--collector", required=True, type=Path)
-    parser.add_argument("--hermes", type=Path, default=DEFAULT_HERMES)
+    parser.add_argument("--hermes", required=True, type=Path)
     args = parser.parse_args(argv)
     campaign = build_hermes_campaign(args.output)
     capture(

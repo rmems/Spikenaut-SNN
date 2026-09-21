@@ -38,6 +38,7 @@ def ollama_server(
     initially_loaded=False,
     unload_sticks=False,
     preload_response_delay=0,
+    preload_visibility_delay=0,
     post_load_context=None,
     post_load_model=None,
     extra_resident=False,
@@ -121,6 +122,8 @@ def ollama_server(
                 if not state["unload_sticks"]:
                     state["loaded"] = False
             else:
+                if preload_visibility_delay:
+                    time.sleep(preload_visibility_delay)
                 state["loaded"] = True
                 state["model"] = post_load_model or payload["model"]
                 state["context"] = post_load_context or payload["options"]["num_ctx"]
@@ -256,6 +259,17 @@ def test_session_files_config_and_argv_are_hermetic_and_bounded(tmp_path):
     assert env["HERMES_SAFE_MODE"] == "1"
     assert env["OPENAI_API_KEY"] == "no-key-required"
     assert "AWS_SECRET_ACCESS_KEY" not in env
+
+
+def test_hermes_executable_is_explicit_for_api_and_cli(tmp_path):
+    from tools.anticipation.hermes_campaign import HermesStimulus, main
+
+    with pytest.raises(TypeError, match="hermes_executable"):
+        HermesStimulus(tmp_path, runtime=FakeRuntime())
+
+    with pytest.raises(SystemExit) as error:
+        main([str(tmp_path), "--collector", str(tmp_path / "collector")])
+    assert error.value.code == 2
 
 
 def _write_fake_hermes(path, events, exit_code=0, sleep_seconds=0):
@@ -859,6 +873,34 @@ def test_runtime_cleans_model_after_preload_response_timeout():
         cleanup = runtime.close()
         assert cleanup == {"model": "gemma4:12b", "unloaded": True}
         assert state["loaded"] is False
+
+
+def test_runtime_reconciles_load_that_appears_after_initial_timeout_probe():
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    with ollama_server(preload_visibility_delay=0.12) as (endpoint, state):
+        runtime = OllamaRuntime(
+            endpoint=endpoint,
+            preload_timeout_seconds=0.02,
+            load_reconcile_timeout_seconds=0.5,
+            load_reconcile_poll_seconds=0.01,
+        )
+        runtime.prepare()
+        with pytest.raises(TimeoutError, match="timed out"):
+            runtime.select("gemma4:12b", 262144)
+
+        assert state["loaded"] is False
+        cleanup = runtime.close()
+
+        assert cleanup == {"model": "gemma4:12b", "unloaded": True}
+        assert state["loaded"] is False
+        unloads = [
+            request
+            for request in state["requests"]
+            if request[0:2] == ("POST", "/api/generate")
+            and request[2].get("keep_alive") == 0
+        ]
+        assert [request[2]["model"] for request in unloads] == ["gemma4:12b"]
 
 
 def test_runtime_model_switch_validation_failure_cleans_new_model():

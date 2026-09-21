@@ -79,7 +79,8 @@ campaign or at a user Hermes profile:
 ```bash
 python -m tools.anticipation.hermes_campaign \
   /path/to/Spikenaut-SNN/artifacts/unique-hermes-run \
-  --collector /path/to/gaming-telemetry/target/release/gaming-telemetry
+  --collector /path/to/gaming-telemetry/target/release/gaming-telemetry \
+  --hermes /path/to/hermes/venv/bin/hermes
 spikenaut-etl prepare-anticipation \
   --input /path/to/unique-hermes-run/campaign.json \
   --output /path/to/unique-hermes-run/prepared
