@@ -48,6 +48,7 @@ def ollama_server(
 ):
     state = {
         "loaded": initially_loaded,
+        "ever_loaded": initially_loaded,
         "requests": [],
         "unload_sticks": unload_sticks,
         "model": "gemma4:12b",
@@ -91,14 +92,14 @@ def ollama_server(
                             "context_length": state["context"],
                         }
                     ]
-                    if extra_resident:
-                        models.append(
-                            {
-                                "name": "unowned:latest",
-                                "model": "unowned:latest",
-                                "context_length": 1024,
-                            }
-                        )
+                if extra_resident and state["ever_loaded"]:
+                    models.append(
+                        {
+                            "name": "unowned:latest",
+                            "model": "unowned:latest",
+                            "context_length": 1024,
+                        }
+                    )
                 return self._json({"models": models})
             self.send_error(404)
 
@@ -133,6 +134,7 @@ def ollama_server(
                 if preload_visibility_delay:
                     time.sleep(preload_visibility_delay)
                 state["loaded"] = True
+                state["ever_loaded"] = True
                 state["model"] = post_load_model or payload["model"]
                 state["context"] = post_load_context or payload["options"]["num_ctx"]
                 if preload_response_delay:
@@ -665,7 +667,7 @@ def test_graceful_sigterm_is_valid_timeboxed_workload_with_partial_usage(
     assert record["execution_status"] == "timeboxed"
     assert record["workload_status"] == "valid"
     assert record["task_outcome"] == "incomplete"
-    assert record["parent_stop_reason"] == "100s_agent_timebox"
+    assert record["parent_stop_reason"] == "0.05s_agent_timebox"
     assert record["framework_interruption"] == "Interrupted"
     assert record["usage_quality"] == "partial_after_parent_sigterm"
     assert Path(record["stdout_jsonl_path"]).exists()
@@ -1395,8 +1397,12 @@ def test_runtime_retains_model_identity_for_other_post_load_failures(
         runtime.prepare()
         with pytest.raises(Exception, match=error_match):
             runtime.select("granite4.2:8b", 131072)
-        cleanup = runtime.close()
-        assert cleanup == {"model": "granite4.2:8b", "unloaded": True}
+        if server_options.get("extra_resident"):
+            with pytest.raises(RuntimeError, match="unexpected Ollama models"):
+                runtime.close()
+        else:
+            cleanup = runtime.close()
+            assert cleanup == {"model": "granite4.2:8b", "unloaded": True}
         assert state["loaded"] is False
 
 

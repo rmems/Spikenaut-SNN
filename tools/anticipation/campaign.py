@@ -257,7 +257,10 @@ def capture(root, collector, *, campaign=None, stimulus_factory=None):
                     finally:
                         # Collector cleanup is mandatory even if diagnostics or disk writes fail.
                         if process.poll() is None:
-                            process.send_signal(signal.SIGINT)
+                            try:
+                                process.send_signal(signal.SIGINT)
+                            except ProcessLookupError:
+                                pass
                         try:
                             exit_code = process.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
                         except subprocess.TimeoutExpired:

@@ -72,6 +72,7 @@ def evaluate(
         if julia_version:
             command.append("+" + julia_version)
         command += [
+            f"--project={Path(__file__).parent}",
             "--startup-file=no",
             str(Path(__file__).with_name("train.jl")),
             str(prepared),

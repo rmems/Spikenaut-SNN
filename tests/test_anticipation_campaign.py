@@ -230,6 +230,7 @@ def test_evaluator_reserves_child_startup_and_finalization_budget(
 
     assert status["trainer_budget_seconds"] == 161.5
     assert status["trainer_timeout_seconds"] == 190.0
+    assert status["trainer_command"][1].startswith("--project=")
     assert float(status["trainer_command"][-1]) == 161.5
 
 

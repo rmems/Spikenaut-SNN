@@ -299,8 +299,15 @@ class OllamaRuntime:
 
     def _unload_exact(self, model):
         self._request("POST", "/api/generate", {"model": model, "keep_alive": 0})
-        if self._contains_model(self._models(), model):
+        remaining = self._models()
+        if self._contains_model(remaining, model):
             raise RuntimeError(f"Ollama model {model} remained resident after unload")
+        if remaining:
+            names = [entry.get("model") or entry.get("name") for entry in remaining]
+            raise RuntimeError(
+                "unexpected Ollama models remained resident after owned-model cleanup: "
+                + ", ".join(str(name) for name in names)
+            )
 
     def _start_preload(self, model, context_length):
         self._preload_done = threading.Event()
@@ -900,7 +907,9 @@ class HermesStimulus:
                 stdout, stderr = process.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
                 timeboxed = True
-                record["parent_stop_reason"] = "100s_agent_timebox"
+                record["parent_stop_reason"] = (
+                    f"{self.hard_timeout_seconds:g}s_agent_timebox"
+                )
                 record["termination_grace_s"] = event["termination_grace_s"]
                 _signal_process_group(process, signal.SIGTERM)
                 try:
