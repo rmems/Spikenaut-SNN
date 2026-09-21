@@ -35,12 +35,13 @@ spikenaut-etl prepare-anticipation --input /path/to/unique-run/campaign.json \
 
 ### Hermes agent workload variant
 
-The separate `hermes-ollama-inference-v2` acquisition protocol measures the same
-five collector sensors and retains the same 12-session split, timing, ETL,
-forecast models, and training budget. Its active stimulus is one real, bounded
-Hermes file-processing task per session instead of the PyTorch microbenchmark.
-This is a distinct dataset source and must not be pooled with the controlled
-PyTorch campaign.
+The completed, sealed Hermes campaign used the `hermes-ollama-inference-v2`
+protocol. Current source emits `hermes-ollama-inference-v3`, which adds the
+finite preload lease and owned-request cleanup described below. Both variants
+measure the same five collector sensors and retain the same 12-session split,
+timing, ETL, forecast models, training budget, and bounded Hermes file-processing
+tasks. They are distinct dataset sources and must not be pooled with the
+controlled PyTorch campaign or represented as the same protocol version.
 
 The runner cycles `gemma4:12b`, `granite4.2:8b`, and
 `Ornith-1.5-9B:latest` across the 12 sessions. Before each collector starts, it
@@ -50,6 +51,20 @@ total, GPU-resident, and derived CPU-resident model bytes without requiring full
 never reduces the context, downloads a model, selects another model after a
 failure, or falls back to direct generation. `muse-glimmer:30b` and
 `nemotron-3.5-lightning:30b` are explicitly excluded.
+
+Preloading retains the 120-second logical campaign limit. The HTTP request is
+owned by a worker with a separate 180-second completion deadline, and uses an
+explicit 180-second Ollama residency lease instead of an indefinite keep-alive.
+If the logical limit expires, capture fails, but finalization joins that same
+request before unloading and verifying the exact model. A transport timeout or
+error without confirmed request completion remains a hard cleanup failure; an
+empty residency query is not reported as proof of cleanup. The finite lease is
+defense in depth if the client exits. This follows Ollama v0.33.3's
+[unload path](https://github.com/ollama/ollama/blob/v0.33.3/server/routes.go#L377-L387)
+and [canceled-load cleanup](https://github.com/ollama/ollama/blob/v0.33.3/server/sched.go#L1598-L1615)
+without assuming pending loads serialize behind later unload requests. These
+lease and completion limits are recorded in the campaign resource envelope and
+successful runtime metadata.
 
 Hermes runs with a fresh per-session `HERMES_HOME`, a dedicated synthetic
 scratch directory, local custom-provider configuration, no provider fallback,

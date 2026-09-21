@@ -12,6 +12,7 @@ import random
 import signal
 import subprocess
 import sys
+import threading
 import time
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
@@ -19,11 +20,13 @@ from urllib.request import Request, urlopen
 from tools.anticipation.campaign import capture
 
 
-PROTOCOL_ID = "hermes-ollama-inference-v2"
+PROTOCOL_ID = "hermes-ollama-inference-v3"
 DEFAULT_MODEL = "gemma4:12b"
 DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
 HARD_TIMEOUT_SECONDS = 100.0
 SIGTERM_GRACE_SECONDS = 5.0
+PRELOAD_KEEP_ALIVE_SECONDS = 180
+PRELOAD_COMPLETION_TIMEOUT_SECONDS = 180
 MODEL_PLAN = (
     ("gemma4:12b", 262144),
     ("granite4.2:8b", 131072),
@@ -155,6 +158,8 @@ def build_hermes_campaign(root):
             "resident_models": 1,
             "concurrent_agent_runs": 1,
             "context_policy": "advertised-architecture-maximum",
+            "preload_keep_alive_seconds": PRELOAD_KEEP_ALIVE_SECONDS,
+            "preload_completion_timeout_seconds": PRELOAD_COMPLETION_TIMEOUT_SECONDS,
         },
         "training_budget_seconds": 1200,
         "promising_criterion": {
@@ -194,17 +199,21 @@ class OllamaRuntime:
         *,
         preload_timeout_seconds=120,
         request_timeout_seconds=15,
-        load_reconcile_timeout_seconds=15,
-        load_reconcile_poll_seconds=0.1,
+        preload_completion_timeout_seconds=PRELOAD_COMPLETION_TIMEOUT_SECONDS,
+        preload_keep_alive_seconds=PRELOAD_KEEP_ALIVE_SECONDS,
     ):
         self.endpoint = _local_endpoint(endpoint)
         self.model = model
         self.preload_timeout_seconds = preload_timeout_seconds
         self.request_timeout_seconds = request_timeout_seconds
-        self.load_reconcile_timeout_seconds = load_reconcile_timeout_seconds
-        self.load_reconcile_poll_seconds = load_reconcile_poll_seconds
+        self.preload_completion_timeout_seconds = preload_completion_timeout_seconds
+        self.preload_keep_alive_seconds = preload_keep_alive_seconds
         self._owned_model = None
         self._load_outcome_uncertain = False
+        self._preload_thread = None
+        self._preload_done = None
+        self._preload_outcome = None
+        self._preload_deadline = None
 
     def _request(self, method, path, payload=None, *, timeout=None):
         data = None if payload is None else json.dumps(payload).encode()
@@ -239,6 +248,51 @@ class OllamaRuntime:
         self._request("POST", "/api/generate", {"model": model, "keep_alive": 0})
         if self._contains_model(self._models(), model):
             raise RuntimeError(f"Ollama model {model} remained resident after unload")
+
+    def _start_preload(self, model, context_length):
+        self._preload_done = threading.Event()
+        self._preload_outcome = {}
+        self._preload_deadline = (
+            time.monotonic() + self.preload_completion_timeout_seconds
+        )
+
+        def request_model():
+            try:
+                response = self._request(
+                    "POST",
+                    "/api/generate",
+                    {
+                        "model": model,
+                        "prompt": "",
+                        "stream": False,
+                        "keep_alive": f"{self.preload_keep_alive_seconds}s",
+                        "options": {"num_ctx": context_length},
+                    },
+                    timeout=self.preload_completion_timeout_seconds,
+                )
+                if response.get("done") is not True:
+                    raise RuntimeError(
+                        "Ollama preload response did not confirm completion"
+                    )
+                self._preload_outcome["response"] = response
+            except BaseException as error:
+                self._preload_outcome["error"] = error
+            finally:
+                self._preload_done.set()
+
+        self._preload_thread = threading.Thread(
+            target=request_model,
+            name=f"ollama-preload-{model}",
+            daemon=False,
+        )
+        self._preload_thread.start()
+
+    def _wait_for_preload_completion(self):
+        if self._preload_thread is None:
+            return False
+        remaining = max(0.0, self._preload_deadline - time.monotonic())
+        self._preload_thread.join(remaining + 0.1)
+        return not self._preload_thread.is_alive()
 
     def prepare(self):
         existing = self._models()
@@ -276,23 +330,14 @@ class OllamaRuntime:
         # reconcile that ambiguous outcome without touching another model.
         self._owned_model = model
         self._load_outcome_uncertain = True
-        try:
-            self._request(
-                "POST",
-                "/api/generate",
-                {
-                    "model": model,
-                    "prompt": "",
-                    "stream": False,
-                    "keep_alive": -1,
-                    "options": {"num_ctx": context_length},
-                },
-                timeout=self.preload_timeout_seconds,
+        self._start_preload(model, context_length)
+        if not self._preload_done.wait(self.preload_timeout_seconds):
+            raise TimeoutError(
+                f"Ollama preload timed out after {self.preload_timeout_seconds}s; "
+                "owned request continues until cleanup"
             )
-        except BaseException:
-            # A timed-out HTTP request may still be loading the model server-side.
-            # Retain the exact identity until close() has reconciled that outcome.
-            raise
+        if "error" in self._preload_outcome:
+            raise self._preload_outcome["error"]
         self._load_outcome_uncertain = False
         loaded = self._models()
         if len(loaded) != 1:
@@ -321,6 +366,11 @@ class OllamaRuntime:
             "advertised_context_length": context_length,
             "digest": resident.get("digest"),
             "quantization": (show.get("details") or {}).get("quantization_level"),
+            "preload": {
+                "logical_timeout_seconds": self.preload_timeout_seconds,
+                "completion_timeout_seconds": self.preload_completion_timeout_seconds,
+                "keep_alive_seconds": self.preload_keep_alive_seconds,
+            },
             "residency": {
                 "size": size,
                 "size_vram": size_vram,
@@ -335,35 +385,20 @@ class OllamaRuntime:
             return {"model": self.model, "unloaded": False}
 
         if self._load_outcome_uncertain:
-            deadline = time.monotonic() + self.load_reconcile_timeout_seconds
-            observed = False
-            while True:
-                try:
-                    resident = self._models()
-                except BaseException:
-                    resident = None
-                if resident is not None and self._contains_model(resident, owned_model):
-                    observed = True
-                    break
-                if time.monotonic() >= deadline:
-                    break
-                time.sleep(self.load_reconcile_poll_seconds)
-
-            if not observed:
+            completed = self._wait_for_preload_completion()
+            if not completed or "error" in self._preload_outcome:
                 try:
                     self._unload_exact(owned_model)
-                except BaseException as error:
-                    raise RuntimeError(
-                        f"Ollama model {owned_model} cleanup remains uncertain; "
-                        "ownership retained"
-                    ) from error
-                # An empty observation does not prove that the timed-out load
-                # cannot finish later. Keep ownership so a later close can
-                # reconcile and unload the exact model once it becomes visible.
-                raise RuntimeError(
+                except BaseException:
+                    pass
+                error = self._preload_outcome.get("error")
+                message = (
                     f"Ollama model {owned_model} cleanup remains uncertain; "
-                    "ownership retained"
+                    "preload request completion was not confirmed"
                 )
+                if error is not None:
+                    raise RuntimeError(message) from error
+                raise RuntimeError(message)
 
             self._unload_exact(owned_model)
             self._owned_model = None

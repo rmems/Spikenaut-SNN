@@ -39,6 +39,7 @@ def ollama_server(
     unload_sticks=False,
     preload_response_delay=0,
     preload_visibility_delay=0,
+    preload_never_completes_delay=0,
     post_load_context=None,
     post_load_model=None,
     extra_resident=False,
@@ -63,7 +64,10 @@ def ollama_server(
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
         def do_GET(self):
             state["requests"].append(("GET", self.path, None))
@@ -122,6 +126,9 @@ def ollama_server(
                 if not state["unload_sticks"]:
                     state["loaded"] = False
             else:
+                if preload_never_completes_delay:
+                    time.sleep(preload_never_completes_delay)
+                    return self._json({"done": False})
                 if preload_visibility_delay:
                     time.sleep(preload_visibility_delay)
                 state["loaded"] = True
@@ -148,12 +155,14 @@ def test_protocol_is_separate_deterministic_and_every_split_has_each_task(tmp_pa
     one = build_hermes_campaign(tmp_path / "run")
     again = build_hermes_campaign(tmp_path / "run")
     assert one == again
-    assert one["protocol_id"] == "hermes-ollama-inference-v2"
+    assert one["protocol_id"] == "hermes-ollama-inference-v3"
     assert one["workload_class"] == "ai-compute"
     assert one["model_resource_envelope"] == {
         "resident_models": 1,
         "concurrent_agent_runs": 1,
         "context_policy": "advertised-architecture-maximum",
+        "preload_keep_alive_seconds": 180,
+        "preload_completion_timeout_seconds": 180,
     }
     assert "allocation_limit_bytes" not in one
     assert [s["split"] for s in one["sessions"]] == ["train"] * 6 + [
@@ -832,6 +841,18 @@ def test_runtime_refuses_existing_model_and_verifies_owned_unload():
             "size_cpu": 1_100_000_000,
             "context_length": 262144,
         }
+        assert metadata["preload"] == {
+            "logical_timeout_seconds": 120,
+            "completion_timeout_seconds": 180,
+            "keep_alive_seconds": 180,
+        }
+        preload = next(
+            request[2]
+            for request in state["requests"]
+            if request[0:2] == ("POST", "/api/generate")
+            and request[2].get("keep_alive") != 0
+        )
+        assert preload["keep_alive"] == "180s"
         assert runtime.close()["unloaded"] is True
         assert state["loaded"] is False
 
@@ -875,15 +896,14 @@ def test_runtime_cleans_model_after_preload_response_timeout():
         assert state["loaded"] is False
 
 
-def test_runtime_reconciles_load_that_appears_after_initial_timeout_probe():
+def test_runtime_joins_owned_preload_after_logical_timeout():
     from tools.anticipation.hermes_campaign import OllamaRuntime
 
     with ollama_server(preload_visibility_delay=0.12) as (endpoint, state):
         runtime = OllamaRuntime(
             endpoint=endpoint,
             preload_timeout_seconds=0.02,
-            load_reconcile_timeout_seconds=0.5,
-            load_reconcile_poll_seconds=0.01,
+            preload_completion_timeout_seconds=0.5,
         )
         runtime.prepare()
         with pytest.raises(TimeoutError, match="timed out"):
@@ -903,41 +923,75 @@ def test_runtime_reconciles_load_that_appears_after_initial_timeout_probe():
         assert [request[2]["model"] for request in unloads] == ["gemma4:12b"]
 
 
-def test_runtime_retains_uncertain_ownership_past_reconcile_window():
-    from tools.anticipation.hermes_campaign import OllamaRuntime
+def test_capture_waits_for_owned_late_preload_and_returns_with_model_absent(tmp_path):
+    from tools.anticipation.campaign import capture
+    from tools.anticipation.hermes_campaign import (
+        HermesStimulus,
+        OllamaRuntime,
+        build_hermes_campaign,
+    )
+
+    collector = tmp_path / "collector"
+    collector.write_bytes(b"not started because preload fails")
+    hermes = tmp_path / "hermes"
+    hermes.write_text("not started because preload fails")
+    root = tmp_path / "capture"
+    plan = build_hermes_campaign(root)
+    plan["sessions"] = plan["sessions"][:1]
 
     with ollama_server(preload_visibility_delay=0.2) as (endpoint, state):
         runtime = OllamaRuntime(
             endpoint=endpoint,
             preload_timeout_seconds=0.01,
-            load_reconcile_timeout_seconds=0.03,
-            load_reconcile_poll_seconds=0.005,
+            preload_completion_timeout_seconds=0.5,
+        )
+        started = time.monotonic()
+        with pytest.raises(TimeoutError, match="timed out"):
+            capture(
+                root,
+                collector,
+                campaign=plan,
+                stimulus_factory=lambda: HermesStimulus(
+                    root, hermes_executable=hermes, runtime=runtime
+                ),
+            )
+
+        assert time.monotonic() - started >= 0.15
+        assert state["loaded"] is False
+        status = json.loads((root / "capture-status.json").read_text())
+        assert status["status"] == "incomplete"
+        assert status["stimulus_cleanup"] == {
+            "model": "gemma4:12b",
+            "unloaded": True,
+        }
+        preload = next(
+            request[2]
+            for request in state["requests"]
+            if request[0:2] == ("POST", "/api/generate")
+            and request[2].get("keep_alive") != 0
+        )
+        assert preload["keep_alive"] == "180s"
+
+
+def test_runtime_permanent_preload_hang_fails_bounded_and_keeps_ownership():
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    with ollama_server(preload_never_completes_delay=0.3) as (endpoint, state):
+        runtime = OllamaRuntime(
+            endpoint=endpoint,
+            preload_timeout_seconds=0.01,
+            preload_completion_timeout_seconds=0.05,
         )
         runtime.prepare()
         with pytest.raises(TimeoutError, match="timed out"):
             runtime.select("gemma4:12b", 262144)
 
+        started = time.monotonic()
         with pytest.raises(RuntimeError, match="cleanup remains uncertain"):
             runtime.close()
-
-        visibility_deadline = time.monotonic() + 0.5
-        while not state["loaded"] and time.monotonic() < visibility_deadline:
-            time.sleep(0.005)
-        assert state["loaded"] is True
-
-        cleanup = runtime.close()
-        assert cleanup == {"model": "gemma4:12b", "unloaded": True}
+        assert time.monotonic() - started < 0.2
+        assert runtime._preload_thread.is_alive() is False
         assert state["loaded"] is False
-        unloads = [
-            request
-            for request in state["requests"]
-            if request[0:2] == ("POST", "/api/generate")
-            and request[2].get("keep_alive") == 0
-        ]
-        assert [request[2]["model"] for request in unloads] == [
-            "gemma4:12b",
-            "gemma4:12b",
-        ]
 
 
 def test_runtime_model_switch_validation_failure_cleans_new_model():
