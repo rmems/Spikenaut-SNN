@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import threading
+import time
 
 import pytest
 
@@ -31,13 +32,23 @@ class FakeRuntime:
 
 
 @contextmanager
-def ollama_server(*, initially_loaded=False, unload_sticks=False):
+def ollama_server(
+    *,
+    initially_loaded=False,
+    unload_sticks=False,
+    preload_response_delay=0,
+    post_load_context=None,
+    post_load_model=None,
+    extra_resident=False,
+    ps_failures_after_load=0,
+):
     state = {
         "loaded": initially_loaded,
         "requests": [],
         "unload_sticks": unload_sticks,
         "model": "gemma4:12b",
         "context": 262144,
+        "ps_failures_after_load": ps_failures_after_load,
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -57,6 +68,9 @@ def ollama_server(*, initially_loaded=False, unload_sticks=False):
             if self.path == "/api/version":
                 return self._json({"version": "0.33.3"})
             if self.path == "/api/ps":
+                if state["loaded"] and state["ps_failures_after_load"]:
+                    state["ps_failures_after_load"] -= 1
+                    return self.send_error(503)
                 models = []
                 if state["loaded"]:
                     model = state.get("model", "gemma4:12b")
@@ -70,6 +84,14 @@ def ollama_server(*, initially_loaded=False, unload_sticks=False):
                             "context_length": state["context"],
                         }
                     ]
+                    if extra_resident:
+                        models.append(
+                            {
+                                "name": "unowned:latest",
+                                "model": "unowned:latest",
+                                "context_length": 1024,
+                            }
+                        )
                 return self._json({"models": models})
             self.send_error(404)
 
@@ -99,8 +121,10 @@ def ollama_server(*, initially_loaded=False, unload_sticks=False):
                     state["loaded"] = False
             else:
                 state["loaded"] = True
-                state["model"] = payload["model"]
-                state["context"] = payload["options"]["num_ctx"]
+                state["model"] = post_load_model or payload["model"]
+                state["context"] = post_load_context or payload["options"]["num_ctx"]
+                if preload_response_delay:
+                    time.sleep(preload_response_delay)
             self._json({"done": True, "response": "", "load_duration": 10})
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -120,7 +144,7 @@ def test_protocol_is_separate_deterministic_and_every_split_has_each_task(tmp_pa
     one = build_hermes_campaign(tmp_path / "run")
     again = build_hermes_campaign(tmp_path / "run")
     assert one == again
-    assert one["protocol_id"] == "hermes-ollama-inference-v1"
+    assert one["protocol_id"] == "hermes-ollama-inference-v2"
     assert one["workload_class"] == "ai-compute"
     assert one["model_resource_envelope"] == {
         "resident_models": 1,
@@ -188,6 +212,7 @@ def test_session_files_config_and_argv_are_hermetic_and_bounded(tmp_path):
     assert "user_profile_enabled: false" in config
     assert "enabled: []" in config
     assert "model_upgrade_enabled: false" in config
+    assert f"cwd: {session['scratch_path']}" in config
     argv = stimulus.command(session)
     assert argv == [
         "/opt/hermes",
@@ -209,7 +234,10 @@ def test_session_files_config_and_argv_are_hermetic_and_bounded(tmp_path):
         "--toolsets",
         "terminal,file",
     ]
-    assert Path(session["prompt_path"]).read_text()
+    prompt = Path(session["prompt_path"]).read_text()
+    assert str(Path(session["scratch_path"]) / "input.csv") in prompt
+    assert str(Path(session["scratch_path"]) / "output.json") in prompt
+    assert str(Path(session["scratch_path"]) / "verify.py") in prompt
     assert list(Path(session["scratch_path"]).iterdir())
 
     env = stimulus.environment(
@@ -240,10 +268,82 @@ def _write_fake_hermes(path, events, exit_code=0, sleep_seconds=0):
     path.chmod(0o755)
 
 
-def test_fake_cli_stream_records_verified_tool_use_and_usage(tmp_path):
+def test_fake_cli_stream_records_diagnostics_real_schema_cwd_and_verified_task(
+    tmp_path,
+):
     from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
 
     fake = tmp_path / "bin" / "hermes"
+    fake.parent.mkdir()
+    events = [
+        {
+            "type": "system",
+            "subtype": "init",
+            "session_id": "s1",
+            "model": "gemma4:12b",
+        },
+        {
+            "type": "tool_use",
+            "name": "read_file",
+            "tool_call_id": "c1",
+            "input": {"path": str(tmp_path / "hermes/session-01/scratch/input.csv")},
+        },
+        {
+            "type": "tool_result",
+            "name": "read_file",
+            "tool_call_id": "c1",
+            "output": "ok",
+        },
+        {
+            "type": "result",
+            "exit_code": 0,
+            "session_id": "s1",
+            "tokens": {"input": 9, "output": 4},
+        },
+    ]
+    fake.write_text(
+        "#!" + os.sys.executable + "\n"
+        "import json,os\n"
+        f"events={events!r}\n"
+        "print(json.dumps(events[0]), flush=True)\n"
+        "print('  ⚠ tirith security scanner enabled but not available', flush=True)\n"
+        "from pathlib import Path\n"
+        "rows=Path('input.csv').read_text().splitlines()[1:]\n"
+        "totals={}\n"
+        "for row in rows:\n"
+        " category,amount=row.split(','); totals[category]=totals.get(category,0)+int(amount)\n"
+        "Path('output.json').write_text(json.dumps(dict(sorted(totals.items()))))\n"
+        "for event in events[1:]: print(json.dumps(event), flush=True)\n"
+        "Path('observed-cwd.txt').write_text(os.getcwd())\n"
+    )
+    fake.chmod(0o755)
+    session = build_hermes_campaign(tmp_path)["sessions"][0]
+    Path(session["path"]).mkdir(parents=True)
+    stimulus = HermesStimulus(tmp_path, hermes_executable=fake, runtime=FakeRuntime())
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+    record = stimulus.run(session["task"], __import__("time").monotonic() - 20)
+    assert record["workload_status"] == "valid"
+    assert record["task_outcome"] == "verified_complete"
+    assert record["verifier"]["status"] == "passed"
+    assert record["tool_call_count"] == 1
+    assert record["tool_calls"][0]["name"] == "read_file"
+    assert record["usage"] == {"input": 9, "output": 4}
+    assert record["stdout_diagnostics"] == [
+        "  ⚠ tirith security scanner enabled but not available"
+    ]
+    assert (
+        Path(session["scratch_path"], "observed-cwd.txt").read_text()
+        == session["scratch_path"]
+    )
+    assert Path(record["stdout_jsonl_path"]).exists()
+    assert record["model_cleanup"]["unloaded"] is True
+
+
+def test_nonzero_bot_result_is_valid_workload_but_incomplete_task(tmp_path):
+    from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
+
+    fake = tmp_path / "bin/hermes"
     fake.parent.mkdir()
     _write_fake_hermes(
         fake,
@@ -251,27 +351,102 @@ def test_fake_cli_stream_records_verified_tool_use_and_usage(tmp_path):
             {
                 "type": "system",
                 "subtype": "init",
-                "session_id": "s1",
+                "session_id": "s",
                 "model": "gemma4:12b",
             },
             {
                 "type": "tool_use",
-                "tool_name": "read_file",
-                "tool_call_id": "c1",
-                "input": {"path": "input.csv"},
+                "name": "terminal",
+                "tool_call_id": "c",
+                "input": {"command": "false"},
             },
             {
                 "type": "tool_result",
-                "tool_name": "read_file",
-                "tool_call_id": "c1",
-                "output": "ok",
+                "name": "terminal",
+                "tool_call_id": "c",
+                "output": "",
+                "is_error": True,
             },
             {
                 "type": "result",
-                "exit_code": 0,
-                "session_id": "s1",
-                "tokens": {"input": 9, "output": 4},
+                "exit_code": 1,
+                "session_id": "s",
+                "tokens": {"input": 10, "output": 2},
+                "text": "I finished successfully",
             },
+        ],
+        exit_code=1,
+    )
+    session = build_hermes_campaign(tmp_path)["sessions"][0]
+    Path(session["path"]).mkdir(parents=True)
+    stimulus = HermesStimulus(tmp_path, hermes_executable=fake, runtime=FakeRuntime())
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+    record = stimulus.run(session["task"], time.monotonic() - 20)
+    assert record["workload_status"] == "valid"
+    assert record["task_outcome"] == "incomplete"
+    assert record["result_status"] == {"exit_code": 1, "error": None}
+
+
+def test_explicit_hermes_error_is_infrastructure_failure(tmp_path):
+    from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
+
+    fake = tmp_path / "bin/hermes"
+    fake.parent.mkdir()
+    _write_fake_hermes(
+        fake,
+        [
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "s",
+                "model": "gemma4:12b",
+            },
+            {
+                "type": "tool_use",
+                "name": "read_file",
+                "tool_call_id": "c",
+                "input": {"path": "input.csv"},
+            },
+            {
+                "type": "result",
+                "exit_code": 1,
+                "error": "provider transport failed",
+                "tokens": {"input": 10, "output": 2},
+            },
+        ],
+        exit_code=1,
+    )
+    session = build_hermes_campaign(tmp_path)["sessions"][0]
+    Path(session["path"]).mkdir(parents=True)
+    stimulus = HermesStimulus(tmp_path, hermes_executable=fake, runtime=FakeRuntime())
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+    with pytest.raises(RuntimeError, match="explicit error"):
+        stimulus.run(session["task"], time.monotonic() - 20)
+
+
+def test_out_of_scope_path_is_audited_and_prevents_task_success(tmp_path):
+    from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
+
+    fake = tmp_path / "bin/hermes"
+    fake.parent.mkdir()
+    _write_fake_hermes(
+        fake,
+        [
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "s",
+                "model": "gemma4:12b",
+            },
+            {
+                "type": "tool_use",
+                "name": "read_file",
+                "tool_call_id": "c",
+                "input": {"path": "/tmp/outside.txt"},
+            },
+            {"type": "result", "exit_code": 0, "tokens": {"input": 3, "output": 1}},
         ],
     )
     session = build_hermes_campaign(tmp_path)["sessions"][0]
@@ -279,12 +454,47 @@ def test_fake_cli_stream_records_verified_tool_use_and_usage(tmp_path):
     stimulus = HermesStimulus(tmp_path, hermes_executable=fake, runtime=FakeRuntime())
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
-    record = stimulus.run(session["task"], __import__("time").monotonic() - 20)
-    assert record["status"] == "complete"
-    assert record["tool_call_count"] == 1
-    assert record["tool_calls"][0]["name"] == "read_file"
-    assert record["usage"] == {"input": 9, "output": 4}
-    assert Path(record["stdout_jsonl_path"]).exists()
+    record = stimulus.run(session["task"], time.monotonic() - 20)
+    assert record["workload_status"] == "valid"
+    assert record["task_outcome"] == "incomplete"
+    assert record["out_of_scope_tool_calls"][0]["resolved"] == "/tmp/outside.txt"
+
+
+@pytest.mark.parametrize("name", ["", "web_search"])
+def test_empty_or_unsupported_tool_name_is_rejected(tmp_path, name):
+    from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
+
+    fake = tmp_path / "bin/hermes"
+    fake.parent.mkdir()
+    _write_fake_hermes(
+        fake,
+        [
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "s",
+                "model": "gemma4:12b",
+            },
+            {"type": "tool_use", "name": name, "tool_call_id": "c", "input": {}},
+            {"type": "result", "exit_code": 0, "tokens": {"input": 3, "output": 1}},
+        ],
+    )
+    session = build_hermes_campaign(tmp_path)["sessions"][0]
+    Path(session["path"]).mkdir(parents=True)
+    stimulus = HermesStimulus(tmp_path, hermes_executable=fake, runtime=FakeRuntime())
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+    with pytest.raises(RuntimeError, match="unsupported or empty"):
+        stimulus.run(session["task"], time.monotonic() - 20)
+
+
+def test_malformed_object_like_stream_line_fails_but_diagnostic_does_not():
+    from tools.anticipation.hermes_campaign import HermesStimulus
+
+    events, diagnostics = HermesStimulus._events("plain warning\n")
+    assert events == [] and diagnostics == ["plain warning"]
+    with pytest.raises(RuntimeError, match="malformed"):
+        HermesStimulus._events("plain warning\n{broken\n")
 
 
 def test_no_tool_call_or_cli_error_marks_task_incomplete(tmp_path):
@@ -300,7 +510,7 @@ def test_no_tool_call_or_cli_error_marks_task_incomplete(tmp_path):
     stimulus.prepare_session(session)
     with pytest.raises(RuntimeError, match="tool call"):
         stimulus.run(session["task"], __import__("time").monotonic() - 20)
-    assert stimulus.session_records()[0]["status"] == "incomplete"
+    assert stimulus.session_records()[0]["status"] == "invalid"
 
 
 def test_tool_call_without_terminal_result_is_incomplete(tmp_path):
@@ -319,7 +529,7 @@ def test_tool_call_without_terminal_result_is_incomplete(tmp_path):
             },
             {
                 "type": "tool_use",
-                "tool_name": "read_file",
+                "name": "read_file",
                 "tool_call_id": "c1",
                 "input": {},
             },
@@ -332,15 +542,25 @@ def test_tool_call_without_terminal_result_is_incomplete(tmp_path):
     stimulus.prepare_session(session)
     with pytest.raises(RuntimeError, match="terminal result"):
         stimulus.run(session["task"], __import__("time").monotonic() - 20)
-    assert stimulus.session_records()[0]["status"] == "incomplete"
+    assert stimulus.session_records()[0]["status"] == "invalid"
 
 
-def test_hard_timeout_kills_process_group_and_is_audited(tmp_path):
+def test_graceful_sigterm_is_valid_timeboxed_workload_with_partial_usage(tmp_path):
     from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
 
     fake = tmp_path / "bin" / "hermes"
     fake.parent.mkdir()
-    _write_fake_hermes(fake, [], sleep_seconds=30)
+    fake.write_text(
+        "#!" + os.sys.executable + "\n"
+        "import json,signal,time\n"
+        "print(json.dumps({'type':'system','subtype':'init','session_id':'s','model':'gemma4:12b'}),flush=True)\n"
+        "print(json.dumps({'type':'tool_use','name':'read_file','tool_call_id':'c','input':{'path':'input.csv'}}),flush=True)\n"
+        "def stop(*_):\n"
+        " print(json.dumps({'type':'result','session_id':'s','exit_code':130,'tokens':{'input':0,'output':0},'error':'Interrupted'}),flush=True); raise SystemExit(130)\n"
+        "signal.signal(signal.SIGTERM,stop)\n"
+        "while True: time.sleep(.01)\n"
+    )
+    fake.chmod(0o755)
     session = build_hermes_campaign(tmp_path)["sessions"][0]
     Path(session["path"]).mkdir(parents=True)
     stimulus = HermesStimulus(
@@ -351,12 +571,117 @@ def test_hard_timeout_kills_process_group_and_is_audited(tmp_path):
     )
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
-    with pytest.raises(RuntimeError, match="hard timeout"):
-        stimulus.run(session["task"], __import__("time").monotonic() - 20)
-    record = stimulus.session_records()[0]
-    assert record["status"] == "hard_timeout"
+    record = stimulus.run(session["task"], time.monotonic() - 20)
+    assert record["execution_status"] == "timeboxed"
+    assert record["workload_status"] == "valid"
+    assert record["task_outcome"] == "incomplete"
+    assert record["parent_stop_reason"] == "100s_agent_timebox"
+    assert record["framework_interruption"] == "Interrupted"
+    assert record["usage_quality"] == "partial_after_parent_sigterm"
     assert Path(record["stdout_jsonl_path"]).exists()
     assert Path(record["stderr_path"]).exists()
+
+
+def test_sigterm_without_terminal_result_is_not_valid_timebox(tmp_path):
+    from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
+
+    fake = tmp_path / "bin/hermes"
+    fake.parent.mkdir()
+    _write_fake_hermes(
+        fake,
+        [
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "s",
+                "model": "gemma4:12b",
+            },
+            {
+                "type": "tool_use",
+                "name": "read_file",
+                "tool_call_id": "c",
+                "input": {"path": "input.csv"},
+            },
+        ],
+        sleep_seconds=30,
+    )
+    session = build_hermes_campaign(tmp_path)["sessions"][0]
+    Path(session["path"]).mkdir(parents=True)
+    stimulus = HermesStimulus(
+        tmp_path,
+        hermes_executable=fake,
+        hard_timeout_seconds=0.05,
+        runtime=FakeRuntime(),
+    )
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+    with pytest.raises(RuntimeError, match="terminal result"):
+        stimulus.run(session["task"], time.monotonic() - 20)
+
+
+def test_timebox_requiring_sigkill_is_invalid_even_with_prior_result(tmp_path):
+    from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
+
+    fake = tmp_path / "bin/hermes"
+    fake.parent.mkdir()
+    fake.write_text(
+        "#!" + os.sys.executable + "\n"
+        "import json,signal,time\n"
+        "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+        "for event in ["
+        "{'type':'system','subtype':'init','session_id':'s','model':'gemma4:12b'},"
+        "{'type':'tool_use','name':'read_file','tool_call_id':'c','input':{'path':'input.csv'}},"
+        "{'type':'result','session_id':'s','exit_code':130,'tokens':{'input':0,'output':0}}]:"
+        " print(json.dumps(event),flush=True)\n"
+        "while True: time.sleep(.01)\n"
+    )
+    fake.chmod(0o755)
+    session = build_hermes_campaign(tmp_path)["sessions"][0]
+    Path(session["path"]).mkdir(parents=True)
+    stimulus = HermesStimulus(
+        tmp_path,
+        hermes_executable=fake,
+        hard_timeout_seconds=0.05,
+        runtime=FakeRuntime(),
+    )
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+    with pytest.raises(RuntimeError, match="SIGKILL"):
+        stimulus.run(session["task"], time.monotonic() - 20)
+
+
+def test_model_cleanup_after_session_deadline_invalidates_workload(tmp_path):
+    from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
+
+    fake = tmp_path / "bin/hermes"
+    fake.parent.mkdir()
+    _write_fake_hermes(
+        fake,
+        [
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "s",
+                "model": "gemma4:12b",
+            },
+            {
+                "type": "tool_use",
+                "name": "read_file",
+                "tool_call_id": "c",
+                "input": {"path": "input.csv"},
+            },
+            {"type": "result", "exit_code": 0, "tokens": {"input": 3, "output": 1}},
+        ],
+    )
+    session = build_hermes_campaign(tmp_path)["sessions"][0]
+    session["task"]["cleanup_deadline_s"] = 19
+    Path(session["path"]).mkdir(parents=True)
+    stimulus = HermesStimulus(tmp_path, hermes_executable=fake, runtime=FakeRuntime())
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+    with pytest.raises(RuntimeError, match="cleanup exceeded"):
+        stimulus.run(session["task"], time.monotonic() - 20)
+    assert stimulus.session_records()[0]["workload_status"] == "invalid"
 
 
 def test_runtime_refuses_existing_model_and_verifies_owned_unload():
@@ -406,6 +731,71 @@ def test_runtime_excludes_disallowed_models_and_requires_architecture_context():
             with pytest.raises(ValueError, match="excluded"):
                 runtime.select(model, 1)
         assert not state["loaded"]
+
+
+def test_runtime_cleans_model_after_preload_response_timeout():
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    with ollama_server(preload_response_delay=0.15) as (endpoint, state):
+        runtime = OllamaRuntime(endpoint=endpoint, preload_timeout_seconds=0.02)
+        runtime.prepare()
+        with pytest.raises(Exception):
+            runtime.select("gemma4:12b", 262144)
+        assert state["loaded"] is True
+        cleanup = runtime.close()
+        assert cleanup == {"model": "gemma4:12b", "unloaded": True}
+        assert state["loaded"] is False
+
+
+def test_runtime_model_switch_validation_failure_cleans_new_model():
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    with ollama_server(post_load_context=17) as (endpoint, state):
+        runtime = OllamaRuntime(endpoint=endpoint)
+        runtime.prepare()
+        with pytest.raises(RuntimeError, match="resident context"):
+            runtime.select("granite4.2:8b", 131072)
+        assert state["model"] == "granite4.2:8b"
+        assert runtime.close()["model"] == "granite4.2:8b"
+        assert state["loaded"] is False
+
+
+def test_runtime_never_unloads_unowned_wrong_resident_model():
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    with ollama_server(post_load_model="other:latest") as (endpoint, state):
+        runtime = OllamaRuntime(endpoint=endpoint)
+        runtime.prepare()
+        with pytest.raises(RuntimeError, match="unexpected resident"):
+            runtime.select("granite4.2:8b", 131072)
+        assert runtime.close()["unloaded"] is False
+        assert state["loaded"] is True
+        assert not any(
+            request[2] and request[2].get("keep_alive") == 0
+            for request in state["requests"]
+        )
+
+
+@pytest.mark.parametrize(
+    "server_options, error_match",
+    [
+        ({"extra_resident": True}, "exactly one"),
+        ({"ps_failures_after_load": 1}, "HTTP Error 503"),
+    ],
+)
+def test_runtime_retains_model_identity_for_other_post_load_failures(
+    server_options, error_match
+):
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    with ollama_server(**server_options) as (endpoint, state):
+        runtime = OllamaRuntime(endpoint=endpoint)
+        runtime.prepare()
+        with pytest.raises(Exception, match=error_match):
+            runtime.select("granite4.2:8b", 131072)
+        cleanup = runtime.close()
+        assert cleanup == {"model": "granite4.2:8b", "unloaded": True}
+        assert state["loaded"] is False
 
 
 def test_shared_capture_stops_collector_and_closes_stimulus_on_task_failure(
@@ -474,3 +864,65 @@ def test_shared_capture_stops_collector_and_closes_stimulus_on_task_failure(
     assert status["stimulus_cleanup"] == {"unloaded": True}
     audit = json.loads((root / "raw/session-01/stimulus-audit.json").read_text())
     assert audit["actual_bot_tasks"] == [{"status": "incomplete", "family": "fake"}]
+
+
+def test_session_record_failure_still_finalizes_real_collector_and_global_cleanup(
+    tmp_path, monkeypatch
+):
+    from tools.anticipation import campaign
+    import sys
+
+    collector = tmp_path / "collector"
+    collector.write_text(
+        "#!" + sys.executable + "\n"
+        "import json,os,signal,time\nfrom pathlib import Path\n"
+        "p=Path(os.environ['SESSION_DIR'])/'session_manifest.json'\n"
+        "p.write_text(json.dumps({'ended_at_utc':None,'parquet_write_failures':0}))\n"
+        "def stop(*_):\n"
+        " p.write_text(json.dumps({'ended_at_utc':'done','parquet_write_failures':0})); raise SystemExit(0)\n"
+        "signal.signal(signal.SIGINT,stop)\nwhile True: time.sleep(.01)\n"
+    )
+    collector.chmod(0o755)
+    root = tmp_path / "run"
+    plan = {
+        "schema_version": "anticipation-campaign-v1",
+        "actual_audit_key": "actual_bot_tasks",
+        "sessions": [
+            {
+                "session_id": "session-01",
+                "seed": 1,
+                "path": str(root / "raw/session-01"),
+                "task": {"family": "fake"},
+            }
+        ],
+    }
+    state = {"closed": False}
+
+    class BrokenAuditStimulus:
+        def prepare(self):
+            return {"ready": True}
+
+        def seed(self, seed):
+            return {"model": "fake"}
+
+        def run(self, event, origin):
+            return {"status": "ran"}
+
+        def session_records(self):
+            raise RuntimeError("audit accessor failed")
+
+        def close(self):
+            state["closed"] = True
+            return {"unloaded": True}
+
+    monkeypatch.setattr(campaign, "wait_until", lambda deadline: None)
+    with pytest.raises(RuntimeError, match="audit accessor failed"):
+        campaign.capture(
+            root, collector, campaign=plan, stimulus_factory=BrokenAuditStimulus
+        )
+    assert state["closed"] is True
+    manifest = json.loads((root / "raw/session-01/session_manifest.json").read_text())
+    assert manifest["ended_at_utc"] == "done"
+    status = json.loads((root / "capture-status.json").read_text())
+    assert status["status"] == "incomplete"
+    assert status["stimulus_cleanup"] == {"unloaded": True}

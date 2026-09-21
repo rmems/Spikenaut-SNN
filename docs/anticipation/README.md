@@ -33,7 +33,7 @@ spikenaut-etl prepare-anticipation --input /path/to/unique-run/campaign.json \
 
 ### Hermes agent workload variant
 
-The separate `hermes-ollama-inference-v1` acquisition protocol measures the same
+The separate `hermes-ollama-inference-v2` acquisition protocol measures the same
 five collector sensors and retains the same 12-session split, timing, ETL,
 forecast models, and training budget. Its active stimulus is one real, bounded
 Hermes file-processing task per session instead of the PyTorch microbenchmark.
@@ -54,11 +54,22 @@ scratch directory, local custom-provider configuration, no provider fallback,
 and only the `terminal` and `file` toolsets. Ambient rules, profiles, memories,
 skills, plugins, MCP servers, and provider credentials are excluded. Each task
 uses `--max-turns 4`, an 80-second Hermes run budget, and an independent hard
-deadline at 120 seconds from sensor capture start. A session is not accepted as
-an agent workload unless the stream records at least one tool call. Budget
-limited runs retain their truthful status; process errors and hard timeouts make
-the campaign incomplete. The runner unloads only the model it loaded and
-verifies removal during cleanup.
+deadline at 120 seconds from sensor capture start. Hermes runs in the scratch
+directory, which is also configured as `terminal.cwd`; prompts name every input,
+output, and verifier by absolute path. A session is not accepted as an agent
+workload unless the stream confirms the configured local model, at least one
+permitted tool call, and a terminal result. Plain stdout diagnostics are retained
+alongside parsed JSON events; malformed object-like lines are rejected.
+
+An ordinary nonzero bot result remains a valid hardware workload when the
+stream has positive usage and no explicit infrastructure error, while its task
+outcome is recorded as incomplete. At the 100-second outer limit, the parent
+sends SIGTERM. An interrupted run is accepted as `timeboxed` only when Hermes
+emits its terminal result and exits during the two-second grace period without
+SIGKILL. Its zero token counters are labeled partial rather than interpreted as
+zero work. Task completion comes only from the known fixture verifier, never
+from generated text. The runner unloads and verifies its exact owned model after
+every bot run, before the recovery interval, and requires cleanup by 130 seconds.
 
 Use a new output directory. Do not point this runner at an existing controlled
 campaign or at a user Hermes profile:

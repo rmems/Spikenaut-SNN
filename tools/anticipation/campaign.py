@@ -184,6 +184,7 @@ def capture(root, collector, *, campaign=None, stimulus_factory=None):
                 process = subprocess.Popen(
                     [str(collector)], env=env, stdout=log, stderr=log
                 )
+                session_error = None
                 try:
                     ready_deadline = time.monotonic() + 15
                     while not (directory / "session_manifest.json").exists():
@@ -218,9 +219,9 @@ def capture(root, collector, *, campaign=None, stimulus_factory=None):
                     wait_until(origin + 150)
                     if process.poll() is not None:
                         raise RuntimeError("collector exited before scheduled shutdown")
+                except BaseException as error:
+                    session_error = error
                 finally:
-                    if hasattr(stimulus, "session_records"):
-                        actual = stimulus.session_records()
                     record = {
                         "session_id": session["session_id"],
                         "started_at_utc": started,
@@ -230,6 +231,9 @@ def capture(root, collector, *, campaign=None, stimulus_factory=None):
                     if runtime_metadata is not None:
                         record["stimulus_runtime"] = runtime_metadata
                     try:
+                        if hasattr(stimulus, "session_records"):
+                            actual = stimulus.session_records()
+                            record[audit_key] = actual
                         if hasattr(stimulus, "torch"):
                             record["peak_cuda_reserved_bytes"] = (
                                 stimulus.torch.cuda.max_memory_reserved()
@@ -238,6 +242,18 @@ def capture(root, collector, *, campaign=None, stimulus_factory=None):
                                 stimulus.torch.cuda.max_memory_allocated()
                             )
                         write_json(directory / "stimulus-audit.json", record)
+                    except BaseException as error:
+                        record["audit_error"] = f"{type(error).__name__}: {error}"
+                        if session_error is None:
+                            session_error = error
+                        try:
+                            write_json(directory / "stimulus-audit.json", record)
+                        except BaseException as write_error:
+                            record["audit_write_error"] = (
+                                f"{type(write_error).__name__}: {write_error}"
+                            )
+                            if session_error is None:
+                                session_error = write_error
                     finally:
                         # Collector cleanup is mandatory even if diagnostics or disk writes fail.
                         if process.poll() is None:
@@ -248,10 +264,17 @@ def capture(root, collector, *, campaign=None, stimulus_factory=None):
                             process.kill()
                             record["collector_exit_code"] = process.wait()
                             record["status"] = "shutdown_timeout"
-                            write_json(directory / "stimulus-audit.json", record)
-                            raise RuntimeError(
+                            try:
+                                write_json(directory / "stimulus-audit.json", record)
+                            except BaseException:
+                                pass
+                            shutdown_error = RuntimeError(
                                 "collector failed graceful shutdown; capture incomplete"
-                            ) from None
+                            )
+                            if session_error is None:
+                                session_error = shutdown_error
+                    if session_error is not None:
+                        raise session_error
             manifest = json.loads((directory / "session_manifest.json").read_text())
             record["collector_exit_code"] = exit_code
             record["status"] = "collector_stopped"

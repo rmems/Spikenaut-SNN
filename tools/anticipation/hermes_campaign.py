@@ -11,6 +11,7 @@ from pathlib import Path
 import random
 import signal
 import subprocess
+import sys
 import time
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
@@ -18,7 +19,7 @@ from urllib.request import Request, urlopen
 from tools.anticipation.campaign import capture
 
 
-PROTOCOL_ID = "hermes-ollama-inference-v1"
+PROTOCOL_ID = "hermes-ollama-inference-v2"
 DEFAULT_MODEL = "gemma4:12b"
 DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
 DEFAULT_HERMES = Path("/home/raulmc/.hermes/hermes-agent/venv/bin/hermes")
@@ -29,34 +30,46 @@ MODEL_PLAN = (
     ("Ornith-1.5-9B:latest", 262144),
 )
 EXCLUDED_MODELS = {"muse-glimmer:30b", "nemotron-3.5-lightning:30b"}
+ALLOWED_TOOLS = {
+    "terminal",
+    "process_manage",
+    "read_file",
+    "write_file",
+    "patch",
+    "search_files",
+}
 
 
-def _prompt(family, records, target_tokens, seed):
+def _prompt(family, records, target_tokens, seed, scratch):
+    scratch = Path(scratch).resolve()
     common = (
-        "Work only in the current scratch directory. Do not use the network, install "
+        f"Work only in the scratch directory {scratch}. Do not use the network, install "
         "anything, access other directories, or run repository operations. Use the enabled "
         "file or terminal tools to perform the task, verify the output, then answer concisely. "
         f"The synthetic fixture seed is {seed}. "
     )
     if family == "csv-aggregation":
         return common + (
-            f"Read all {records} data rows in input.csv (approximately {target_tokens} input "
+            f"Read all {records} data rows in {scratch / 'input.csv'} "
+            f"(approximately {target_tokens} input "
             "tokens), aggregate amount by category, and "
-            "write output.json as an object with alphabetically sorted category keys and numeric "
-            "totals. Run python verify.py to verify the result."
+            f"write {scratch / 'output.json'} as an object with alphabetically sorted category "
+            f"keys and numeric totals. Run python {scratch / 'verify.py'} to verify the result."
         )
     if family == "json-transformation":
         return common + (
-            f"Read all {records} records in input.json (approximately {target_tokens} input "
+            f"Read all {records} records in {scratch / 'input.json'} "
+            f"(approximately {target_tokens} input "
             "tokens), retain enabled records, sort by id, "
-            "and write output.json containing objects with id and score fields. Run python "
-            "verify.py to verify the result."
+            f"and write {scratch / 'output.json'} containing objects with id and score fields. "
+            f"Run python {scratch / 'verify.py'} to verify the result."
         )
     return common + (
-        f"Read the {records}-line specification.txt (approximately {target_tokens} input "
-        "tokens) plus transform.py and test_transform.py. "
-        "Fix the small bug in transform.py so it follows the specification. Run python "
-        "test_transform.py to verify the fix."
+        f"Read the {records}-line {scratch / 'specification.txt'} "
+        f"(approximately {target_tokens} input tokens) plus {scratch / 'transform.py'} and "
+        f"{scratch / 'test_transform.py'}. Fix the small bug in {scratch / 'transform.py'} so "
+        f"it follows the specification. Do not modify the verifier. Run python "
+        f"{scratch / 'test_transform.py'} to verify the fix."
     )
 
 
@@ -90,7 +103,8 @@ def build_hermes_campaign(root):
             ],
         )
         model, advertised_context = MODEL_PLAN[(i - 1) % len(MODEL_PLAN)]
-        prompt = _prompt(family, records, target_tokens, seed)
+        scratch = root / "hermes" / f"session-{i:02}" / "scratch"
+        prompt = _prompt(family, records, target_tokens, seed, scratch)
         sessions.append(
             {
                 "session_id": f"session-{i:02}",
@@ -109,6 +123,7 @@ def build_hermes_campaign(root):
                     "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
                     "start_s": 20.0,
                     "hard_deadline_s": 120.0,
+                    "cleanup_deadline_s": 130.0,
                 },
             }
         )
@@ -163,12 +178,21 @@ def _local_endpoint(endpoint):
 class OllamaRuntime:
     """Own one preloaded Ollama model and verify its eventual removal."""
 
-    def __init__(self, endpoint=DEFAULT_ENDPOINT, model=DEFAULT_MODEL):
+    def __init__(
+        self,
+        endpoint=DEFAULT_ENDPOINT,
+        model=DEFAULT_MODEL,
+        *,
+        preload_timeout_seconds=120,
+        request_timeout_seconds=15,
+    ):
         self.endpoint = _local_endpoint(endpoint)
         self.model = model
-        self._owned = False
+        self.preload_timeout_seconds = preload_timeout_seconds
+        self.request_timeout_seconds = request_timeout_seconds
+        self._owned_model = None
 
-    def _request(self, method, path, payload=None):
+    def _request(self, method, path, payload=None, *, timeout=None):
         data = None if payload is None else json.dumps(payload).encode()
         request = Request(
             self.endpoint + path,
@@ -176,7 +200,10 @@ class OllamaRuntime:
             method=method,
             headers={"Content-Type": "application/json"},
         )
-        with urlopen(request, timeout=15) as response:
+        with urlopen(
+            request,
+            timeout=self.request_timeout_seconds if timeout is None else timeout,
+        ) as response:
             result = json.loads(response.read())
         if not isinstance(result, dict):
             raise RuntimeError(f"Ollama {path} returned a non-object response")
@@ -198,7 +225,7 @@ class OllamaRuntime:
     def select(self, model, expected_context_length):
         if model in EXCLUDED_MODELS:
             raise ValueError(f"model is excluded from this campaign: {model}")
-        if self._owned:
+        if self._owned_model is not None:
             self.close()
         elif self._models():
             raise RuntimeError(
@@ -219,18 +246,36 @@ class OllamaRuntime:
             raise RuntimeError(
                 f"advertised context for {model} is {context_length}, planned {expected_context_length}"
             )
-        self._request(
-            "POST",
-            "/api/generate",
-            {
-                "model": model,
-                "prompt": "",
-                "stream": False,
-                "keep_alive": -1,
-                "options": {"num_ctx": context_length},
-            },
-        )
-        self._owned = True
+        # The server can complete a load even if its response is lost. Claim only
+        # this exact requested identity before the request so later cleanup can
+        # reconcile that ambiguous outcome without touching another model.
+        self._owned_model = model
+        try:
+            self._request(
+                "POST",
+                "/api/generate",
+                {
+                    "model": model,
+                    "prompt": "",
+                    "stream": False,
+                    "keep_alive": -1,
+                    "options": {"num_ctx": context_length},
+                },
+                timeout=self.preload_timeout_seconds,
+            )
+        except BaseException:
+            try:
+                loaded_after_error = self._models()
+            except BaseException:
+                # Retain the intended identity: close() must make a bounded,
+                # exact-name cleanup attempt when residency cannot be queried.
+                raise
+            if not any(
+                (entry.get("model") or entry.get("name")) == model
+                for entry in loaded_after_error
+            ):
+                self._owned_model = None
+            raise
         loaded = self._models()
         if len(loaded) != 1:
             raise RuntimeError(
@@ -267,16 +312,30 @@ class OllamaRuntime:
         }
 
     def close(self):
-        if not self._owned:
+        owned_model = self._owned_model
+        if owned_model is None:
             return {"model": self.model, "unloaded": False}
-        self._request("POST", "/api/generate", {"model": self.model, "keep_alive": 0})
+        try:
+            resident = self._models()
+        except BaseException:
+            resident = None
+        if resident is not None and not any(
+            (entry.get("model") or entry.get("name")) == owned_model
+            for entry in resident
+        ):
+            self._owned_model = None
+            return {"model": owned_model, "unloaded": False}
+        self._request("POST", "/api/generate", {"model": owned_model, "keep_alive": 0})
         remaining = self._models()
-        if any((m.get("model") or m.get("name")) == self.model for m in remaining):
+        if any(
+            (entry.get("model") or entry.get("name")) == owned_model
+            for entry in remaining
+        ):
             raise RuntimeError(
-                f"Ollama model {self.model} remained resident after unload"
+                f"Ollama model {owned_model} remained resident after unload"
             )
-        self._owned = False
-        return {"model": self.model, "unloaded": True}
+        self._owned_model = None
+        return {"model": owned_model, "unloaded": True}
 
 
 class HermesStimulus:
@@ -302,6 +361,7 @@ class HermesStimulus:
         self._session = None
         self._records = []
         self._runtime_metadata = None
+        self._verifier_plan = None
 
     def prepare(self):
         if not self.hermes_executable.is_file():
@@ -319,7 +379,7 @@ class HermesStimulus:
         self.model = model
         return dict(self._runtime_metadata)
 
-    def _write_config(self, home, context_length):
+    def _write_config(self, home, context_length, scratch):
         api_base = self.endpoint + "/v1"
         home.mkdir(parents=True, exist_ok=False)
         (home / "config.yaml").write_text(
@@ -332,6 +392,8 @@ class HermesStimulus:
             f"  ollama_num_ctx: {context_length}\n"
             "fallback_providers: []\n"
             "toolsets: [terminal, file]\n"
+            "terminal:\n"
+            f"  cwd: {scratch}\n"
             "mcp_servers: {}\n"
             "memory:\n"
             "  memory_enabled: false\n"
@@ -363,7 +425,7 @@ class HermesStimulus:
                 rows.append(f"{category},{amount}")
                 totals[category] = totals.get(category, 0) + amount
             (scratch / "input.csv").write_text("\n".join(rows) + "\n")
-            expected = json.dumps(dict(sorted(totals.items())), sort_keys=True)
+            expected = dict(sorted(totals.items()))
         elif family == "json-transformation":
             records = [
                 {
@@ -375,14 +437,11 @@ class HermesStimulus:
             ]
             rng.shuffle(records)
             (scratch / "input.json").write_text(json.dumps(records, indent=2) + "\n")
-            expected = json.dumps(
-                [
-                    {"id": r["id"], "score": r["score"]}
-                    for r in sorted(records, key=lambda x: x["id"])
-                    if r["enabled"]
-                ],
-                sort_keys=True,
-            )
+            expected = [
+                {"id": r["id"], "score": r["score"]}
+                for r in sorted(records, key=lambda x: x["id"])
+                if r["enabled"]
+            ]
         else:
             lines = [
                 "Specification: normalize each input word by stripping surrounding whitespace, "
@@ -402,13 +461,23 @@ class HermesStimulus:
                 "assert normalize([' Beta ', '', 'ALPHA', ' gamma ']) == ['beta', 'alpha', 'gamma']\n"
                 "print('ok')\n"
             )
-            return
+            verifier = scratch / "test_transform.py"
+            return {
+                "kind": "fixed-python-test",
+                "path": str(verifier),
+                "sha256": hashlib.sha256(verifier.read_bytes()).hexdigest(),
+            }
         (scratch / "verify.py").write_text(
             "import json\nfrom pathlib import Path\n"
-            f"expected=json.loads({expected!r})\n"
+            f"expected={expected!r}\n"
             "actual=json.loads(Path('output.json').read_text())\n"
             "assert actual == expected, (actual, expected)\nprint('ok')\n"
         )
+        return {
+            "kind": "json-output",
+            "path": str(scratch / "output.json"),
+            "expected": expected,
+        }
 
     def prepare_session(self, session):
         if self._seed != session["seed"]:
@@ -417,14 +486,17 @@ class HermesStimulus:
         scratch = Path(session["scratch_path"])
         if self._runtime_metadata is None or self.model != session["model"]:
             raise RuntimeError("session model does not match selected Ollama runtime")
-        self._write_config(home, self._runtime_metadata["advertised_context_length"])
+        self._write_config(
+            home, self._runtime_metadata["advertised_context_length"], scratch
+        )
         scratch.mkdir(parents=True, exist_ok=False)
-        self._write_fixture(session, scratch)
+        self._verifier_plan = self._write_fixture(session, scratch)
         prompt = _prompt(
             session["task"]["family"],
             session["task"]["fixture_records"],
             session["task"]["input_target_tokens"],
             session["seed"],
+            scratch,
         )
         digest = hashlib.sha256(prompt.encode()).hexdigest()
         if digest != session["task"]["prompt_sha256"]:
@@ -478,13 +550,101 @@ class HermesStimulus:
     @staticmethod
     def _events(stdout):
         events = []
+        diagnostics = []
         for line in stdout.splitlines():
-            if line.strip():
-                event = json.loads(line)
-                if not isinstance(event, dict):
-                    raise RuntimeError("Hermes stream-json line was not an object")
-                events.append(event)
-        return events
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError as error:
+                if stripped.startswith(("{", "[")):
+                    raise RuntimeError(
+                        "Hermes stream contained a malformed object-like line"
+                    ) from error
+                diagnostics.append(line)
+                continue
+            if not isinstance(event, dict):
+                raise RuntimeError("Hermes stream-json line was not an object")
+            events.append(event)
+        return events, diagnostics
+
+    @staticmethod
+    def _positive_usage(usage):
+        return isinstance(usage, dict) and any(
+            isinstance(value, (int, float)) and value > 0 for value in usage.values()
+        )
+
+    @staticmethod
+    def _scope_tool_calls(tool_calls, scratch):
+        scratch = Path(scratch).resolve()
+        outside = []
+        for call in tool_calls:
+            call["explicit_paths"] = []
+            values = call.get("input")
+            if not isinstance(values, dict):
+                continue
+            for key in ("path", "cwd", "workdir"):
+                value = values.get(key)
+                if not isinstance(value, str) or not value:
+                    continue
+                resolved = Path(value)
+                if not resolved.is_absolute():
+                    resolved = scratch / resolved
+                resolved = resolved.resolve()
+                in_scope = resolved == scratch or scratch in resolved.parents
+                path_audit = {
+                    "field": key,
+                    "provided": value,
+                    "resolved": str(resolved),
+                    "in_scratch": in_scope,
+                }
+                call["explicit_paths"].append(path_audit)
+                if not in_scope:
+                    outside.append(
+                        {
+                            "tool_call_id": call.get("tool_call_id"),
+                            "name": call.get("name"),
+                            **path_audit,
+                        }
+                    )
+        return outside
+
+    def _verify_fixture(self, session):
+        plan = self._verifier_plan
+        if not isinstance(plan, dict):
+            return {"status": "failed", "reason": "missing verifier plan"}
+        try:
+            if plan["kind"] == "json-output":
+                actual = json.loads(Path(plan["path"]).read_text())
+                if actual != plan["expected"]:
+                    return {"status": "failed", "reason": "output mismatch"}
+                return {"status": "passed", "kind": "direct-json-comparison"}
+            verifier = Path(plan["path"])
+            if hashlib.sha256(verifier.read_bytes()).hexdigest() != plan["sha256"]:
+                return {"status": "failed", "reason": "fixed verifier was modified"}
+            completed = subprocess.run(
+                [sys.executable, str(verifier)],
+                cwd=session["scratch_path"],
+                env=self.environment(session),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=False,
+            )
+            return {
+                "status": "passed" if completed.returncode == 0 else "failed",
+                "kind": "fixed-python-test",
+                "exit_code": completed.returncode,
+                "stdout": completed.stdout,
+                "stderr": completed.stderr,
+            }
+        except BaseException as error:
+            return {
+                "status": "failed",
+                "reason": f"{type(error).__name__}: {error}",
+            }
 
     def run(self, event, origin):
         session = self._session
@@ -500,6 +660,9 @@ class HermesStimulus:
             "runtime": dict(self._runtime_metadata or {}),
         }
         process = None
+        pending_error = None
+        timeboxed = False
+        forced_kill = False
         try:
             process = subprocess.Popen(
                 self.command(session),
@@ -507,6 +670,7 @@ class HermesStimulus:
                 stderr=subprocess.PIPE,
                 text=True,
                 env=self.environment(session),
+                cwd=session["scratch_path"],
                 start_new_session=True,
             )
             remaining = origin + event["hard_deadline_s"] - time.monotonic()
@@ -514,30 +678,40 @@ class HermesStimulus:
             try:
                 stdout, stderr = process.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
+                timeboxed = True
+                record["parent_stop_reason"] = "100s_agent_timebox"
                 os.killpg(process.pid, signal.SIGTERM)
                 try:
                     stdout, stderr = process.communicate(timeout=2)
                 except subprocess.TimeoutExpired:
+                    forced_kill = True
                     os.killpg(process.pid, signal.SIGKILL)
                     stdout, stderr = process.communicate()
-                self._write_process_logs(session, stdout, stderr, record)
-                record.update(status="hard_timeout", exit_code=process.returncode)
-                raise RuntimeError("Hermes task exceeded hard timeout")
 
             ended_mono = time.monotonic()
             self._write_process_logs(session, stdout, stderr, record)
-            events = self._events(stdout)
+            events, diagnostics = self._events(stdout)
             tool_calls = [
                 {
-                    "name": e.get("tool_name"),
+                    "name": e.get("name"),
                     "tool_call_id": e.get("tool_call_id"),
                     "input": e.get("input"),
                 }
                 for e in events
                 if e.get("type") == "tool_use"
             ]
+            tool_results = [
+                {
+                    "name": e.get("name"),
+                    "tool_call_id": e.get("tool_call_id"),
+                    "is_error": e.get("is_error"),
+                    "duration_ms": e.get("duration_ms"),
+                }
+                for e in events
+                if e.get("type") == "tool_result"
+            ]
             result = next(
-                (e for e in reversed(events) if e.get("type") == "result"), {}
+                (e for e in reversed(events) if e.get("type") == "result"), None
             )
             init = next(
                 (
@@ -551,49 +725,103 @@ class HermesStimulus:
                 ended_at_utc=datetime.now(timezone.utc).isoformat(),
                 actual_end_s=ended_mono - origin,
                 exit_code=process.returncode,
-                session_id=init.get("session_id") or result.get("session_id"),
+                session_id=init.get("session_id")
+                or (result.get("session_id") if result else None),
                 model=init.get("model"),
                 tool_call_count=len(tool_calls),
                 tool_calls=tool_calls,
+                tool_results=tool_results,
+                stdout_diagnostics=diagnostics,
                 result_status={
-                    "exit_code": result.get("exit_code"),
-                    "error": result.get("error"),
+                    "exit_code": result.get("exit_code") if result else None,
+                    "error": result.get("error") if result else None,
                 },
-                usage=result.get("tokens"),
+                usage=result.get("tokens") if result else None,
             )
+            invalid_tools = [
+                tool_event
+                for tool_event in (*tool_calls, *tool_results)
+                if not isinstance(tool_event["name"], str)
+                or not tool_event["name"].strip()
+                or tool_event["name"] not in ALLOWED_TOOLS
+            ]
             if not tool_calls:
-                record["status"] = "incomplete"
                 raise RuntimeError(
                     "Hermes task completed without an observed tool call"
                 )
+            if invalid_tools:
+                raise RuntimeError("Hermes reported an unsupported or empty tool name")
             if init.get("model") != self.model:
-                record["status"] = "incomplete"
                 raise RuntimeError("Hermes did not report the configured local model")
-            if not result:
-                record["status"] = "incomplete"
+            if result is None:
                 raise RuntimeError("Hermes stream ended without a terminal result")
-            error_text = str(result.get("error") or "")
-            if "budget" in error_text.lower():
-                record["status"] = "budget_limited"
-            elif process.returncode or result.get("exit_code") not in (0, None):
-                record["status"] = "incomplete"
-                raise RuntimeError("Hermes task returned an error")
+            if forced_kill:
+                raise RuntimeError("Hermes timebox required SIGKILL")
+            result_error = result.get("error")
+            parent_interrupt = timeboxed and result_error == "Interrupted"
+            if result_error and not parent_interrupt:
+                raise RuntimeError("Hermes terminal result reported an explicit error")
+            if not timeboxed and not self._positive_usage(result.get("tokens")):
+                raise RuntimeError(
+                    "Hermes terminal result omitted positive token usage"
+                )
+
+            outside = self._scope_tool_calls(tool_calls, session["scratch_path"])
+            record["out_of_scope_tool_calls"] = outside
+            record["verifier"] = self._verify_fixture(session)
+            record["workload_status"] = "valid"
+            if timeboxed:
+                record["status"] = "timeboxed"
+                record["execution_status"] = "timeboxed"
+                record["usage_quality"] = "partial_after_parent_sigterm"
+                record["framework_interruption"] = result_error
+                record["task_outcome"] = "incomplete"
             else:
-                record["status"] = "complete"
-            return record
+                record["status"] = "workload_valid"
+                record["execution_status"] = "completed"
+                record["usage_quality"] = "reported_positive"
+                successful_exit = (
+                    process.returncode == 0 and result.get("exit_code") == 0
+                )
+                record["task_outcome"] = (
+                    "verified_complete"
+                    if successful_exit
+                    and record["verifier"]["status"] == "passed"
+                    and not outside
+                    else "incomplete"
+                )
         except BaseException as error:
-            if record["status"] == "running":
-                record["status"] = "incomplete"
+            pending_error = error
+            record["status"] = "invalid"
+            record["workload_status"] = "invalid"
+            record.setdefault("task_outcome", "unknown")
             record.setdefault("error", f"{type(error).__name__}: {error}")
-            raise
         finally:
             if process is not None and process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
+                forced_kill = True
+                record["forced_kill"] = True
+            try:
+                record["model_cleanup"] = self.runtime.close()
+                record["model_cleanup_end_s"] = time.monotonic() - origin
+                if record["model_cleanup_end_s"] > event["cleanup_deadline_s"]:
+                    raise RuntimeError(
+                        "owned model cleanup exceeded the 130s session deadline"
+                    )
+            except BaseException as error:
+                record["model_cleanup_error"] = f"{type(error).__name__}: {error}"
+                record["status"] = "invalid"
+                record["workload_status"] = "invalid"
+                if pending_error is None:
+                    pending_error = error
             record.setdefault("ended_at_utc", datetime.now(timezone.utc).isoformat())
             record.setdefault("actual_end_s", time.monotonic() - origin)
             if not self._records or self._records[-1] is not record:
                 self._records.append(record)
+        if pending_error is not None:
+            raise pending_error
+        return record
 
     @staticmethod
     def _write_process_logs(session, stdout, stderr, record):

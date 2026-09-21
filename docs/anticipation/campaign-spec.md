@@ -31,10 +31,13 @@ The local Julia trainer loads successfully, and PyTorch can access the RTX 5080 
 - Finalize each recording with a graceful collector shutdown. Require complete manifests, zero reported write failures, and sufficient valid windows in every assigned session. A deficient capture produces an incomplete campaign report rather than a silently changed split.
 
 The controlled PyTorch stimulus above remains the binding original protocol.
-The separately identified `hermes-ollama-inference-v1` variant in
+The separately identified `hermes-ollama-inference-v2` variant in
 [README.md](README.md) uses the same sensor, split, timing, ETL, and forecasting
-contracts but different active-workload provenance. Captures from the two
-protocols remain separate.
+contracts but different active-workload provenance. Version 2 predeclares the
+100-second Hermes process limit as a normal timebox when SIGTERM produces a
+terminal result and graceful exit, records bot-task verification independently
+from hardware-workload validity, and unloads the session model before recovery.
+Captures from the two protocols remain separate.
 
 ## Forecasting contract and training experiments
 
