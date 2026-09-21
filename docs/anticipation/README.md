@@ -84,13 +84,20 @@ deadline at 120 seconds from sensor capture start. Prompts name each input and
 output by absolute path while expected answers remain only in the parent harness,
 outside the agent-visible scratch directory. Python candidates run only during
 verification inside a Bubblewrap namespace with no network and read-only mounts
-for the interpreter, candidate, and parent-owned verifier. A trusted runner
-accepts only function and import declarations, supervises candidate evaluation
-in a child process, then emits the result only after the child completes the
-validation handshake and `normalize()` call. The child also has
-fixed address-space, process-count, file-size, and CPU-time limits in addition
-to the five-second parent timeout. Verification fails closed when Bubblewrap or
-`prlimit` is unavailable. This verifier sandbox does not turn the
+for the interpreter, candidate, and parent-owned verifier. A trusted parent runner
+supplies fresh randomized normalization cases to a
+subordinate candidate process and compares its untrusted results against answers
+computed only in the parent. The worker receives no attestation secret or expected
+answers. This is functional testing of sampled behavior, not proof of arbitrary
+Python execution or general correctness. The sandbox omits `/proc`, and the worker
+installs a libseccomp filter before importing candidate code that denies process
+creation, cross-process memory access, and signaling. Address-space, CPU, and
+file-size limits apply to the sandbox; outer stdout/stderr go to size-limited
+regular files and host reads are capped at 64 KiB per stream. The launch-time
+`RLIMIT_NPROC` ceiling permits Bubblewrap startup on busy shared-UID systems;
+seccomp enforces the candidate no-fork boundary. Verification fails closed when
+Bubblewrap, `prlimit`, or `libseccomp.so.2` is unavailable. This verifier sandbox
+does not turn the
 Hermes process itself into a general filesystem sandbox. A session is not accepted
 as an agent workload unless the stream confirms the configured local model, at
 least one permitted tool call, and a terminal result. Plain stdout diagnostics are

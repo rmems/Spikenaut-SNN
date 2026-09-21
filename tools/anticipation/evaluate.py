@@ -41,11 +41,7 @@ def evaluate(
     started = time.monotonic()
     prepared, output = Path(prepared), Path(output)
     snn = output / "snn"
-    if output.exists() and any(output.iterdir()):
-        raise FileExistsError(
-            "evaluation already attempted; never extend or replace silently"
-        )
-    output.mkdir(parents=True, exist_ok=True)
+    _create_output(output)
     status = {
         "schema_version": "anticipation-budget-v1",
         "budget_seconds": budget_seconds,
@@ -64,32 +60,7 @@ def evaluate(
         if remaining <= 0:
             status["reason"] = "budget_exhausted_after_baselines"
             return status
-        grace = min(30.0, remaining * 0.15)
-        trainer_budget = remaining - grace
-        status["trainer_budget_seconds"] = trainer_budget
-        status["trainer_timeout_seconds"] = remaining
-        command = [julia]
-        if julia_version:
-            command.append("+" + julia_version)
-        command += [
-            f"--project={Path(__file__).parent}",
-            "--startup-file=no",
-            str(Path(__file__).with_name("train.jl")),
-            str(prepared),
-            str(snn),
-            str(trainer_budget),
-        ]
-        status["trainer_command"] = command
-        with (output / "training.log").open("w") as log:
-            try:
-                process = subprocess.run(
-                    command, stdout=log, stderr=log, timeout=remaining, check=False
-                )
-                status["trainer_exit_code"] = process.returncode
-                if process.returncode:
-                    status["reason"] = "trainer_failed"
-            except subprocess.TimeoutExpired:
-                status["reason"] = "shared_budget_exhausted"
+        _train(prepared, output, snn, remaining, status, julia, julia_version)
         if status["reason"] is None:
             status["status"] = "complete"
     except Exception as error:
@@ -97,26 +68,67 @@ def evaluate(
         raise
     finally:
         status["compute_elapsed_seconds"] = time.monotonic() - started
-        try:
-            if not (snn / "summary.json").exists():
-                write_json(
-                    snn / "summary.json",
-                    unfinished_summary(prepared, snn, status["reason"]),
-                )
-            if baseline_results is not None:
-                result = comparison(prepared, output, baseline_results=baseline_results)
-                if not result["complete"]:
-                    status["status"] = "incomplete"
-                    status["reason"] = status["reason"] or "unfinished_comparisons"
-        except Exception as error:
-            status["status"] = "incomplete"
-            status["finalization_error"] = f"{type(error).__name__}: {error}"
-            status["reason"] = status["reason"] or status["finalization_error"]
-            raise
-        finally:
-            status["total_elapsed_seconds"] = time.monotonic() - started
-            write_json(output / "budget-report.json", status)
+        _finalize(prepared, output, snn, status, baseline_results, started)
     return status
+
+
+def _train(prepared, output, snn, remaining, status, julia, julia_version):
+    grace = min(30.0, remaining * 0.15)
+    trainer_budget = remaining - grace
+    status["trainer_budget_seconds"] = trainer_budget
+    status["trainer_timeout_seconds"] = remaining
+    command = [julia]
+    if julia_version:
+        command.append("+" + julia_version)
+    command += [
+        f"--project={Path(__file__).parent}",
+        "--startup-file=no",
+        str(Path(__file__).with_name("train.jl")),
+        str(prepared),
+        str(snn),
+        str(trainer_budget),
+    ]
+    status["trainer_command"] = command
+    with (output / "training.log").open("w") as log:
+        try:
+            process = subprocess.run(
+                command, stdout=log, stderr=log, timeout=remaining, check=False
+            )
+            status["trainer_exit_code"] = process.returncode
+            if process.returncode:
+                status["reason"] = "trainer_failed"
+        except subprocess.TimeoutExpired:
+            status["reason"] = "shared_budget_exhausted"
+
+
+def _finalize(prepared, output, snn, status, baseline_results, started):
+    try:
+        if not (snn / "summary.json").exists():
+            write_json(
+                snn / "summary.json",
+                unfinished_summary(prepared, snn, status["reason"]),
+            )
+        if baseline_results is not None:
+            result = comparison(prepared, output, baseline_results=baseline_results)
+            if not result["complete"]:
+                status["status"] = "incomplete"
+                status["reason"] = status["reason"] or "unfinished_comparisons"
+    except Exception as error:
+        status["status"] = "incomplete"
+        status["finalization_error"] = f"{type(error).__name__}: {error}"
+        status["reason"] = status["reason"] or status["finalization_error"]
+        raise
+    finally:
+        status["total_elapsed_seconds"] = time.monotonic() - started
+        write_json(output / "budget-report.json", status)
+
+
+def _create_output(output):
+    if output.exists() and any(output.iterdir()):
+        raise FileExistsError(
+            "evaluation already attempted; never extend or replace silently"
+        )
+    output.mkdir(parents=True, exist_ok=True)
 
 
 if __name__ == "__main__":

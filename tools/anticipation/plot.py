@@ -42,28 +42,14 @@ def plot_results(output):
     fig.savefig(output / "comparison.png", dpi=180)
     fig.savefig(output / "comparison.svg")
     plt.close(fig)
+    _plot_learning_curves(output, report)
+
+
+def _plot_learning_curves(output, report):
     fig, axes = plt.subplots(1, 2, figsize=(11, 4))
     seedcolors = {123: "#4378a6", 456: "#bf6c38", 789: "#4b9970"}
     for run in report["runs"]:
-        curve = output / "snn" / f"{run['arm']}-{run['seed']}" / "learning_curves.json"
-        if not curve.exists():
-            continue
-        rows = json.loads(curve.read_text())
-        if not rows:
-            continue
-        style = "-" if run["arm"] == "uniform" else "--"
-        for ax, key in zip(axes, ["train_loss", "validation_primary"]):
-            if key not in rows[0]:
-                continue
-            ax.plot(
-                [r["epoch"] for r in rows],
-                [r[key] for r in rows],
-                color=seedcolors[run["seed"]],
-                linestyle=style,
-                label=f"{run['arm']} {run['seed']}",
-            )
-            ax.set_xlabel("Epoch")
-            ax.spines[["top", "right"]].set_visible(False)
+        _plot_run_curve(output, run, axes, seedcolors)
     axes[0].set_ylabel("Training standardized squared error")
     axes[1].set_ylabel("Validation five-second standardized MAE")
     axes[1].legend(fontsize=8)
@@ -71,6 +57,28 @@ def plot_results(output):
     fig.savefig(output / "learning-curves.png", dpi=180)
     fig.savefig(output / "learning-curves.svg")
     plt.close(fig)
+
+
+def _plot_run_curve(output, run, axes, seedcolors):
+    curve = output / "snn" / f"{run['arm']}-{run['seed']}" / "learning_curves.json"
+    if not curve.exists():
+        return
+    rows = json.loads(curve.read_text())
+    if not rows:
+        return
+    style = "-" if run["arm"] == "uniform" else "--"
+    for ax, key in zip(axes, ["train_loss", "validation_primary"]):
+        if key not in rows[0]:
+            continue
+        ax.plot(
+            [r["epoch"] for r in rows],
+            [r[key] for r in rows],
+            color=seedcolors[run["seed"]],
+            linestyle=style,
+            label=f"{run['arm']} {run['seed']}",
+        )
+        ax.set_xlabel("Epoch")
+        ax.spines[["top", "right"]].set_visible(False)
 
 
 if __name__ == "__main__":

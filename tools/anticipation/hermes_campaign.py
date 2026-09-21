@@ -3,23 +3,22 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import hashlib
-from http.client import HTTPConnection
 import json
 import os
 from pathlib import Path
 import random
 import shutil
 import signal
-import socket
 import subprocess
 import sys
-import threading
 import time
-from urllib.parse import urlsplit
+import tempfile
 
-from tools.anticipation.campaign import capture, write_json
+from tools.anticipation.campaign import capture
+
+from .ollama_runtime import OllamaRuntime as OllamaRuntime, _local_endpoint
 
 
 PROTOCOL_ID = "hermes-ollama-inference-v4"
@@ -94,59 +93,7 @@ def _prompt(family, records, target_tokens, seed, scratch):
 
 def build_hermes_campaign(root):
     root = Path(root).resolve()
-    sessions = []
-    families = (
-        "csv-aggregation",
-        "json-transformation",
-        "python-bugfix",
-        "json-transformation",
-        "python-bugfix",
-        "csv-aggregation",
-        "python-bugfix",
-        "csv-aggregation",
-        "json-transformation",
-        "csv-aggregation",
-        "json-transformation",
-        "python-bugfix",
-    )
-    token_targets = (1024, 8192, 16384) * 4
-    for i in range(1, 13):
-        seed = 2026092000 + i
-        family = families[i - 1]
-        target_tokens = token_targets[i - 1]
-        records = max(
-            32,
-            target_tokens
-            // {"csv-aggregation": 4, "json-transformation": 18, "python-bugfix": 14}[
-                family
-            ],
-        )
-        model, advertised_context = MODEL_PLAN[(i - 1) % len(MODEL_PLAN)]
-        scratch = root / "hermes" / f"session-{i:02}" / "scratch"
-        prompt = _prompt(family, records, target_tokens, seed, scratch)
-        sessions.append(
-            {
-                "session_id": f"session-{i:02}",
-                "split": "train" if i <= 6 else "validation" if i <= 9 else "test",
-                "seed": seed,
-                "model": model,
-                "advertised_context_length": advertised_context,
-                "path": str(root / "raw" / f"session-{i:02}"),
-                "hermes_home": str(root / "hermes" / f"session-{i:02}" / "home"),
-                "scratch_path": str(root / "hermes" / f"session-{i:02}" / "scratch"),
-                "prompt_path": str(root / "hermes" / f"session-{i:02}" / "prompt.txt"),
-                "task": {
-                    "family": family,
-                    "fixture_records": records,
-                    "input_target_tokens": target_tokens,
-                    "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
-                    "start_s": 20.0,
-                    "hard_deadline_s": 120.0,
-                    "termination_grace_s": SIGTERM_GRACE_SECONDS,
-                    "cleanup_deadline_s": 130.0,
-                },
-            }
-        )
+    sessions = _hermes_sessions(root)
     return {
         "schema_version": "anticipation-campaign-v1",
         "protocol_id": PROTOCOL_ID,
@@ -176,515 +123,6 @@ def build_hermes_campaign(root):
         },
         "sessions": sessions,
     }
-
-
-def _local_endpoint(endpoint):
-    parsed = urlsplit(endpoint)
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname != "127.0.0.1"
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path not in ("", "/")
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError("Ollama endpoint must be http://127.0.0.1:<port>")
-    try:
-        parsed.port
-    except ValueError as error:
-        raise ValueError("Ollama endpoint must be http://127.0.0.1:<port>") from error
-    return endpoint.rstrip("/")
-
-
-class OllamaRuntime:
-    """Own one preloaded Ollama model and verify its eventual removal."""
-
-    def __init__(
-        self,
-        endpoint=DEFAULT_ENDPOINT,
-        model=DEFAULT_MODEL,
-        *,
-        preload_timeout_seconds=120,
-        request_timeout_seconds=15,
-        preload_completion_timeout_seconds=PRELOAD_COMPLETION_TIMEOUT_SECONDS,
-        preload_keep_alive_seconds=PRELOAD_KEEP_ALIVE_SECONDS,
-        control_plane_timeout_seconds=CONTROL_PLANE_TIMEOUT_SECONDS,
-        cleanup_reconciliation_timeout_seconds=None,
-        durable_cleanup_timeout_seconds=DURABLE_CLEANUP_TIMEOUT_SECONDS,
-        cleanup_report_path=None,
-    ):
-        self.endpoint = _local_endpoint(endpoint)
-        self.model = model
-        self.preload_timeout_seconds = preload_timeout_seconds
-        self.request_timeout_seconds = request_timeout_seconds
-        self.preload_completion_timeout_seconds = preload_completion_timeout_seconds
-        self.preload_keep_alive_seconds = preload_keep_alive_seconds
-        self.control_plane_timeout_seconds = control_plane_timeout_seconds
-        self.cleanup_reconciliation_timeout_seconds = (
-            max(preload_completion_timeout_seconds, preload_keep_alive_seconds)
-            + request_timeout_seconds
-            if cleanup_reconciliation_timeout_seconds is None
-            else cleanup_reconciliation_timeout_seconds
-        )
-        self.durable_cleanup_timeout_seconds = durable_cleanup_timeout_seconds
-        self._cleanup_report_path = (
-            Path(cleanup_report_path).resolve()
-            if cleanup_report_path is not None
-            else None
-        )
-        self._owned_model = None
-        self._load_outcome_uncertain = False
-        self._preload_thread = None
-        self._preload_done = None
-        self._preload_outcome = None
-        self._preload_deadline = None
-        self._preload_transport_deadline = None
-        self._cleanup_thread = None
-        self._cleanup_error = None
-
-    def set_cleanup_report_path(self, path):
-        self._cleanup_report_path = Path(path).resolve()
-
-    def _write_cleanup_report(
-        self, model, state, *, retry_deadline_utc=None, final_error=None
-    ):
-        if self._cleanup_report_path is None:
-            return
-        report = {
-            "schema_version": "ollama-cleanup-v1",
-            "model": model,
-            "state": state,
-            "retry_timeout_seconds": self.durable_cleanup_timeout_seconds,
-            "retry_deadline_utc": retry_deadline_utc,
-            "final_error": final_error,
-            "updated_at_utc": datetime.now(timezone.utc).isoformat(),
-        }
-        try:
-            write_json(self._cleanup_report_path, report)
-        except OSError as error:
-            self._cleanup_error = RuntimeError(
-                f"could not persist Ollama cleanup report: {error}"
-            )
-
-    def _request(
-        self,
-        method,
-        path,
-        payload=None,
-        *,
-        timeout=_DEFAULT_REQUEST_TIMEOUT,
-        deadline_seconds=None,
-    ):
-        data = None if payload is None else json.dumps(payload).encode()
-        socket_timeout = (
-            self.request_timeout_seconds
-            if timeout is _DEFAULT_REQUEST_TIMEOUT
-            else timeout
-        )
-        if deadline_seconds is not None and deadline_seconds <= 0:
-            raise TimeoutError(f"Ollama {path} exceeded its end-to-end deadline")
-        if deadline_seconds is not None:
-            socket_timeout = min(socket_timeout, deadline_seconds)
-        expired = threading.Event()
-        endpoint = urlsplit(self.endpoint)
-        connection = HTTPConnection(
-            endpoint.hostname, endpoint.port, timeout=socket_timeout
-        )
-        responses = []
-
-        def expire_request():
-            expired.set()
-            sockets = [connection.sock]
-            for active_response in responses:
-                raw = getattr(getattr(active_response, "fp", None), "raw", None)
-                sockets.append(getattr(raw, "_sock", None))
-            for active_socket in {item for item in sockets if item is not None}:
-                try:
-                    active_socket.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
-                active_socket.close()
-            connection.close()
-
-        timer = None
-        if deadline_seconds is not None:
-            timer = threading.Timer(deadline_seconds, expire_request)
-            timer.daemon = True
-            timer.start()
-        try:
-            try:
-                connection.request(
-                    method,
-                    path,
-                    body=data,
-                    headers={"Content-Type": "application/json"},
-                )
-                response = connection.getresponse()
-                responses.append(response)
-                try:
-                    body = response.read()
-                    if not 200 <= response.status < 300:
-                        raise RuntimeError(
-                            f"HTTP Error {response.status}: Ollama {path} request failed"
-                        )
-                finally:
-                    response.close()
-            except BaseException as error:
-                if expired.is_set():
-                    raise TimeoutError(
-                        f"Ollama {path} exceeded {deadline_seconds}s end-to-end deadline"
-                    ) from error
-                raise
-            if expired.is_set():
-                raise TimeoutError(
-                    f"Ollama {path} exceeded {deadline_seconds}s end-to-end deadline"
-                )
-            result = json.loads(body)
-        finally:
-            if timer is not None:
-                timer.cancel()
-            connection.close()
-        if not isinstance(result, dict):
-            raise RuntimeError(f"Ollama {path} returned a non-object response")
-        return result
-
-    @staticmethod
-    def _remaining(deadline):
-        if deadline is None:
-            return None
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("Ollama request exceeded its end-to-end deadline")
-        return remaining
-
-    def _models(self, deadline=None):
-        models = self._request(
-            "GET", "/api/ps", deadline_seconds=self._remaining(deadline)
-        ).get("models")
-        if not isinstance(models, list):
-            raise RuntimeError("Ollama /api/ps response omitted models")
-        return models
-
-    @staticmethod
-    def _contains_model(models, model):
-        return any(
-            (entry.get("model") or entry.get("name")) == model for entry in models
-        )
-
-    def _unload_exact(self, model, deadline=None):
-        self._request(
-            "POST",
-            "/api/generate",
-            {"model": model, "keep_alive": 0},
-            deadline_seconds=self._remaining(deadline),
-        )
-        remaining = self._models(deadline)
-        if self._contains_model(remaining, model):
-            raise RuntimeError(f"Ollama model {model} remained resident after unload")
-        if remaining:
-            names = [entry.get("model") or entry.get("name") for entry in remaining]
-            raise RuntimeError(
-                "unexpected Ollama models remained resident after owned-model cleanup: "
-                + ", ".join(str(name) for name in names)
-            )
-
-    def _start_preload(self, model, context_length):
-        self._preload_done = threading.Event()
-        self._preload_outcome = {}
-        self._preload_deadline = (
-            time.monotonic() + self.preload_completion_timeout_seconds
-        )
-        transport_timeout = (
-            self.preload_completion_timeout_seconds + self.request_timeout_seconds
-        )
-        self._preload_transport_deadline = time.monotonic() + transport_timeout
-
-        def request_model():
-            try:
-                response = self._request(
-                    "POST",
-                    "/api/generate",
-                    {
-                        "model": model,
-                        "prompt": "",
-                        "stream": False,
-                        "keep_alive": f"{self.preload_keep_alive_seconds}s",
-                        "options": {"num_ctx": context_length},
-                    },
-                    # Outlive the logical deadline long enough to observe a
-                    # normal server completion, but keep the non-daemon worker
-                    # bounded if Ollama never finishes the response.
-                    timeout=transport_timeout,
-                    deadline_seconds=transport_timeout,
-                )
-                if response.get("done") is not True:
-                    raise RuntimeError(
-                        "Ollama preload response did not confirm completion"
-                    )
-                self._preload_outcome["response"] = response
-            except BaseException as error:
-                self._preload_outcome["error"] = error
-            finally:
-                self._preload_done.set()
-
-        self._preload_thread = threading.Thread(
-            target=request_model,
-            name=f"ollama-preload-{model}",
-            daemon=True,
-        )
-        self._preload_thread.start()
-
-    def _wait_for_preload_completion(self):
-        if self._preload_thread is None:
-            return False
-        remaining = max(0.0, self._preload_deadline - time.monotonic())
-        self._preload_thread.join(remaining + 0.1)
-        return not self._preload_thread.is_alive()
-
-    def _reconcile_uncertain_load(self, model):
-        """Wait for a timed-out server load, then remove the exact owned model."""
-        deadline = time.monotonic() + self.cleanup_reconciliation_timeout_seconds
-        last_error = None
-        while True:
-            try:
-                resident = self._models(deadline)
-                if self._contains_model(resident, model):
-                    self._unload_exact(model, deadline)
-                    return
-            except BaseException as error:
-                last_error = error
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            time.sleep(min(0.05, remaining))
-
-        message = (
-            f"Ollama model {model} cleanup remains uncertain; "
-            "timed-out preload never became observable during reconciliation"
-        )
-        self._start_durable_cleanup(model)
-        if last_error is not None:
-            raise RuntimeError(message) from last_error
-        raise RuntimeError(message)
-
-    def _start_durable_cleanup(self, model):
-        """Keep the process alive until the accepted preload can be reconciled."""
-        if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
-            return
-        self._cleanup_error = None
-        self._write_cleanup_report(model, "waiting_for_preload")
-
-        def finish_cleanup():
-            transport_remaining = max(
-                0.0, self._preload_transport_deadline - time.monotonic()
-            )
-            self._preload_thread.join(transport_remaining + 0.1)
-            deadline = time.monotonic() + self.durable_cleanup_timeout_seconds
-            retry_deadline_utc = (
-                datetime.now(timezone.utc)
-                + timedelta(seconds=self.durable_cleanup_timeout_seconds)
-            ).isoformat()
-            self._write_cleanup_report(
-                model, "retrying", retry_deadline_utc=retry_deadline_utc
-            )
-            backoff = DURABLE_CLEANUP_INITIAL_BACKOFF_SECONDS
-            last_error = None
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    if last_error is None:
-                        last_error = TimeoutError(
-                            "Ollama cleanup exceeded its end-to-end deadline"
-                        )
-                    final_error = f"{type(last_error).__name__}: {last_error}"
-                    self._cleanup_error = RuntimeError(
-                        f"Ollama model {model} durable cleanup could not confirm "
-                        f"absence after {self.durable_cleanup_timeout_seconds}s; "
-                        f"last error: {final_error}"
-                    )
-                    self._write_cleanup_report(
-                        model,
-                        "terminal_failure",
-                        retry_deadline_utc=retry_deadline_utc,
-                        final_error=final_error,
-                    )
-                    return
-                try:
-                    if self._preload_thread.is_alive():
-                        raise RuntimeError(
-                            "Ollama preload transport exceeded its end-to-end deadline"
-                        )
-                    resident = self._models(deadline)
-                    if self._contains_model(resident, model):
-                        self._unload_exact(model, deadline)
-                    elif resident:
-                        names = [
-                            entry.get("model") or entry.get("name")
-                            for entry in resident
-                        ]
-                        raise RuntimeError(
-                            "unexpected Ollama models remained resident during durable "
-                            "cleanup: " + ", ".join(str(name) for name in names)
-                        )
-                    self._owned_model = None
-                    self._load_outcome_uncertain = False
-                    self._write_cleanup_report(
-                        model,
-                        "confirmed_absent",
-                        retry_deadline_utc=retry_deadline_utc,
-                    )
-                    return
-                except BaseException as error:
-                    last_error = error
-
-                remaining = deadline - time.monotonic()
-                if remaining > 0:
-                    time.sleep(min(backoff, remaining))
-                backoff = min(backoff * 2, DURABLE_CLEANUP_MAX_BACKOFF_SECONDS)
-
-        self._cleanup_thread = threading.Thread(
-            target=finish_cleanup,
-            name=f"ollama-cleanup-{model}",
-            daemon=False,
-        )
-        self._cleanup_thread.start()
-
-    def prepare(self):
-        deadline = time.monotonic() + self.control_plane_timeout_seconds
-        existing = self._models(deadline)
-        if existing:
-            names = [m.get("name") or m.get("model") or "unknown" for m in existing]
-            raise RuntimeError(f"Ollama model already loaded: {', '.join(names)}")
-        version = self._request(
-            "GET", "/api/version", deadline_seconds=self._remaining(deadline)
-        )
-        return {"ollama_version": version.get("version")}
-
-    def select(self, model, expected_context_length):
-        if model in EXCLUDED_MODELS:
-            raise ValueError(f"model is excluded from this campaign: {model}")
-        if self._owned_model is not None:
-            self.close()
-        deadline = time.monotonic() + self.control_plane_timeout_seconds
-        if self._models(deadline):
-            raise RuntimeError(
-                "another Ollama model became resident before session setup"
-            )
-        show = self._request(
-            "POST",
-            "/api/show",
-            {"model": model},
-            deadline_seconds=self._remaining(deadline),
-        )
-        model_info = show.get("model_info")
-        if not isinstance(model_info, dict):
-            raise RuntimeError(f"Ollama /api/show omitted model_info for {model}")
-        architecture = model_info.get("general.architecture")
-        context_key = f"{architecture}.context_length" if architecture else None
-        context_length = model_info.get(context_key) if context_key else None
-        if not isinstance(context_length, int) or context_length <= 0:
-            raise RuntimeError(
-                f"Ollama /api/show omitted architecture context length for {model}"
-            )
-        if context_length != expected_context_length:
-            raise RuntimeError(
-                f"advertised context for {model} is {context_length}, planned {expected_context_length}"
-            )
-        # The server can complete a load even if its response is lost. Claim only
-        # this exact requested identity before the request so later cleanup can
-        # reconcile that ambiguous outcome without touching another model.
-        self._owned_model = model
-        self._load_outcome_uncertain = True
-        self._start_preload(model, context_length)
-        if not self._preload_done.wait(self.preload_timeout_seconds):
-            raise TimeoutError(
-                f"Ollama preload timed out after {self.preload_timeout_seconds}s; "
-                "owned request continues until cleanup"
-            )
-        if "error" in self._preload_outcome:
-            raise self._preload_outcome["error"]
-        self._load_outcome_uncertain = False
-        postload_deadline = time.monotonic() + self.control_plane_timeout_seconds
-        loaded = self._models(postload_deadline)
-        if len(loaded) != 1:
-            raise RuntimeError(
-                "Ollama preload did not produce exactly one resident model"
-            )
-        resident = loaded[0]
-        name = resident.get("model") or resident.get("name")
-        if name != model:
-            raise RuntimeError(f"unexpected resident Ollama model: {name}")
-        if resident.get("context_length") != context_length:
-            raise RuntimeError(
-                f"resident context length is {resident.get('context_length')}, expected {context_length}"
-            )
-        self.model = model
-        size = resident.get("size")
-        size_vram = resident.get("size_vram")
-        size_cpu = (
-            max(0, size - size_vram)
-            if isinstance(size, int) and isinstance(size_vram, int)
-            else None
-        )
-        return {
-            "model": model,
-            "architecture": architecture,
-            "advertised_context_length": context_length,
-            "digest": resident.get("digest"),
-            "quantization": (show.get("details") or {}).get("quantization_level"),
-            "preload": {
-                "logical_timeout_seconds": self.preload_timeout_seconds,
-                "completion_timeout_seconds": self.preload_completion_timeout_seconds,
-                "keep_alive_seconds": self.preload_keep_alive_seconds,
-            },
-            "residency": {
-                "size": size,
-                "size_vram": size_vram,
-                "size_cpu": size_cpu,
-                "context_length": resident.get("context_length"),
-            },
-        }
-
-    def close(self):
-        owned_model = self._owned_model
-        if owned_model is None:
-            return {"model": self.model, "unloaded": False}
-        if self._load_outcome_uncertain:
-            completed = self._wait_for_preload_completion()
-            if not completed or "error" in self._preload_outcome:
-                self._reconcile_uncertain_load(owned_model)
-                self._owned_model = None
-                self._load_outcome_uncertain = False
-                return {"model": owned_model, "unloaded": True}
-
-            cleanup_deadline = time.monotonic() + self.durable_cleanup_timeout_seconds
-            self._unload_exact(owned_model, cleanup_deadline)
-            self._owned_model = None
-            self._load_outcome_uncertain = False
-            return {"model": owned_model, "unloaded": True}
-
-        cleanup_deadline = time.monotonic() + self.durable_cleanup_timeout_seconds
-        try:
-            resident = self._models(cleanup_deadline)
-        except BaseException:
-            resident = None
-        if resident is not None and not any(
-            (entry.get("model") or entry.get("name")) == owned_model
-            for entry in resident
-        ):
-            if resident:
-                names = [entry.get("model") or entry.get("name") for entry in resident]
-                raise RuntimeError(
-                    "unexpected Ollama models remained resident while owned model was absent: "
-                    + ", ".join(str(name) for name in names)
-                )
-            self._owned_model = None
-            return {"model": owned_model, "unloaded": False}
-        self._unload_exact(owned_model, cleanup_deadline)
-        self._owned_model = None
-        self._load_outcome_uncertain = False
-        return {"model": owned_model, "unloaded": True}
 
 
 class HermesStimulus:
@@ -792,99 +230,7 @@ class HermesStimulus:
                 if r["enabled"]
             ]
         else:
-            lines = [
-                "Specification: normalize each input word by stripping surrounding whitespace, "
-                "convert it to lowercase, discard empty values, and preserve input order."
-            ]
-            lines.extend(
-                f"Example note {i:04}: normalization is deterministic and must not sort values."
-                for i in range(1, count)
-            )
-            (scratch / "specification.txt").write_text("\n".join(lines) + "\n")
-            (scratch / "transform.py").write_text(
-                "def normalize(words):\n"
-                "    return sorted(w.strip().upper() for w in words if w.strip())\n"
-            )
-            verifier = Path(session["hermes_home"]) / "harness-runner.py"
-            verifier.write_text(
-                "import ast\n"
-                "import json\n"
-                "from pathlib import Path\n"
-                "import secrets\n"
-                "import subprocess\n"
-                "import sys\n"
-                "READY = 'candidate-validation-complete'\n"
-                "if sys.argv[1] == '--child':\n"
-                "    import ctypes\n"
-                "    lib = ctypes.CDLL('libseccomp.so.2')\n"
-                "    lib.seccomp_init.argtypes = [ctypes.c_uint32]\n"
-                "    lib.seccomp_init.restype = ctypes.c_void_p\n"
-                "    lib.seccomp_syscall_resolve_name.argtypes = [ctypes.c_char_p]\n"
-                "    lib.seccomp_rule_add.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_uint]\n"
-                "    lib.seccomp_load.argtypes = [ctypes.c_void_p]\n"
-                "    lib.seccomp_release.argtypes = [ctypes.c_void_p]\n"
-                "    context = lib.seccomp_init(0x7fff0000)\n"
-                "    if not context:\n"
-                "        raise RuntimeError('cannot initialize candidate seccomp filter')\n"
-                "    try:\n"
-                "        for name in (b'fork', b'vfork', b'clone', b'clone3'):\n"
-                "            number = lib.seccomp_syscall_resolve_name(name)\n"
-                "            if number >= 0 and lib.seccomp_rule_add(context, 0x00050001, number, 0) != 0:\n"
-                "                raise RuntimeError('cannot restrict candidate process creation')\n"
-                "        if lib.seccomp_load(context) != 0:\n"
-                "            raise RuntimeError('cannot load candidate seccomp filter')\n"
-                "    finally:\n"
-                "        lib.seccomp_release(context)\n"
-                "    candidate = Path(sys.argv[2])\n"
-                "    tree = ast.parse(candidate.read_text(), filename=str(candidate))\n"
-                "    allowed = (ast.FunctionDef, ast.Import, ast.ImportFrom)\n"
-                "    assert tree.body and all(isinstance(node, allowed) for node in tree.body)\n"
-                "    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]\n"
-                "    assert sum(node.name == 'normalize' for node in functions) == 1\n"
-                "    for function in functions:\n"
-                "        arguments = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]\n"
-                "        assert not function.decorator_list and not function.args.defaults\n"
-                "        assert all(default is None for default in function.args.kw_defaults)\n"
-                "        assert function.returns is None\n"
-                "        assert all(argument.annotation is None for argument in arguments)\n"
-                "    namespace = {}\n"
-                "    exec(compile(tree, str(candidate), 'exec'), namespace)\n"
-                "    print(READY, flush=True)\n"
-                "    nonce = sys.stdin.readline().strip()\n"
-                "    assert nonce\n"
-                "    result = namespace['normalize']([' Beta ', '', 'ALPHA', ' gamma '])\n"
-                "    print(json.dumps({'nonce': nonce, 'result': result}, separators=(',', ':')))\n"
-                "else:\n"
-                "    candidate = Path(sys.argv[1])\n"
-                "    child = subprocess.Popen(\n"
-                "        [sys.executable, '-I', '-B', __file__, '--child', str(candidate)],\n"
-                "        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,\n"
-                "        text=True,\n"
-                "    )\n"
-                "    assert child.stdout is not None\n"
-                "    ready = child.stdout.readline()\n"
-                "    if ready != READY + '\\n':\n"
-                "        child.kill()\n"
-                "        _, child_stderr = child.communicate()\n"
-                "        if child_stderr:\n"
-                "            print(child_stderr, file=sys.stderr, end='')\n"
-                "        raise SystemExit('candidate did not complete validation')\n"
-                "    nonce = secrets.token_hex(32)\n"
-                "    child_stdout, child_stderr = child.communicate(nonce + '\\n')\n"
-                "    if child.returncode != 0:\n"
-                "        if child_stderr:\n"
-                "            print(child_stderr, file=sys.stderr, end='')\n"
-                "        raise SystemExit('candidate evaluation failed')\n"
-                "    payload = json.loads(child_stdout)\n"
-                "    assert payload['nonce'] == nonce\n"
-                "    print(json.dumps(payload['result'], separators=(',', ':')))\n"
-            )
-            return {
-                "kind": "fixed-python-test",
-                "path": str(verifier),
-                "sha256": hashlib.sha256(verifier.read_bytes()).hexdigest(),
-                "expected": ["beta", "alpha", "gamma"],
-            }
+            return _python_fixture(session, scratch, count)
         return {
             "kind": "json-output",
             "path": str(scratch / "output.json"),
@@ -1000,11 +346,7 @@ class HermesStimulus:
                 value = values.get(key)
                 if not isinstance(value, str) or not value:
                     continue
-                resolved = Path(value)
-                if not resolved.is_absolute():
-                    resolved = scratch / resolved
-                resolved = resolved.resolve()
-                in_scope = resolved == scratch or scratch in resolved.parents
+                resolved, in_scope = _resolve_tool_path(value, scratch)
                 path_audit = {
                     "field": key,
                     "provided": value,
@@ -1028,93 +370,12 @@ class HermesStimulus:
             return {"status": "failed", "reason": "missing verifier plan"}
         try:
             if plan["kind"] == "json-output":
-                actual = json.loads(Path(plan["path"]).read_text())
-                if actual != plan["expected"]:
-                    return {"status": "failed", "reason": "output mismatch"}
-                if isinstance(plan["expected"], dict) and list(actual) != list(
-                    plan["expected"]
-                ):
-                    return {"status": "failed", "reason": "output key order mismatch"}
-                return {"status": "passed", "kind": "direct-json-comparison"}
+                return _verify_json_output(plan)
             verifier = Path(plan["path"])
             if hashlib.sha256(verifier.read_bytes()).hexdigest() != plan["sha256"]:
                 return {"status": "failed", "reason": "fixed verifier was modified"}
-            sandbox = shutil.which("bwrap")
-            if sandbox is None:
-                raise RuntimeError("bubblewrap is required for Python verification")
-            limiter = shutil.which("prlimit")
-            if limiter is None:
-                raise RuntimeError("prlimit is required for Python verification")
-            runtime_roots = []
-            for root in (
-                Path("/usr"),
-                Path("/lib"),
-                Path("/lib64"),
-                Path(sys.base_prefix).resolve(),
-            ):
-                if not root.exists() or any(
-                    root.is_relative_to(bound) for bound in runtime_roots
-                ):
-                    continue
-                runtime_roots = [
-                    bound for bound in runtime_roots if not bound.is_relative_to(root)
-                ]
-                runtime_roots.append(root)
-            command = [
-                limiter,
-                f"--as={VERIFIER_AS_LIMIT_BYTES}",
-                f"--nproc={VERIFIER_NPROC_LIMIT}",
-                f"--fsize={VERIFIER_FSIZE_LIMIT_BYTES}",
-                f"--cpu={VERIFIER_CPU_LIMIT_SECONDS}",
-                "--",
-                sandbox,
-                "--die-with-parent",
-                "--new-session",
-                "--unshare-all",
-                "--clearenv",
-                "--proc",
-                "/proc",
-                "--dev",
-                "/dev",
-                "--tmpfs",
-                "/tmp",
-            ]
-            for root in runtime_roots:
-                command.extend(("--ro-bind", str(root), str(root)))
-            loader_cache = Path("/etc/ld.so.cache")
-            if loader_cache.exists():
-                command.extend(("--ro-bind", str(loader_cache), str(loader_cache)))
-            command.extend(
-                (
-                    "--ro-bind",
-                    str(verifier),
-                    "/harness/runner.py",
-                    "--ro-bind",
-                    str(Path(session["scratch_path"]) / "transform.py"),
-                    "/work/transform.py",
-                    "--chdir",
-                    "/work",
-                    "--setenv",
-                    "HOME",
-                    "/tmp",
-                    "--setenv",
-                    "PATH",
-                    "/usr/bin:/bin",
-                    str(Path(sys.executable).resolve()),
-                    "-I",
-                    "-B",
-                    "/harness/runner.py",
-                    "/work/transform.py",
-                )
-            )
-            completed = subprocess.run(
-                command,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=5,
-                check=False,
-            )
+            command = self._verification_command(session, verifier)
+            completed = _run_verifier(command)
             expected_stdout = json.dumps(plan["expected"], separators=(",", ":")) + "\n"
             verified = completed.returncode == 0 and completed.stderr == ""
             verified = verified and completed.stdout == expected_stdout
@@ -1136,14 +397,7 @@ class HermesStimulus:
         if session is None or event is not session["task"]:
             raise RuntimeError("Hermes session was not prepared")
         started_mono = time.monotonic()
-        record = {
-            "family": event["family"],
-            "prompt_sha256": event["prompt_sha256"],
-            "started_at_utc": datetime.now(timezone.utc).isoformat(),
-            "actual_start_s": started_mono - origin,
-            "status": "running",
-            "runtime": dict(self._runtime_metadata or {}),
-        }
+        record = _task_record(event, started_mono, origin, self._runtime_metadata)
         process = None
         pending_error = None
         timeboxed = False
@@ -1158,132 +412,20 @@ class HermesStimulus:
                 cwd=session["scratch_path"],
                 start_new_session=True,
             )
-            remaining = origin + event["hard_deadline_s"] - time.monotonic()
-            timeout = min(self.hard_timeout_seconds, max(0.001, remaining))
-            try:
-                stdout, stderr = process.communicate(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                timeboxed = True
-                record["configured_timebox_seconds"] = self.hard_timeout_seconds
-                record["effective_timebox_seconds"] = timeout
-                record["parent_stop_reason"] = f"{timeout:g}s_agent_timebox"
-                record["termination_grace_s"] = event["termination_grace_s"]
-                _signal_process_group(process, signal.SIGTERM)
-                try:
-                    stdout, stderr = process.communicate(
-                        timeout=event["termination_grace_s"]
-                    )
-                except subprocess.TimeoutExpired:
-                    forced_kill = True
-                    _signal_process_group(process, signal.SIGKILL)
-                    stdout, stderr = process.communicate()
-
+            stdout, stderr, timeboxed, forced_kill = self._communicate_task(
+                process, event, origin, record
+            )
             ended_mono = time.monotonic()
             self._write_process_logs(session, stdout, stderr, record)
-            events, diagnostics = self._events(stdout)
-            tool_calls = [
-                {
-                    "name": e.get("name"),
-                    "tool_call_id": e.get("tool_call_id"),
-                    "input": e.get("input"),
-                }
-                for e in events
-                if e.get("type") == "tool_use"
-            ]
-            tool_results = [
-                {
-                    "name": e.get("name"),
-                    "tool_call_id": e.get("tool_call_id"),
-                    "is_error": e.get("is_error"),
-                    "duration_ms": e.get("duration_ms"),
-                }
-                for e in events
-                if e.get("type") == "tool_result"
-            ]
-            result = next(
-                (e for e in reversed(events) if e.get("type") == "result"), None
+            tool_calls, tool_results, result, init = self._record_task_events(
+                stdout, record, process, ended_mono, origin
             )
-            init = next(
-                (
-                    e
-                    for e in events
-                    if e.get("type") == "system" and e.get("subtype") == "init"
-                ),
-                {},
+            result_error = self._validate_task_result(
+                tool_calls, tool_results, result, init, forced_kill, timeboxed
             )
-            record.update(
-                ended_at_utc=datetime.now(timezone.utc).isoformat(),
-                actual_end_s=ended_mono - origin,
-                exit_code=process.returncode,
-                session_id=init.get("session_id")
-                or (result.get("session_id") if result else None),
-                model=init.get("model"),
-                tool_call_count=len(tool_calls),
-                tool_calls=tool_calls,
-                tool_results=tool_results,
-                stdout_diagnostics=diagnostics,
-                result_status={
-                    "exit_code": result.get("exit_code") if result else None,
-                    "error": result.get("error") if result else None,
-                },
-                usage=result.get("tokens") if result else None,
+            self._record_task_outcome(
+                record, session, tool_calls, process, result, timeboxed, result_error
             )
-            invalid_tools = [
-                tool_event
-                for tool_event in (*tool_calls, *tool_results)
-                if not isinstance(tool_event["name"], str)
-                or not tool_event["name"].strip()
-                or tool_event["name"] not in ALLOWED_TOOLS
-            ]
-            if not tool_calls:
-                raise RuntimeError(
-                    "Hermes task completed without an observed tool call"
-                )
-            if invalid_tools:
-                raise RuntimeError("Hermes reported an unsupported or empty tool name")
-            if init.get("model") != self.model:
-                raise RuntimeError("Hermes did not report the configured local model")
-            if result is None:
-                raise RuntimeError("Hermes stream ended without a terminal result")
-            if forced_kill:
-                raise RuntimeError("Hermes timebox required SIGKILL")
-            result_error = result.get("error")
-            parent_interrupt = timeboxed and result_error == "Interrupted"
-            if timeboxed and not parent_interrupt:
-                raise RuntimeError(
-                    "Hermes timebox ended without an Interrupted terminal result"
-                )
-            if result_error and not parent_interrupt:
-                raise RuntimeError("Hermes terminal result reported an explicit error")
-            if not timeboxed and not self._positive_usage(result.get("tokens")):
-                raise RuntimeError(
-                    "Hermes terminal result omitted positive token usage"
-                )
-
-            outside = self._scope_tool_calls(tool_calls, session["scratch_path"])
-            record["out_of_scope_tool_calls"] = outside
-            record["verifier"] = self._verify_fixture(session)
-            record["workload_status"] = "valid"
-            if timeboxed:
-                record["status"] = "timeboxed"
-                record["execution_status"] = "timeboxed"
-                record["usage_quality"] = "partial_after_parent_sigterm"
-                record["framework_interruption"] = result_error
-                record["task_outcome"] = "incomplete"
-            else:
-                record["status"] = "workload_valid"
-                record["execution_status"] = "completed"
-                record["usage_quality"] = "reported_positive"
-                successful_exit = (
-                    process.returncode == 0 and result.get("exit_code") == 0
-                )
-                record["task_outcome"] = (
-                    "verified_complete"
-                    if successful_exit
-                    and record["verifier"]["status"] == "passed"
-                    and not outside
-                    else "incomplete"
-                )
         except BaseException as error:
             pending_error = error
             record["status"] = "invalid"
@@ -1291,32 +433,9 @@ class HermesStimulus:
             record.setdefault("task_outcome", "unknown")
             record.setdefault("error", f"{type(error).__name__}: {error}")
         finally:
-            if process is not None:
-                leader_running = process.poll() is None
-                # Descendants can survive after the Hermes group leader exits.
-                # Always signal the isolated process group before model cleanup.
-                _signal_process_group(process, signal.SIGKILL)
-                if leader_running:
-                    process.wait()
-                    forced_kill = True
-                    record["forced_kill"] = True
-            try:
-                record["model_cleanup"] = self.runtime.close()
-                record["model_cleanup_end_s"] = time.monotonic() - origin
-                if record["model_cleanup_end_s"] > event["cleanup_deadline_s"]:
-                    raise RuntimeError(
-                        "owned model cleanup exceeded the 130s session deadline"
-                    )
-            except BaseException as error:
-                record["model_cleanup_error"] = f"{type(error).__name__}: {error}"
-                record["status"] = "invalid"
-                record["workload_status"] = "invalid"
-                if pending_error is None:
-                    pending_error = error
-            record.setdefault("ended_at_utc", datetime.now(timezone.utc).isoformat())
-            record.setdefault("actual_end_s", time.monotonic() - origin)
-            if not self._records or self._records[-1] is not record:
-                self._records.append(record)
+            pending_error = self._finish_task(
+                process, record, origin, event, pending_error
+            )
         if pending_error is not None:
             raise pending_error
         return record
@@ -1336,6 +455,386 @@ class HermesStimulus:
 
     def close(self):
         return self.runtime.close()
+
+    @staticmethod
+    def _verification_command(session, verifier):
+        sandbox, limiter = _verification_tools()
+        runtime_roots = _verification_runtime_roots()
+        command = [
+            limiter,
+            f"--as={VERIFIER_AS_LIMIT_BYTES}",
+            f"--nproc={VERIFIER_NPROC_LIMIT}",
+            f"--fsize={VERIFIER_FSIZE_LIMIT_BYTES}",
+            f"--cpu={VERIFIER_CPU_LIMIT_SECONDS}",
+            "--",
+            sandbox,
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-all",
+            "--clearenv",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+        ]
+        for root in runtime_roots:
+            command.extend(("--ro-bind", str(root), str(root)))
+        loader_cache = Path("/etc/ld.so.cache")
+        if loader_cache.exists():
+            command.extend(("--ro-bind", str(loader_cache), str(loader_cache)))
+        command.extend(
+            (
+                "--ro-bind",
+                str(verifier),
+                "/harness/runner.py",
+                "--ro-bind",
+                str(Path(session["scratch_path"]) / "transform.py"),
+                "/work/transform.py",
+                "--chdir",
+                "/work",
+                "--setenv",
+                "HOME",
+                "/tmp",
+                "--setenv",
+                "PATH",
+                "/usr/bin:/bin",
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-B",
+                "/harness/runner.py",
+                "/work/transform.py",
+            )
+        )
+        return command
+
+    def _communicate_task(self, process, event, origin, record):
+        timeboxed = forced_kill = False
+        remaining = origin + event["hard_deadline_s"] - time.monotonic()
+        timeout = min(self.hard_timeout_seconds, max(0.001, remaining))
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timeboxed = True
+            record["configured_timebox_seconds"] = self.hard_timeout_seconds
+            record["effective_timebox_seconds"] = timeout
+            record["parent_stop_reason"] = f"{timeout:g}s_agent_timebox"
+            record["termination_grace_s"] = event["termination_grace_s"]
+            _signal_process_group(process, signal.SIGTERM)
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=event["termination_grace_s"]
+                )
+            except subprocess.TimeoutExpired:
+                forced_kill = True
+                _signal_process_group(process, signal.SIGKILL)
+                stdout, stderr = process.communicate()
+
+        return stdout, stderr, timeboxed, forced_kill
+
+    def _record_task_events(self, stdout, record, process, ended_mono, origin):
+        events, diagnostics = self._events(stdout)
+        tool_calls, tool_results = _tool_events(events)
+        result, init = _terminal_events(events)
+        record.update(
+            ended_at_utc=datetime.now(timezone.utc).isoformat(),
+            actual_end_s=ended_mono - origin,
+            exit_code=process.returncode,
+            session_id=init.get("session_id")
+            or (result.get("session_id") if result else None),
+            model=init.get("model"),
+            tool_call_count=len(tool_calls),
+            tool_calls=tool_calls,
+            tool_results=tool_results,
+            stdout_diagnostics=diagnostics,
+            result_status={
+                "exit_code": result.get("exit_code") if result else None,
+                "error": result.get("error") if result else None,
+            },
+            usage=result.get("tokens") if result else None,
+        )
+        return tool_calls, tool_results, result, init
+
+    def _validate_task_result(
+        self, tool_calls, tool_results, result, init, forced_kill, timeboxed
+    ):
+        _validate_tools(tool_calls, tool_results)
+        if init.get("model") != self.model:
+            raise RuntimeError("Hermes did not report the configured local model")
+        if result is None:
+            raise RuntimeError("Hermes stream ended without a terminal result")
+        if forced_kill:
+            raise RuntimeError("Hermes timebox required SIGKILL")
+        return self._validate_terminal_status(result, timeboxed)
+
+    def _validate_terminal_status(self, result, timeboxed):
+        result_error = result.get("error")
+        parent_interrupt = timeboxed and result_error == "Interrupted"
+        if timeboxed and not parent_interrupt:
+            raise RuntimeError(
+                "Hermes timebox ended without an Interrupted terminal result"
+            )
+        if result_error and not parent_interrupt:
+            raise RuntimeError("Hermes terminal result reported an explicit error")
+        if not timeboxed and not self._positive_usage(result.get("tokens")):
+            raise RuntimeError("Hermes terminal result omitted positive token usage")
+
+        return result_error
+
+    def _record_task_outcome(
+        self, record, session, tool_calls, process, result, timeboxed, result_error
+    ):
+        outside = self._scope_tool_calls(tool_calls, session["scratch_path"])
+        record["out_of_scope_tool_calls"] = outside
+        record["verifier"] = self._verify_fixture(session)
+        record["workload_status"] = "valid"
+        if timeboxed:
+            record["status"] = "timeboxed"
+            record["execution_status"] = "timeboxed"
+            record["usage_quality"] = "partial_after_parent_sigterm"
+            record["framework_interruption"] = result_error
+            record["task_outcome"] = "incomplete"
+        else:
+            record["status"] = "workload_valid"
+            record["execution_status"] = "completed"
+            record["usage_quality"] = "reported_positive"
+            successful_exit = process.returncode == 0 and result.get("exit_code") == 0
+            record["task_outcome"] = (
+                "verified_complete"
+                if successful_exit
+                and record["verifier"]["status"] == "passed"
+                and not outside
+                else "incomplete"
+            )
+
+    def _finish_task(self, process, record, origin, event, pending_error):
+        if process is not None:
+            leader_running = process.poll() is None
+            # Descendants can survive after the Hermes group leader exits.
+            # Always signal the isolated process group before model cleanup.
+            _signal_process_group(process, signal.SIGKILL)
+            if leader_running:
+                process.wait()
+                record["forced_kill"] = True
+        try:
+            record["model_cleanup"] = self.runtime.close()
+            record["model_cleanup_end_s"] = time.monotonic() - origin
+            if record["model_cleanup_end_s"] > event["cleanup_deadline_s"]:
+                raise RuntimeError(
+                    "owned model cleanup exceeded the 130s session deadline"
+                )
+        except BaseException as error:
+            record["model_cleanup_error"] = f"{type(error).__name__}: {error}"
+            record["status"] = "invalid"
+            record["workload_status"] = "invalid"
+            if pending_error is None:
+                pending_error = error
+        record.setdefault("ended_at_utc", datetime.now(timezone.utc).isoformat())
+        record.setdefault("actual_end_s", time.monotonic() - origin)
+        if not self._records or self._records[-1] is not record:
+            self._records.append(record)
+        return pending_error
+
+
+def _hermes_sessions(root):
+    sessions = []
+    families = (
+        "csv-aggregation",
+        "json-transformation",
+        "python-bugfix",
+        "json-transformation",
+        "python-bugfix",
+        "csv-aggregation",
+        "python-bugfix",
+        "csv-aggregation",
+        "json-transformation",
+        "csv-aggregation",
+        "json-transformation",
+        "python-bugfix",
+    )
+    token_targets = (1024, 8192, 16384) * 4
+    for i in range(1, 13):
+        sessions.append(_hermes_session(root, i, families[i - 1], token_targets[i - 1]))
+    return sessions
+
+
+def _hermes_session(root, i, family, target_tokens):
+    seed = 2026092000 + i
+    records = max(
+        32,
+        target_tokens
+        // {"csv-aggregation": 4, "json-transformation": 18, "python-bugfix": 14}[
+            family
+        ],
+    )
+    model, advertised_context = MODEL_PLAN[(i - 1) % len(MODEL_PLAN)]
+    scratch = root / "hermes" / f"session-{i:02}" / "scratch"
+    prompt = _prompt(family, records, target_tokens, seed, scratch)
+    return {
+        "session_id": f"session-{i:02}",
+        "split": "train" if i <= 6 else "validation" if i <= 9 else "test",
+        "seed": seed,
+        "model": model,
+        "advertised_context_length": advertised_context,
+        "path": str(root / "raw" / f"session-{i:02}"),
+        "hermes_home": str(root / "hermes" / f"session-{i:02}" / "home"),
+        "scratch_path": str(root / "hermes" / f"session-{i:02}" / "scratch"),
+        "prompt_path": str(root / "hermes" / f"session-{i:02}" / "prompt.txt"),
+        "task": {
+            "family": family,
+            "fixture_records": records,
+            "input_target_tokens": target_tokens,
+            "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+            "start_s": 20.0,
+            "hard_deadline_s": 120.0,
+            "termination_grace_s": SIGTERM_GRACE_SECONDS,
+            "cleanup_deadline_s": 130.0,
+        },
+    }
+
+
+def _verification_runtime_roots():
+    runtime_roots = []
+    for root in (
+        Path("/usr"),
+        Path("/lib"),
+        Path("/lib64"),
+        Path(sys.base_prefix).resolve(),
+    ):
+        if not root.exists() or any(
+            root.is_relative_to(bound) for bound in runtime_roots
+        ):
+            continue
+        runtime_roots = [
+            bound for bound in runtime_roots if not bound.is_relative_to(root)
+        ]
+        runtime_roots.append(root)
+    return runtime_roots
+
+
+def _verify_json_output(plan):
+    actual = json.loads(Path(plan["path"]).read_text())
+    if actual != plan["expected"]:
+        return {"status": "failed", "reason": "output mismatch"}
+    if isinstance(plan["expected"], dict) and list(actual) != list(plan["expected"]):
+        return {"status": "failed", "reason": "output key order mismatch"}
+    return {"status": "passed", "kind": "direct-json-comparison"}
+
+
+def _resolve_tool_path(value, scratch):
+    resolved = Path(value)
+    if not resolved.is_absolute():
+        resolved = scratch / resolved
+    resolved = resolved.resolve()
+    in_scope = resolved == scratch or scratch in resolved.parents
+    return resolved, in_scope
+
+
+def _validate_tools(tool_calls, tool_results):
+    invalid_tools = [
+        tool_event
+        for tool_event in (*tool_calls, *tool_results)
+        if not isinstance(tool_event["name"], str)
+        or not tool_event["name"].strip()
+        or tool_event["name"] not in ALLOWED_TOOLS
+    ]
+    if not tool_calls:
+        raise RuntimeError("Hermes task completed without an observed tool call")
+    if invalid_tools:
+        raise RuntimeError("Hermes reported an unsupported or empty tool name")
+
+
+def _tool_events(events):
+    tool_calls = [
+        {
+            "name": e.get("name"),
+            "tool_call_id": e.get("tool_call_id"),
+            "input": e.get("input"),
+        }
+        for e in events
+        if e.get("type") == "tool_use"
+    ]
+    tool_results = [
+        {
+            "name": e.get("name"),
+            "tool_call_id": e.get("tool_call_id"),
+            "is_error": e.get("is_error"),
+            "duration_ms": e.get("duration_ms"),
+        }
+        for e in events
+        if e.get("type") == "tool_result"
+    ]
+    return tool_calls, tool_results
+
+
+def _terminal_events(events):
+    result = next((e for e in reversed(events) if e.get("type") == "result"), None)
+    init = next(
+        (e for e in events if e.get("type") == "system" and e.get("subtype") == "init"),
+        {},
+    )
+    return result, init
+
+
+def _run_verifier(command):
+    # Regular files are subject to the sandbox RLIMIT_FSIZE. Never accumulate
+    # candidate-controlled outer stdout/stderr in an unbounded host pipe.
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        completed = subprocess.run(
+            command, stdout=stdout, stderr=stderr, timeout=5, check=False
+        )
+        captured = []
+        for stream in (stdout, stderr):
+            stream.seek(0)
+            value = stream.read(65537)
+            if len(value) > 65536:
+                raise RuntimeError("verifier output exceeded 65536 bytes")
+            captured.append(value.decode("utf-8", errors="replace"))
+    return subprocess.CompletedProcess(command, completed.returncode, *captured)
+
+
+def _python_fixture(session, scratch, count):
+    lines = [
+        "Specification: normalize each input word by stripping surrounding whitespace, "
+        "convert it to lowercase, discard empty values, and preserve input order."
+    ]
+    lines.extend(
+        f"Example note {i:04}: normalization is deterministic and must not sort values."
+        for i in range(1, count)
+    )
+    (scratch / "specification.txt").write_text("\n".join(lines) + "\n")
+    (scratch / "transform.py").write_text(
+        "def normalize(words):\n"
+        "    return sorted(w.strip().upper() for w in words if w.strip())\n"
+    )
+    verifier = Path(session["hermes_home"]) / "harness-runner.py"
+    verifier.write_bytes(Path(__file__).with_name("verifier_runner.py").read_bytes())
+    return {
+        "kind": "fixed-python-test",
+        "path": str(verifier),
+        "sha256": hashlib.sha256(verifier.read_bytes()).hexdigest(),
+        "expected": ["beta", "alpha", "gamma"],
+    }
+
+
+def _task_record(event, started_mono, origin, runtime_metadata):
+    return {
+        "family": event["family"],
+        "prompt_sha256": event["prompt_sha256"],
+        "started_at_utc": datetime.now(timezone.utc).isoformat(),
+        "actual_start_s": started_mono - origin,
+        "status": "running",
+        "runtime": dict(runtime_metadata or {}),
+    }
+
+
+def _verification_tools():
+    sandbox = shutil.which("bwrap")
+    if sandbox is None:
+        raise RuntimeError("bubblewrap is required for Python verification")
+    limiter = shutil.which("prlimit")
+    if limiter is None:
+        raise RuntimeError("prlimit is required for Python verification")
+    return sandbox, limiter
 
 
 def main(argv=None):

@@ -17,20 +17,7 @@ def build_fixture(root):
         path = Path(session["path"])
         path.mkdir(parents=True, exist_ok=True)
         start = 1700000000000 + number * 30000
-        rows = []
-        for i in range(181):
-            phase = i / 8 + number / 3
-            rows.append(
-                {
-                    "timestamp_ms": start + i * 100,
-                    "session_label": session["session_id"],
-                    "memory_used_mb": 2000 + 100 * math.sin(phase / 2),
-                    "power_usage_mw": 100000 + 20000 * math.sin(phase),
-                    "temperature_c": 50 + 3 * math.sin(phase / 4),
-                    "graphics_clock_mhz": 1500 + 200 * math.sin(phase),
-                    "memory_clock_mhz": 10000 + 100 * math.cos(phase),
-                }
-            )
+        rows = _fixture_rows(session, start, number)
         pq.write_table(pa.Table.from_pylist(rows), path / "telemetry_batch_1.parquet")
 
         def stamp(ms):
@@ -72,3 +59,21 @@ def build_fixture(root):
         )
     write_json(root / "campaign.json", campaign)
     return root / "campaign.json"
+
+
+def _fixture_rows(session, start, number):
+    rows = []
+    for i in range(181):
+        phase = i / 8 + number / 3
+        rows.append(
+            {
+                "timestamp_ms": start + i * 100,
+                "session_label": session["session_id"],
+                "memory_used_mb": 2000 + 100 * math.sin(phase / 2),
+                "power_usage_mw": 100000 + 20000 * math.sin(phase),
+                "temperature_c": 50 + 3 * math.sin(phase / 4),
+                "graphics_clock_mhz": 1500 + 200 * math.sin(phase),
+                "memory_clock_mhz": 10000 + 100 * math.cos(phase),
+            }
+        )
+    return rows

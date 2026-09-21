@@ -18,17 +18,7 @@ TARGETS = [
 def metrics(actual, predicted, session_ids, target_std):
     actual, predicted, std = map(np.asarray, (actual, predicted, target_std))
     ids = np.asarray(session_ids)
-    if (
-        actual.ndim != 2
-        or actual.shape[1:] != (4,)
-        or actual.shape != predicted.shape
-        or len(actual) == 0
-    ):
-        raise ValueError("metrics require nonempty paired four-target arrays")
-    if len(ids) != len(actual) or std.shape != (4,) or not np.all(std > 0):
-        raise ValueError("invalid session IDs or target scales")
-    if not all(np.all(np.isfinite(v)) for v in (actual, predicted, std)):
-        raise ValueError("nonfinite predictions or targets")
+    _validate_metrics(actual, predicted, ids, std)
     by_session = {}
     for sid in sorted(set(ids)):
         errors = predicted[ids == sid] - actual[ids == sid]
@@ -80,8 +70,7 @@ def ridge_predict(x, weights):
 def baselines(data, output):
     output = Path(output)
     norm = data["normalization"]
-    mean, std = np.array(norm["x_mean"]), np.array(norm["x_std"])
-    ymean, ystd = np.array(norm["y_mean"]), np.array(norm["y_std"])
+    ystd = np.array(norm["y_std"])
     results = {}
     arrays = {split: examples(data, split) for split in ("train", "validation", "test")}
     results["persistence"] = {
@@ -91,60 +80,7 @@ def baselines(data, output):
     }
     all_predictions = {}
     for name, history in [("current_ridge", False), ("history_ridge", True)]:
-        rows = {split: examples(data, split, history) for split in arrays}
-        xm, xs = np.tile(mean, 5 if history else 1), np.tile(std, 5 if history else 1)
-        normalized = {split: (v[0] - xm) / xs for split, v in rows.items()}
-        candidates = []
-        for alpha in (0.001, 0.01, 0.1, 1, 10):
-            weights = ridge_fit(
-                normalized["train"], (rows["train"][1] - ymean) / ystd, alpha
-            )
-            prediction = ridge_predict(normalized["validation"], weights) * ystd + ymean
-            candidates.append(
-                (
-                    metrics(
-                        rows["validation"][1], prediction, rows["validation"][2], ystd
-                    )["primary"],
-                    alpha,
-                    weights,
-                )
-            )
-        _, alpha, weights = min(candidates, key=lambda item: item[0])
-        results[name] = {
-            "selected_alpha": alpha,
-            "validation_candidates": [
-                {"alpha": a, "primary": p} for p, a, _ in candidates
-            ],
-        }
-        all_predictions[name] = []
-        for split in ("validation", "test"):
-            prediction = ridge_predict(normalized[split], weights) * ystd + ymean
-            results[name][split] = metrics(
-                rows[split][1], prediction, rows[split][2], ystd
-            )
-            all_predictions[name].extend(
-                {
-                    "session_id": sid,
-                    "frame_index": i,
-                    "split": split,
-                    "prediction": p.tolist(),
-                }
-                for (sid, i), p in zip(rows[split][3], prediction)
-            )
-        write_json(
-            output / (name + "-checkpoint.json"),
-            {
-                "schema_version": "ridge-forecast-v1",
-                "feature_map_id": data["feature_map_id"],
-                "feature_map": data["feature_map"],
-                "target_names": data.get("target_names", TARGETS),
-                "normalization": norm,
-                "history": history,
-                "alpha": alpha,
-                "weights": weights.tolist(),
-                "provenance": data.get("provenance"),
-            },
-        )
+        _ridge_baseline(data, output, name, history, results, all_predictions)
     all_predictions["persistence"] = [
         {"session_id": sid, "frame_index": i, "split": split, "prediction": [0.0] * 4}
         for split in ("validation", "test")
@@ -183,75 +119,21 @@ def comparison(prepared_path, output, baseline_results=None):
         "quality": data.get("quality"),
         "limits": "Three test sessions support a pilot conclusion only; exp-025 is lineage with a different task/input contract.",
     }
-    summary_path = output / "snn" / "summary.json"
-    summary = (
-        json.loads(summary_path.read_text()) if summary_path.exists() else {"runs": []}
-    )
-    if summary_path.exists() and summary.get("prepared_sha256") != sha256(
-        prepared_path
-    ):
-        raise ValueError("SNN summary does not match the prepared data hash")
-    expected = {(arm, seed) for arm in ("uniform", "mixed") for seed in (123, 456, 789)}
-    observed = [(r["arm"], r["seed"]) for r in summary["runs"]]
-    if len(set(observed)) != len(observed) or not set(observed) <= expected:
-        raise ValueError("unexpected or duplicate SNN run")
-    summary["runs"].extend(
-        {"arm": arm, "seed": seed, "status": "unfinished"}
-        for arm, seed in sorted(expected - set(observed))
-    )
-    for run in summary["runs"]:
-        item = dict(run)
-        predpath = run.get("predictions")
-        if predpath:
-            pred = json.loads((output / "snn" / predpath).read_text())
-            prediction_rows = checked_predictions(pred, run)
-            for split in ("validation", "test"):
-                _, actual, ids, keys = examples(data, split)
-                lookup = {
-                    (p["session_id"], p["frame_index"]): p["prediction"]
-                    for p in prediction_rows
-                    if p["split"] == split
-                }
-                if len(lookup) != len(keys) or set(lookup) != set(keys):
-                    raise ValueError(
-                        "SNN predictions do not use the common eligible examples"
-                    )
-                item[split] = metrics(
-                    actual, np.array([lookup[k] for k in keys]), ids, std
-                )
-            ref = base[strongest]["test"]
-            score = item["test"]
-            item["primary_relative_improvement"] = (
-                (ref["primary"] - score["primary"]) / ref["primary"]
-                if ref["primary"]
-                else None
-            )
-            item["promising"] = bool(
-                ref["primary"] > 0
-                and score["primary"] <= 0.95 * ref["primary"]
-                and all(score["mae"][i] <= 1.05 * ref["mae"][i] for i in (2, 3))
-            )
-            item["diagnostics"] = pred.get("diagnostics")
-        report["runs"].append(item)
+    summary = _load_runs(output, prepared_path)
+    report["runs"] = [
+        _score_run(run, output, data, std, base, strongest) for run in summary["runs"]
+    ]
     report["complete"] = len(report["runs"]) == 6 and all(
         r.get("status") == "complete" and "test" in r for r in report["runs"]
     )
-    report["seed_variation"] = {
-        arm: {
-            "mean_primary": float(np.mean(scores)),
-            "std_primary": float(np.std(scores)),
-            "min_primary": float(min(scores)),
-            "max_primary": float(max(scores)),
-        }
-        for arm in ("uniform", "mixed")
-        if (
-            scores := [
-                r["test"]["primary"]
-                for r in report["runs"]
-                if r["arm"] == arm and "test" in r
-            ]
-        )
-    }
+    report["seed_variation"] = _seed_variation(report)
+    lines = _render_report(report, base, strongest)
+    write_json(output / "comparison.json", report)
+    (output / "report.md").write_text("\n".join(lines) + "\n")
+    return report
+
+
+def _summary_lines(report, base, strongest):
     lines = [
         "# Anticipation pilot results",
         "",
@@ -286,8 +168,11 @@ def comparison(prepared_path, output, baseline_results=None):
         "Primary = average of temperature/power five-second MAE divided by training target standard deviations, with sessions weighted equally.",
         "Physical MAE and RMSE at both horizons, per-session errors, normalization, rejection reasons, spikes and silent neurons are retained in the machine-readable artifacts.",
     ]
-    scored = [(name, value) for name, value in base.items()]
-    scored += [(f"{r['arm']} / {r['seed']}", r) for r in report["runs"] if "test" in r]
+    return lines
+
+
+def _physical_lines(scored):
+    lines = []
     lines += [
         "",
         "## Physical-unit test errors",
@@ -308,6 +193,11 @@ def comparison(prepared_path, output, baseline_results=None):
             lines.append(
                 f"| {name} | {label} | {value['test']['mae'][i]:.5f} | {value['test']['rmse'][i]:.5f} |"
             )
+    return lines
+
+
+def _sessions_lines(scored):
+    lines = []
     session_ids = sorted(
         {sid for _, value in scored for sid in value["test"]["per_session"]}
     )
@@ -323,6 +213,11 @@ def comparison(prepared_path, output, baseline_results=None):
             f"{value['test']['per_session'][sid]['primary']:.5f}" for sid in session_ids
         ]
         lines.append("| " + name + " | " + " | ".join(cells) + " |")
+    return lines
+
+
+def _variation_lines(report):
+    lines = []
     lines += [
         "",
         "## Variation across seeds",
@@ -334,6 +229,11 @@ def comparison(prepared_path, output, baseline_results=None):
         lines.append(
             f"| {arm} | {values['mean_primary']:.5f} | {values['std_primary']:.5f} | {values['min_primary']:.5f} | {values['max_primary']:.5f} |"
         )
+    return lines
+
+
+def _spikes_lines(report):
+    lines = []
     lines += [
         "",
         "## Spike activity",
@@ -349,9 +249,180 @@ def comparison(prepared_path, output, baseline_results=None):
             lines.append(
                 f"| {run['arm']} | {run['seed']} | {len(diagnostic['silent_neurons'])} | {np.mean(diagnostic['spike_rate_hz']):.5f} |"
             )
-    write_json(output / "comparison.json", report)
-    (output / "report.md").write_text("\n".join(lines) + "\n")
-    return report
+    return lines
+
+
+def _render_report(report, base, strongest):
+    scored = [(name, value) for name, value in base.items()]
+    scored += [(f"{r['arm']} / {r['seed']}", r) for r in report["runs"] if "test" in r]
+    return (
+        _summary_lines(report, base, strongest)
+        + _physical_lines(scored)
+        + _sessions_lines(scored)
+        + _variation_lines(report)
+        + _spikes_lines(report)
+    )
+
+
+def _score_run(run, output, data, std, base, strongest):
+    item = dict(run)
+    predpath = run.get("predictions")
+    if predpath:
+        pred = json.loads((output / "snn" / predpath).read_text())
+        prediction_rows = checked_predictions(pred, run)
+        for split in ("validation", "test"):
+            item[split] = _prediction_metrics(data, split, prediction_rows, std)
+        ref = base[strongest]["test"]
+        score = item["test"]
+        item["primary_relative_improvement"] = (
+            (ref["primary"] - score["primary"]) / ref["primary"]
+            if ref["primary"]
+            else None
+        )
+        item["promising"] = bool(
+            ref["primary"] > 0
+            and score["primary"] <= 0.95 * ref["primary"]
+            and all(score["mae"][i] <= 1.05 * ref["mae"][i] for i in (2, 3))
+        )
+        item["diagnostics"] = pred.get("diagnostics")
+    return item
+
+
+def _load_runs(output, prepared_path):
+    summary_path = output / "snn" / "summary.json"
+    summary = (
+        json.loads(summary_path.read_text()) if summary_path.exists() else {"runs": []}
+    )
+    if summary_path.exists() and summary.get("prepared_sha256") != sha256(
+        prepared_path
+    ):
+        raise ValueError("SNN summary does not match the prepared data hash")
+    _complete_run_inventory(summary)
+    return summary
+
+
+def _seed_variation(report):
+    return {
+        arm: {
+            "mean_primary": float(np.mean(scores)),
+            "std_primary": float(np.std(scores)),
+            "min_primary": float(min(scores)),
+            "max_primary": float(max(scores)),
+        }
+        for arm in ("uniform", "mixed")
+        if (
+            scores := [
+                r["test"]["primary"]
+                for r in report["runs"]
+                if r["arm"] == arm and "test" in r
+            ]
+        )
+    }
+
+
+def _validate_metrics(actual, predicted, ids, std):
+    if (
+        actual.ndim != 2
+        or actual.shape[1:] != (4,)
+        or actual.shape != predicted.shape
+        or len(actual) == 0
+    ):
+        raise ValueError("metrics require nonempty paired four-target arrays")
+    _validate_metric_scales(actual, ids, std)
+    if not all(np.all(np.isfinite(v)) for v in (actual, predicted, std)):
+        raise ValueError("nonfinite predictions or targets")
+
+
+def _validate_metric_scales(actual, ids, std):
+    if len(ids) != len(actual) or std.shape != (4,) or not np.all(std > 0):
+        raise ValueError("invalid session IDs or target scales")
+
+
+def _select_ridge(normalized, rows, ymean, ystd):
+    candidates = []
+    for alpha in (0.001, 0.01, 0.1, 1, 10):
+        weights = ridge_fit(
+            normalized["train"], (rows["train"][1] - ymean) / ystd, alpha
+        )
+        prediction = ridge_predict(normalized["validation"], weights) * ystd + ymean
+        candidates.append(
+            (
+                metrics(rows["validation"][1], prediction, rows["validation"][2], ystd)[
+                    "primary"
+                ],
+                alpha,
+                weights,
+            )
+        )
+    _, alpha, weights = min(candidates, key=lambda item: item[0])
+    return alpha, weights, candidates
+
+
+def _ridge_baseline(data, output, name, history, results, all_predictions):
+    norm = data["normalization"]
+    mean, std = np.array(norm["x_mean"]), np.array(norm["x_std"])
+    ymean, ystd = np.array(norm["y_mean"]), np.array(norm["y_std"])
+    rows = {
+        split: examples(data, split, history)
+        for split in ("train", "validation", "test")
+    }
+    xm, xs = np.tile(mean, 5 if history else 1), np.tile(std, 5 if history else 1)
+    normalized = {split: (v[0] - xm) / xs for split, v in rows.items()}
+    alpha, weights, candidates = _select_ridge(normalized, rows, ymean, ystd)
+    results[name] = {
+        "selected_alpha": alpha,
+        "validation_candidates": [{"alpha": a, "primary": p} for p, a, _ in candidates],
+    }
+    all_predictions[name] = []
+    for split in ("validation", "test"):
+        prediction = ridge_predict(normalized[split], weights) * ystd + ymean
+        results[name][split] = metrics(rows[split][1], prediction, rows[split][2], ystd)
+        all_predictions[name].extend(
+            {
+                "session_id": sid,
+                "frame_index": i,
+                "split": split,
+                "prediction": p.tolist(),
+            }
+            for (sid, i), p in zip(rows[split][3], prediction)
+        )
+    write_json(
+        output / (name + "-checkpoint.json"),
+        {
+            "schema_version": "ridge-forecast-v1",
+            "feature_map_id": data["feature_map_id"],
+            "feature_map": data["feature_map"],
+            "target_names": data.get("target_names", TARGETS),
+            "normalization": norm,
+            "history": history,
+            "alpha": alpha,
+            "weights": weights.tolist(),
+            "provenance": data.get("provenance"),
+        },
+    )
+
+
+def _prediction_metrics(data, split, prediction_rows, std):
+    _, actual, ids, keys = examples(data, split)
+    lookup = {
+        (p["session_id"], p["frame_index"]): p["prediction"]
+        for p in prediction_rows
+        if p["split"] == split
+    }
+    if len(lookup) != len(keys) or set(lookup) != set(keys):
+        raise ValueError("SNN predictions do not use the common eligible examples")
+    return metrics(actual, np.array([lookup[k] for k in keys]), ids, std)
+
+
+def _complete_run_inventory(summary):
+    expected = {(arm, seed) for arm in ("uniform", "mixed") for seed in (123, 456, 789)}
+    observed = [(r["arm"], r["seed"]) for r in summary["runs"]]
+    if len(set(observed)) != len(observed) or not set(observed) <= expected:
+        raise ValueError("unexpected or duplicate SNN run")
+    summary["runs"].extend(
+        {"arm": arm, "seed": seed, "status": "unfinished"}
+        for arm, seed in sorted(expected - set(observed))
+    )
 
 
 if __name__ == "__main__":
