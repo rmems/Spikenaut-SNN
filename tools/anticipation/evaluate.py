@@ -4,9 +4,9 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import sys
 import time
 from .campaign import sha256, write_json
-from .report import baselines, comparison
 
 
 def unfinished_summary(prepared, snn, reason):
@@ -53,8 +53,13 @@ def evaluate(
         if time.monotonic() - started >= budget_seconds:
             status["reason"] = "budget_exhausted_before_baselines"
             return status
-        data = json.loads(prepared.read_text())
-        baseline_results = baselines(data, output)
+        prepared.stat()
+        baseline_results = _python_stage(
+            "baselines",
+            prepared,
+            output,
+            max(0, budget_seconds - (time.monotonic() - started)),
+        )
         remaining = max(0, budget_seconds - (time.monotonic() - started))
         status["baseline_elapsed_seconds"] = time.monotonic() - started
         if remaining <= 0:
@@ -63,6 +68,8 @@ def evaluate(
         _train(prepared, output, snn, remaining, status, julia, julia_version)
         if status["reason"] is None:
             status["status"] = "complete"
+    except subprocess.TimeoutExpired:
+        status["reason"] = "shared_budget_exhausted"
     except Exception as error:
         status["reason"] = f"{type(error).__name__}: {error}"
         raise
@@ -109,10 +116,10 @@ def _finalize(prepared, output, snn, status, baseline_results, started):
                 unfinished_summary(prepared, snn, status["reason"]),
             )
         if baseline_results is not None:
-            result = comparison(prepared, output, baseline_results=baseline_results)
-            if not result["complete"]:
-                status["status"] = "incomplete"
-                status["reason"] = status["reason"] or "unfinished_comparisons"
+            _compare_with_budget(prepared, output, status, started)
+    except subprocess.TimeoutExpired:
+        status["status"] = "incomplete"
+        status["reason"] = status["reason"] or "shared_budget_exhausted"
     except Exception as error:
         status["status"] = "incomplete"
         status["finalization_error"] = f"{type(error).__name__}: {error}"
@@ -121,6 +128,37 @@ def _finalize(prepared, output, snn, status, baseline_results, started):
     finally:
         status["total_elapsed_seconds"] = time.monotonic() - started
         write_json(output / "budget-report.json", status)
+
+
+def _compare_with_budget(prepared, output, status, started):
+    remaining = status["budget_seconds"] - (time.monotonic() - started)
+    complete = _python_stage("comparison", prepared, output, remaining)
+    if not complete:
+        status["status"] = "incomplete"
+        status["reason"] = status["reason"] or "unfinished_comparisons"
+
+
+def _python_stage(stage, prepared, output, remaining):
+    command = [
+        sys.executable,
+        "-m",
+        "tools.anticipation.evaluation_worker",
+        stage,
+        str(prepared.resolve()),
+        str(output.resolve()),
+    ]
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired(command, max(0, remaining))
+    with (output / f"{stage}.log").open("w") as log:
+        subprocess.run(
+            command,
+            stdout=log,
+            stderr=log,
+            timeout=remaining,
+            check=True,
+            cwd=Path(__file__).resolve().parents[2],
+        )
+    return json.loads((output / f"{stage}-status.json").read_text())["complete"]
 
 
 def _create_output(output):

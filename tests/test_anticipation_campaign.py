@@ -215,14 +215,9 @@ def test_evaluator_reserves_child_startup_and_finalization_budget(
 
     prepared = tmp_path / "prepared.json"
     write_json(prepared, {"schema_version": "anticipation-prepared-v1"})
-    clock = iter((100.0, 100.0, 110.0, 110.0, 111.0, 112.0))
+    clock = iter((100.0, 100.0, 100.0, 110.0, 110.0, 111.0, 111.0, 112.0))
     monkeypatch.setattr(evaluator.time, "monotonic", lambda: next(clock))
-    monkeypatch.setattr(evaluator, "baselines", lambda data, output: {"ok": True})
-    monkeypatch.setattr(
-        evaluator,
-        "comparison",
-        lambda prepared, output, baseline_results: {"complete": True},
-    )
+    monkeypatch.setattr(evaluator, "_python_stage", lambda *args: True)
 
     status = evaluator.evaluate(
         prepared, tmp_path / "results", julia="/bin/true", budget_seconds=200

@@ -326,6 +326,10 @@ class OllamaRuntime:
         )
 
     def close(self, *, deadline=None):
+        if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
+            raise TimeoutError(
+                "owned model cleanup remains deferred to supervised worker"
+            )
         owned_model = self._owned_model
         if owned_model is None:
             return {"model": self.model, "unloaded": False}
