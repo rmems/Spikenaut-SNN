@@ -55,6 +55,11 @@ never reduces the context, downloads a model, selects another model after a
 failure, or falls back to direct generation. `muse-glimmer:30b` and
 `nemotron-3.5-lightning:30b` are explicitly excluded.
 
+Every Ollama control-plane sequence has a 30-second absolute deadline. This
+bounds `/api/version`, preflight and post-load `/api/ps`, and `/api/show` even
+when a server drip-feeds bytes often enough to avoid the socket inactivity
+timeout.
+
 Preloading retains the 120-second logical campaign limit. The HTTP request is
 owned by a worker with a separate 180-second completion deadline, and uses an
 explicit 180-second Ollama residency lease instead of an indefinite keep-alive.
@@ -79,7 +84,10 @@ deadline at 120 seconds from sensor capture start. Prompts name each input and
 output by absolute path while expected answers remain only in the parent harness,
 outside the agent-visible scratch directory. Python candidates run only during
 verification inside a Bubblewrap namespace with no network and read-only mounts
-for the interpreter, candidate, and parent-owned verifier. The child also has
+for the interpreter, candidate, and parent-owned verifier. A trusted runner
+accepts only function and import declarations, supervises candidate evaluation
+in a child process, then emits the result only after the child completes the
+validation handshake and `normalize()` call. The child also has
 fixed address-space, process-count, file-size, and CPU-time limits in addition
 to the five-second parent timeout. Verification fails closed when Bubblewrap or
 `prlimit` is unavailable. This verifier sandbox does not turn the

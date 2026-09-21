@@ -48,6 +48,9 @@ def ollama_server(
     ps_failures_after_load=0,
     preload_drip_interval=0,
     preload_header_drip_interval=0,
+    version_drip_interval=0,
+    show_drip_interval=0,
+    ps_drip_interval_before_load=0,
     ps_drip_interval_after_load=0,
 ):
     state = {
@@ -58,6 +61,9 @@ def ollama_server(
         "model": "gemma4:12b",
         "context": 262144,
         "ps_failures_after_load": ps_failures_after_load,
+        "version_drip_interval": version_drip_interval,
+        "show_drip_interval": show_drip_interval,
+        "ps_drip_interval_before_load": ps_drip_interval_before_load,
         "ps_drip_interval_after_load": ps_drip_interval_after_load,
     }
 
@@ -101,6 +107,10 @@ def ollama_server(
         def do_GET(self):
             state["requests"].append(("GET", self.path, None))
             if self.path == "/api/version":
+                if state["version_drip_interval"]:
+                    return self._drip_json(
+                        {"version": "0.33.3"}, state["version_drip_interval"]
+                    )
                 return self._json({"version": "0.33.3"})
             if self.path == "/api/ps":
                 if state["loaded"] and state["ps_failures_after_load"]:
@@ -131,6 +141,10 @@ def ollama_server(
                     return self._drip_json(
                         {"models": models}, state["ps_drip_interval_after_load"]
                     )
+                if not state["loaded"] and state["ps_drip_interval_before_load"]:
+                    return self._drip_json(
+                        {"models": models}, state["ps_drip_interval_before_load"]
+                    )
                 return self._json({"models": models})
             self.send_error(404)
 
@@ -144,15 +158,16 @@ def ollama_server(
                     "Ornith-1.5-9B:latest": ("qwen3", 262144),
                 }
                 architecture, context = contexts[payload["model"]]
-                return self._json(
-                    {
-                        "details": {"quantization_level": "Q6_K"},
-                        "model_info": {
-                            "general.architecture": architecture,
-                            f"{architecture}.context_length": context,
-                        },
-                    }
-                )
+                response = {
+                    "details": {"quantization_level": "Q6_K"},
+                    "model_info": {
+                        "general.architecture": architecture,
+                        f"{architecture}.context_length": context,
+                    },
+                }
+                if state["show_drip_interval"]:
+                    return self._drip_json(response, state["show_drip_interval"])
+                return self._json(response)
             if self.path != "/api/generate":
                 return self.send_error(404)
             if payload.get("keep_alive") == 0:
@@ -310,6 +325,28 @@ def test_session_files_config_and_argv_are_hermetic_and_bounded(tmp_path):
     assert env["HERMES_SAFE_MODE"] == "1"
     assert env["OPENAI_API_KEY"] == "no-key-required"
     assert "AWS_SECRET_ACCESS_KEY" not in env
+
+
+def test_csv_verifier_rejects_correct_values_in_wrong_key_order(tmp_path):
+    from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
+
+    session = next(
+        item
+        for item in build_hermes_campaign(tmp_path)["sessions"]
+        if item["task"]["family"] == "csv-aggregation"
+    )
+    stimulus = HermesStimulus(
+        tmp_path, hermes_executable=tmp_path / "hermes", runtime=FakeRuntime()
+    )
+    stimulus.seed(session["seed"])
+    stimulus.prepare_session(session)
+    expected = stimulus._verifier_plan["expected"]
+    reversed_output = dict(reversed(list(expected.items())))
+    Path(stimulus._verifier_plan["path"]).write_text(json.dumps(reversed_output))
+
+    verification = stimulus._verify_fixture(session)
+
+    assert verification == {"status": "failed", "reason": "output key order mismatch"}
 
 
 def test_hermes_executable_is_explicit_for_api_and_cli(tmp_path):
@@ -573,7 +610,7 @@ def test_python_verifier_requires_completion_sentinel(tmp_path):
     verification = stimulus._verify_fixture(session)
 
     assert verification["status"] == "failed"
-    assert verification["exit_code"] == 0
+    assert verification["exit_code"] != 0
     assert verification["stdout"] == ""
 
 
@@ -591,14 +628,14 @@ def test_python_candidate_cannot_exit_the_parent_assertion(tmp_path):
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
     (Path(session["scratch_path"]) / "transform.py").write_text(
-        "import os\nprint('ok', flush=True)\nos._exit(0)\n"
+        'import os\nprint(\'["beta","alpha","gamma"]\', flush=True)\nos._exit(0)\n'
     )
 
     verification = stimulus._verify_fixture(session)
 
     assert verification["status"] == "failed"
-    assert verification["exit_code"] == 0
-    assert verification["stdout"] == "ok\n"
+    assert verification["exit_code"] != 0
+    assert verification["stdout"] == ""
 
 
 def test_python_verifier_sandbox_blocks_host_writes_and_network(tmp_path):
@@ -624,16 +661,16 @@ def test_python_verifier_sandbox_blocks_host_writes_and_network(tmp_path):
     candidate.write_text(
         "from pathlib import Path\n"
         "import socket\n"
-        "try:\n"
-        f"    Path({str(outside)!r}).write_text('escaped')\n"
-        "except OSError:\n"
-        "    pass\n"
-        "try:\n"
-        f"    with socket.create_connection(('127.0.0.1', {port}), timeout=.05) as client:\n"
-        "        client.sendall(b'escaped')\n"
-        "except OSError:\n"
-        "    pass\n"
         "def normalize(words):\n"
+        "    try:\n"
+        f"        Path({str(outside)!r}).write_text('escaped')\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "    try:\n"
+        f"        with socket.create_connection(('127.0.0.1', {port}), timeout=.05) as client:\n"
+        "            client.sendall(b'escaped')\n"
+        "    except OSError:\n"
+        "        pass\n"
         "    return [word.strip().lower() for word in words if word.strip()]\n"
     )
 
@@ -671,11 +708,11 @@ def test_python_verifier_sandbox_applies_resource_limits(tmp_path):
     candidate = Path(session["scratch_path"]) / "transform.py"
     candidate.write_text(
         "import resource\n"
-        f"assert resource.getrlimit(resource.RLIMIT_AS)[0] == {VERIFIER_AS_LIMIT_BYTES}\n"
-        f"assert resource.getrlimit(resource.RLIMIT_NPROC)[0] == {VERIFIER_NPROC_LIMIT}\n"
-        f"assert resource.getrlimit(resource.RLIMIT_FSIZE)[0] == {VERIFIER_FSIZE_LIMIT_BYTES}\n"
-        f"assert resource.getrlimit(resource.RLIMIT_CPU)[0] == {VERIFIER_CPU_LIMIT_SECONDS}\n"
         "def normalize(words):\n"
+        f"    assert resource.getrlimit(resource.RLIMIT_AS)[0] == {VERIFIER_AS_LIMIT_BYTES}\n"
+        f"    assert resource.getrlimit(resource.RLIMIT_NPROC)[0] == {VERIFIER_NPROC_LIMIT}\n"
+        f"    assert resource.getrlimit(resource.RLIMIT_FSIZE)[0] == {VERIFIER_FSIZE_LIMIT_BYTES}\n"
+        f"    assert resource.getrlimit(resource.RLIMIT_CPU)[0] == {VERIFIER_CPU_LIMIT_SECONDS}\n"
         "    return [word.strip().lower() for word in words if word.strip()]\n"
     )
 
@@ -1720,6 +1757,67 @@ def test_normal_cleanup_bounds_a_dripping_status_request():
         assert state["loaded"] is True
         state["ps_drip_interval_after_load"] = 0
         assert runtime.close() == {"model": "granite4.2:8b", "unloaded": True}
+
+
+def test_cleanup_deadline_starts_after_waiting_for_late_preload_completion():
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    with ollama_server(preload_response_delay=0.08) as (endpoint, state):
+        runtime = OllamaRuntime(
+            endpoint=endpoint,
+            preload_timeout_seconds=0.01,
+            preload_completion_timeout_seconds=0.2,
+            request_timeout_seconds=0.02,
+            durable_cleanup_timeout_seconds=0.03,
+        )
+        runtime.prepare()
+        with pytest.raises(TimeoutError, match="timed out"):
+            runtime.select("granite4.2:8b", 131072)
+
+        assert runtime.close() == {"model": "granite4.2:8b", "unloaded": True}
+        assert state["loaded"] is False
+
+
+def test_prepare_version_request_has_an_end_to_end_deadline():
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    with ollama_server(version_drip_interval=0.01) as (endpoint, _):
+        runtime = OllamaRuntime(
+            endpoint=endpoint,
+            request_timeout_seconds=0.02,
+            control_plane_timeout_seconds=0.05,
+        )
+
+        with pytest.raises(TimeoutError, match="end-to-end deadline"):
+            runtime.prepare()
+
+
+@pytest.mark.parametrize("stage", ["preflight", "show", "postload"])
+def test_select_control_plane_requests_have_end_to_end_deadlines(stage: str):
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    options = {}
+    if stage == "show":
+        options["show_drip_interval"] = 0.01
+    elif stage == "postload":
+        options["ps_drip_interval_after_load"] = 0.01
+
+    with ollama_server(**options) as (endpoint, state):
+        runtime = OllamaRuntime(
+            endpoint=endpoint,
+            request_timeout_seconds=0.02,
+            control_plane_timeout_seconds=0.05,
+        )
+        runtime.prepare()
+        if stage == "preflight":
+            state["ps_drip_interval_before_load"] = 0.01
+
+        with pytest.raises(TimeoutError, match="end-to-end deadline"):
+            runtime.select("granite4.2:8b", 131072)
+
+        if stage == "postload":
+            state["ps_drip_interval_after_load"] = 0
+            assert runtime.close() == {"model": "granite4.2:8b", "unloaded": True}
 
 
 def test_runtime_slow_failed_preload_returns_bounded_and_finishes_cleanup():

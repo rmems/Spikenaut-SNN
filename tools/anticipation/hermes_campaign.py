@@ -32,6 +32,7 @@ PRELOAD_COMPLETION_TIMEOUT_SECONDS = 180
 DURABLE_CLEANUP_TIMEOUT_SECONDS = 30
 DURABLE_CLEANUP_INITIAL_BACKOFF_SECONDS = 0.05
 DURABLE_CLEANUP_MAX_BACKOFF_SECONDS = 1.0
+CONTROL_PLANE_TIMEOUT_SECONDS = 30
 VERIFIER_AS_LIMIT_BYTES = 512 * 1024 * 1024
 VERIFIER_NPROC_LIMIT = 8192
 VERIFIER_FSIZE_LIMIT_BYTES = 1024 * 1024
@@ -208,6 +209,7 @@ class OllamaRuntime:
         request_timeout_seconds=15,
         preload_completion_timeout_seconds=PRELOAD_COMPLETION_TIMEOUT_SECONDS,
         preload_keep_alive_seconds=PRELOAD_KEEP_ALIVE_SECONDS,
+        control_plane_timeout_seconds=CONTROL_PLANE_TIMEOUT_SECONDS,
         cleanup_reconciliation_timeout_seconds=None,
         durable_cleanup_timeout_seconds=DURABLE_CLEANUP_TIMEOUT_SECONDS,
         cleanup_report_path=None,
@@ -218,6 +220,7 @@ class OllamaRuntime:
         self.request_timeout_seconds = request_timeout_seconds
         self.preload_completion_timeout_seconds = preload_completion_timeout_seconds
         self.preload_keep_alive_seconds = preload_keep_alive_seconds
+        self.control_plane_timeout_seconds = control_plane_timeout_seconds
         self.cleanup_reconciliation_timeout_seconds = (
             max(preload_completion_timeout_seconds, preload_keep_alive_seconds)
             + request_timeout_seconds
@@ -356,7 +359,7 @@ class OllamaRuntime:
             return None
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError("Ollama cleanup exceeded its end-to-end deadline")
+            raise TimeoutError("Ollama request exceeded its end-to-end deadline")
         return remaining
 
     def _models(self, deadline=None):
@@ -552,22 +555,32 @@ class OllamaRuntime:
         self._cleanup_thread.start()
 
     def prepare(self):
-        existing = self._models()
+        deadline = time.monotonic() + self.control_plane_timeout_seconds
+        existing = self._models(deadline)
         if existing:
             names = [m.get("name") or m.get("model") or "unknown" for m in existing]
             raise RuntimeError(f"Ollama model already loaded: {', '.join(names)}")
-        return {"ollama_version": self._request("GET", "/api/version").get("version")}
+        version = self._request(
+            "GET", "/api/version", deadline_seconds=self._remaining(deadline)
+        )
+        return {"ollama_version": version.get("version")}
 
     def select(self, model, expected_context_length):
         if model in EXCLUDED_MODELS:
             raise ValueError(f"model is excluded from this campaign: {model}")
         if self._owned_model is not None:
             self.close()
-        elif self._models():
+        deadline = time.monotonic() + self.control_plane_timeout_seconds
+        if self._models(deadline):
             raise RuntimeError(
                 "another Ollama model became resident before session setup"
             )
-        show = self._request("POST", "/api/show", {"model": model})
+        show = self._request(
+            "POST",
+            "/api/show",
+            {"model": model},
+            deadline_seconds=self._remaining(deadline),
+        )
         model_info = show.get("model_info")
         if not isinstance(model_info, dict):
             raise RuntimeError(f"Ollama /api/show omitted model_info for {model}")
@@ -596,7 +609,8 @@ class OllamaRuntime:
         if "error" in self._preload_outcome:
             raise self._preload_outcome["error"]
         self._load_outcome_uncertain = False
-        loaded = self._models()
+        postload_deadline = time.monotonic() + self.control_plane_timeout_seconds
+        loaded = self._models(postload_deadline)
         if len(loaded) != 1:
             raise RuntimeError(
                 "Ollama preload did not produce exactly one resident model"
@@ -640,8 +654,6 @@ class OllamaRuntime:
         owned_model = self._owned_model
         if owned_model is None:
             return {"model": self.model, "unloaded": False}
-        cleanup_deadline = time.monotonic() + self.durable_cleanup_timeout_seconds
-
         if self._load_outcome_uncertain:
             completed = self._wait_for_preload_completion()
             if not completed or "error" in self._preload_outcome:
@@ -650,11 +662,13 @@ class OllamaRuntime:
                 self._load_outcome_uncertain = False
                 return {"model": owned_model, "unloaded": True}
 
+            cleanup_deadline = time.monotonic() + self.durable_cleanup_timeout_seconds
             self._unload_exact(owned_model, cleanup_deadline)
             self._owned_model = None
             self._load_outcome_uncertain = False
             return {"model": owned_model, "unloaded": True}
 
+        cleanup_deadline = time.monotonic() + self.durable_cleanup_timeout_seconds
         try:
             resident = self._models(cleanup_deadline)
         except BaseException:
@@ -797,17 +811,57 @@ class HermesStimulus:
             )
             verifier = Path(session["hermes_home"]) / "harness-runner.py"
             verifier.write_text(
-                "import importlib.util\n"
+                "import ast\n"
                 "import json\n"
                 "from pathlib import Path\n"
+                "import secrets\n"
+                "import subprocess\n"
                 "import sys\n"
-                "candidate = Path(sys.argv[1])\n"
-                "spec = importlib.util.spec_from_file_location('candidate_transform', candidate)\n"
-                "assert spec is not None and spec.loader is not None\n"
-                "module = importlib.util.module_from_spec(spec)\n"
-                "spec.loader.exec_module(module)\n"
-                "result = module.normalize([' Beta ', '', 'ALPHA', ' gamma '])\n"
-                "print(json.dumps(result, separators=(',', ':')))\n"
+                "READY = 'candidate-validation-complete'\n"
+                "if sys.argv[1] == '--child':\n"
+                "    candidate = Path(sys.argv[2])\n"
+                "    tree = ast.parse(candidate.read_text(), filename=str(candidate))\n"
+                "    allowed = (ast.FunctionDef, ast.Import, ast.ImportFrom)\n"
+                "    assert tree.body and all(isinstance(node, allowed) for node in tree.body)\n"
+                "    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]\n"
+                "    assert sum(node.name == 'normalize' for node in functions) == 1\n"
+                "    for function in functions:\n"
+                "        arguments = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]\n"
+                "        assert not function.decorator_list and not function.args.defaults\n"
+                "        assert all(default is None for default in function.args.kw_defaults)\n"
+                "        assert function.returns is None\n"
+                "        assert all(argument.annotation is None for argument in arguments)\n"
+                "    namespace = {}\n"
+                "    exec(compile(tree, str(candidate), 'exec'), namespace)\n"
+                "    print(READY, flush=True)\n"
+                "    nonce = sys.stdin.readline().strip()\n"
+                "    assert nonce\n"
+                "    result = namespace['normalize']([' Beta ', '', 'ALPHA', ' gamma '])\n"
+                "    print(json.dumps({'nonce': nonce, 'result': result}, separators=(',', ':')))\n"
+                "else:\n"
+                "    candidate = Path(sys.argv[1])\n"
+                "    child = subprocess.Popen(\n"
+                "        [sys.executable, '-I', '-B', __file__, '--child', str(candidate)],\n"
+                "        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,\n"
+                "        text=True,\n"
+                "    )\n"
+                "    assert child.stdout is not None\n"
+                "    ready = child.stdout.readline()\n"
+                "    if ready != READY + '\\n':\n"
+                "        child.kill()\n"
+                "        _, child_stderr = child.communicate()\n"
+                "        if child_stderr:\n"
+                "            print(child_stderr, file=sys.stderr, end='')\n"
+                "        raise SystemExit('candidate did not complete validation')\n"
+                "    nonce = secrets.token_hex(32)\n"
+                "    child_stdout, child_stderr = child.communicate(nonce + '\\n')\n"
+                "    if child.returncode != 0:\n"
+                "        if child_stderr:\n"
+                "            print(child_stderr, file=sys.stderr, end='')\n"
+                "        raise SystemExit('candidate evaluation failed')\n"
+                "    payload = json.loads(child_stdout)\n"
+                "    assert payload['nonce'] == nonce\n"
+                "    print(json.dumps(payload['result'], separators=(',', ':')))\n"
             )
             return {
                 "kind": "fixed-python-test",
@@ -961,6 +1015,10 @@ class HermesStimulus:
                 actual = json.loads(Path(plan["path"]).read_text())
                 if actual != plan["expected"]:
                     return {"status": "failed", "reason": "output mismatch"}
+                if isinstance(plan["expected"], dict) and list(actual) != list(
+                    plan["expected"]
+                ):
+                    return {"status": "failed", "reason": "output key order mismatch"}
                 return {"status": "passed", "kind": "direct-json-comparison"}
             verifier = Path(plan["path"])
             if hashlib.sha256(verifier.read_bytes()).hexdigest() != plan["sha256"]:
