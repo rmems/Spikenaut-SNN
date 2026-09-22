@@ -43,15 +43,7 @@ impl Q88MemBank {
         let weights = read_image(directory, 2, NEURON_COUNT * NEURON_COUNT)?;
         let output_weights = read_image(directory, 3, OUTPUT_WEIGHT_COUNT)?;
 
-        for (line, &decay) in decays.iter().enumerate() {
-            if !(decay > 0.0 && decay < 1.0) {
-                return Err(MemBankError::Value {
-                    path: directory.join(MEM_BANK_FILENAMES[1]),
-                    line: line + 1,
-                    message: format!("decay {decay} is outside the required open interval (0, 1)"),
-                });
-            }
-        }
+        validate_decays(directory, &decays)?;
 
         let neurons = (0..NEURON_COUNT)
             .map(|row| Neuron {
@@ -67,6 +59,19 @@ impl Q88MemBank {
             output_weights,
         })
     }
+}
+
+fn validate_decays(directory: &Path, decays: &[f64]) -> Result<(), MemBankError> {
+    for (line, &decay) in decays.iter().enumerate() {
+        if !(decay > 0.0 && decay < 1.0) {
+            return Err(MemBankError::Value {
+                path: directory.join(MEM_BANK_FILENAMES[1]),
+                line: line + 1,
+                message: format!("decay {decay} is outside the required open interval (0, 1)"),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn reject_unrecognized_images(directory: &Path) -> Result<(), MemBankError> {
