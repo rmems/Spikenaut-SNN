@@ -43,7 +43,7 @@ def write_fixture(session, scratch):
             }
             for i in range(count)
         ]
-        rng.shuffle(records)
+        rng.shuffle(records)  # NOSONAR python:S2245 -- deterministic fixture RNG; see above
         (scratch / "input.json").write_text(json.dumps(records, indent=2) + "\n")
         expected = [
             {"id": r["id"], "score": r["score"]}
