@@ -9,6 +9,9 @@ import sys
 import time
 from .campaign import sha256, write_json
 
+_EVALUATION_WORKER = "tools.anticipation.evaluation_worker"
+_ALLOWED_PYTHON_STAGES = frozenset({"baselines", "comparison"})
+
 
 def unfinished_summary(prepared, snn, reason):
     runs = []
@@ -99,7 +102,7 @@ def _train(prepared, output, snn, remaining, status, julia, julia_version):
     status["trainer_command"] = command
     with _open_exclusive_log(output, "training.log") as log:
         try:
-            process = subprocess.run(
+            process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 command, stdout=log, stderr=log, timeout=remaining, check=False
             )
             status["trainer_exit_code"] = process.returncode
@@ -140,21 +143,24 @@ def _compare_with_budget(prepared, output, status, started):
 
 
 def _python_stage(stage, prepared, output, remaining):
+    if stage not in _ALLOWED_PYTHON_STAGES:
+        raise ValueError(f"unsupported evaluation stage: {stage}")
     output = output.resolve()
+    prepared = Path(prepared).resolve()
     log_name = f"{stage}.log"
-    command = [
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired([_EVALUATION_WORKER, stage], max(0.0, remaining))
+    worker_argv = [
         sys.executable,
         "-m",
-        "tools.anticipation.evaluation_worker",
+        _EVALUATION_WORKER,
         stage,
-        str(prepared.resolve()),
-        str(output),
+        os.fspath(prepared),
+        os.fspath(output),
     ]
-    if remaining <= 0:
-        raise subprocess.TimeoutExpired(command, max(0, remaining))
     with _open_exclusive_log(output, log_name) as log:
-        subprocess.run(
-            command,
+        subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            worker_argv,
             stdout=log,
             stderr=log,
             timeout=remaining,

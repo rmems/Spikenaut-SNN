@@ -87,11 +87,28 @@ class HermesStimulus:
         self._records = []
         self._runtime_metadata = None
         self._verifier_plan = None
+        self._hermes_executable_digest = None
 
-    def prepare(self):
+    def _record_hermes_executable_identity(self):
         if not self.hermes_executable.is_file():
             raise FileNotFoundError(self.hermes_executable)
+        self._hermes_executable_digest = hashlib.sha256(
+            self.hermes_executable.read_bytes()
+        ).hexdigest()
+
+    def prepare(self):
+        self._record_hermes_executable_identity()
         return self.runtime.prepare()
+
+    def _ensure_hermes_executable(self):
+        if not self.hermes_executable.is_file():
+            raise FileNotFoundError(self.hermes_executable)
+        current = hashlib.sha256(self.hermes_executable.read_bytes()).hexdigest()
+        if self._hermes_executable_digest is None:
+            self._hermes_executable_digest = current
+            return
+        if current != self._hermes_executable_digest:
+            raise RuntimeError("Hermes executable changed after campaign preflight")
 
     def seed(self, seed):
         self._seed = int(seed)
@@ -277,7 +294,8 @@ class HermesStimulus:
         timeboxed = False
         forced_kill = False
         try:
-            process = subprocess.Popen(
+            self._ensure_hermes_executable()
+            process = subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 self.command(session),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

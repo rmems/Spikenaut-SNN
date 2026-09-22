@@ -72,6 +72,10 @@ def test_runtime_rejects_non_loopback_and_propagates_unload_failure():
 
     with pytest.raises(ValueError, match="127.0.0.1"):
         OllamaRuntime(endpoint="http://localhost:11434")
+    with pytest.raises(ValueError, match="explicit port"):
+        OllamaRuntime(endpoint="http://127.0.0.1")
+    with pytest.raises(ValueError, match="explicit port"):
+        OllamaRuntime(endpoint="http://127.0.0.1:0")
     with ollama_server(unload_sticks=True) as (endpoint, _):
         runtime = OllamaRuntime(endpoint=endpoint)
         runtime.prepare()

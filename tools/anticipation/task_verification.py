@@ -231,7 +231,7 @@ def _run_verifier(command):
     # Regular files are subject to the sandbox RLIMIT_FSIZE. Never accumulate
     # candidate-controlled outer stdout/stderr in an unbounded host pipe.
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-        completed = subprocess.run(
+        completed = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             command, stdout=stdout, stderr=stderr, timeout=5, check=False
         )
         captured = []

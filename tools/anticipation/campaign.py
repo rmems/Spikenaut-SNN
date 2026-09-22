@@ -8,6 +8,7 @@ from http.client import HTTPException
 import json
 import os
 from pathlib import Path
+import re
 import random
 import signal
 import subprocess
@@ -266,11 +267,21 @@ def _capture_session(session, stimulus, collector, campaign):
     return record
 
 
+def _proc_fd_executable(collector_fd):
+    if collector_fd < 0:
+        raise ValueError("collector fd must be non-negative")
+    executable = f"/proc/self/fd/{collector_fd}"
+    if not re.fullmatch(r"/proc/self/fd/[0-9]+", executable):
+        raise ValueError("collector launch path must reference a proc fd")
+    return executable
+
+
 def _launch_verified_collector(collector, expected_digest, env, log):
     collector_fd = _open_verified_collector(collector, expected_digest)
     try:
-        return subprocess.Popen(
-            [f"/proc/self/fd/{collector_fd}"],
+        executable = _proc_fd_executable(collector_fd)
+        return subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            [executable],
             env=env,
             stdout=log,
             stderr=log,

@@ -7,6 +7,7 @@ from pathlib import Path
 import secrets
 import subprocess
 import sys
+import types
 
 READY = "candidate-validation-complete"
 
@@ -151,9 +152,18 @@ def load_candidate(candidate):
         raise ValueError("candidate must define normalize")
     validate_function(function)
     validate_candidate_tree(tree, function)
-    namespace = {"__builtins__": dict(SAFE_BUILTINS)}
-    exec(compile(tree, str(candidate), "exec"), namespace)
-    return namespace["normalize"]
+    module_code = compile(tree, str(candidate), "exec")
+    func_code = next(
+        (
+            const
+            for const in module_code.co_consts
+            if isinstance(const, types.CodeType) and const.co_name == "normalize"
+        ),
+        None,
+    )
+    if func_code is None:
+        raise ValueError("candidate must define normalize")
+    return types.FunctionType(func_code, {"__builtins__": dict(SAFE_BUILTINS)})
 
 
 def validate_candidate_tree(tree, function):
@@ -193,7 +203,7 @@ def verify():
     expected = [
         [word.strip().lower() for word in words if word.strip()] for words in inputs
     ]
-    child = subprocess.Popen(
+    child = subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         [sys.executable, "-I", "-B", "/harness/runner.py", "--child"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,

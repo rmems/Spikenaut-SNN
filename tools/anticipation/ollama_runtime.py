@@ -47,9 +47,11 @@ def _local_endpoint(endpoint):
 
 def _validate_port(parsed):
     try:
-        parsed.port
+        port = parsed.port
     except ValueError as error:
         raise ValueError("Ollama endpoint must be http://127.0.0.1:<port>") from error
+    if port is None or not 1 <= port <= 65535:
+        raise ValueError("Ollama endpoint must include an explicit port between 1 and 65535")
 
 
 @dataclass
