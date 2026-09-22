@@ -36,15 +36,11 @@ def test_session_cleanup_does_not_swallow_keyboard_interrupt(tmp_path):
         hermes_executable=tmp_path / "hermes",
         runtime=InterruptingRuntime(),
     )
+    origin = time.monotonic()
+    task_config = {"cleanup_deadline_s": 130}
 
     with pytest.raises(KeyboardInterrupt):
-        stimulus._finish_task(
-            None,
-            {},
-            time.monotonic(),
-            {"cleanup_deadline_s": 130},
-            None,
-        )
+        stimulus._finish_task(None, {}, origin, task_config, None)
 
 
 def test_dripping_cleanup_obeys_session_deadline_and_reconciles(monkeypatch):
