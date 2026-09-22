@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -96,7 +97,7 @@ def _train(prepared, output, snn, remaining, status, julia, julia_version):
         str(trainer_budget),
     ]
     status["trainer_command"] = command
-    with (output / "training.log").open("w") as log:
+    with _open_exclusive_log(output, "training.log") as log:
         try:
             process = subprocess.run(
                 command, stdout=log, stderr=log, timeout=remaining, check=False
@@ -139,13 +140,8 @@ def _compare_with_budget(prepared, output, status, started):
 
 
 def _python_stage(stage, prepared, output, remaining):
-    # prepared/output are internal orchestrator paths, not request data. Resolve
-    # them and confine the per-stage log to the resolved output tree before
-    # opening it, so no crafted path can escape the intended directory.
     output = output.resolve()
-    log_path = (output / f"{stage}.log").resolve()
-    if not log_path.is_relative_to(output):
-        raise ValueError("stage log path escapes output directory")
+    log_name = f"{stage}.log"
     command = [
         sys.executable,
         "-m",
@@ -156,7 +152,7 @@ def _python_stage(stage, prepared, output, remaining):
     ]
     if remaining <= 0:
         raise subprocess.TimeoutExpired(command, max(0, remaining))
-    with log_path.open("w") as log:
+    with _open_exclusive_log(output, log_name) as log:
         subprocess.run(
             command,
             stdout=log,
@@ -166,6 +162,31 @@ def _python_stage(stage, prepared, output, remaining):
             cwd=Path(__file__).resolve().parents[2],
         )
     return json.loads((output / f"{stage}-status.json").read_text())["complete"]
+
+
+def _open_exclusive_log(output, leaf_name):
+    """Create a private log relative to one retained output-directory inode."""
+    if not leaf_name or Path(leaf_name).name != leaf_name:
+        raise ValueError("stage log path escapes output directory")
+    directory_fd = os.open(
+        output, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor_root = Path(f"/proc/self/fd/{directory_fd}")
+        stable_output = descriptor_root.resolve()
+        resolved_log_path = (descriptor_root / leaf_name).resolve()
+        if not resolved_log_path.is_relative_to(stable_output):
+            raise ValueError("stage log path escapes output directory")
+        descriptor = os.open(leaf_name, flags, 0o600, dir_fd=directory_fd)
+    finally:
+        os.close(directory_fd)
+    try:
+        return os.fdopen(descriptor, "w", encoding="utf-8")
+    except OSError:
+        os.close(descriptor)
+        raise
 
 
 def _create_output(output):

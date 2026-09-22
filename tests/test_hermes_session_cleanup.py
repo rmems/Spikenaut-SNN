@@ -182,6 +182,102 @@ def test_cleanup_interrupt_wins_over_pending_task_error(tmp_path):
     assert record["model_cleanup_error"].startswith("KeyboardInterrupt:")
 
 
+def test_process_cleanup_interrupt_retries_and_preserves_exception(
+    tmp_path, monkeypatch
+):
+    from tools.anticipation import hermes_campaign
+
+    cleanup_interrupt = KeyboardInterrupt()
+    signal_calls = 0
+
+    class InterruptingProcess:
+        pid = 12345
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def wait(timeout):
+            assert 0 <= timeout <= 130
+            return -9
+
+    def interrupt_once(*_args):
+        nonlocal signal_calls
+        signal_calls += 1
+        if signal_calls == 1:
+            raise cleanup_interrupt
+
+    runtime = _TrackingRuntime()
+    stimulus = HermesStimulus(
+        tmp_path,
+        hermes_executable=tmp_path / "hermes",
+        runtime=runtime,
+    )
+    monkeypatch.setattr(hermes_campaign, "_signal_process_group", interrupt_once)
+    origin = time.monotonic()
+    record = {}
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        stimulus._finish_task(
+            InterruptingProcess(),
+            record,
+            origin,
+            {"cleanup_deadline_s": 130},
+            None,
+        )
+
+    assert caught.value is cleanup_interrupt
+    assert signal_calls == 2
+    assert runtime.closed is True
+    assert record["process_cleanup_error"].startswith("KeyboardInterrupt:")
+    assert stimulus.session_records() == [record]
+
+
+def test_expired_process_cleanup_retry_gets_dedicated_reap_interval(
+    tmp_path, monkeypatch
+):
+    from tools.anticipation import hermes_campaign
+    from tools.anticipation import hermes_cleanup
+
+    waits = []
+    errors = []
+
+    class ExpiredProcess:
+        pid = 12345
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def wait(timeout):
+            waits.append(timeout)
+            error = hermes_campaign.subprocess.TimeoutExpired("hermes", timeout)
+            errors.append(error)
+            raise error
+
+    stimulus = HermesStimulus(
+        tmp_path,
+        hermes_executable=tmp_path / "hermes",
+        runtime=_TrackingRuntime(),
+    )
+    monkeypatch.setattr(hermes_campaign, "_signal_process_group", lambda *_: None)
+    expired_origin = time.monotonic() - 131
+
+    with pytest.raises(hermes_campaign.subprocess.TimeoutExpired) as caught:
+        stimulus._finish_task(
+            ExpiredProcess(),
+            {},
+            expired_origin,
+            {"cleanup_deadline_s": 130},
+            None,
+        )
+
+    assert caught.value is errors[0]
+    assert waits == [0, hermes_cleanup.TASK_REAP_TIMEOUT_SECONDS]
+
+
 def test_dripping_cleanup_obeys_session_deadline_and_reconciles(monkeypatch):
     with ollama_server() as (endpoint, state):
         runtime = OllamaRuntime(endpoint=endpoint, durable_cleanup_timeout_seconds=0.8)

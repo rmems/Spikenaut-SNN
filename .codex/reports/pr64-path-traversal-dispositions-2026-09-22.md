@@ -13,13 +13,16 @@ definition was not changed.
 
 ## Path traversal — fixed by code (resolve() + is_relative_to confinement)
 
-Determination: **Genuine security-sensitive sinks hardened.** The flagged values
-(`session["hermes_home"]`, evaluation `prepared`/`output`) are internal
-orchestrator paths built deterministically in `hermes_protocol._hermes_session`
-from a resolved `root` and a fixed integer seed (`2026092000 + i`) — not
-HTTP-craftable, contrary to the taint model. Rather than argue the taint away,
-each sink now resolves the target and rejects any path that is not confined to
-its trusted base with `ValueError`, eliminating the finding on rescan.
+Determination: **Genuine security-sensitive sinks hardened.** Hermes session
+paths are built deterministically in `hermes_protocol._hermes_session` from a
+resolved root and fixed integer seed (`2026092000 + i`). Evaluation `prepared`
+and `output` paths remain operator-supplied CLI arguments; the repository does
+not confine them to a repository-owned base. The hardened evaluation code
+confines only its derived stage-log and status-file paths to the resolved
+operator-selected output directory, and creates stage logs without following or
+replacing an existing path. The Hermes verifier path is confined to the resolved
+session home. Each guard raises `ValueError` when a derived path escapes its
+applicable trusted base.
 
 - `AaDC6AtAR5GqAEmIjCjq` — `tools/anticipation/task_verification.py:211` — `pythonsecurity:S2083` (BLOCKER)
 - `AaDC_9DIZncugQ_b-kcH` — `tools/anticipation/evaluate.py:161` — `pythonsecurity:S8707` (HIGH)

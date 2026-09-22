@@ -29,6 +29,12 @@ CAPTURE_OPERATION_ERRORS = (
     TypeError,
     ValueError,
 )
+COLLECTOR_FINALIZATION_ERRORS = CAPTURE_OPERATION_ERRORS + (
+    subprocess.SubprocessError,
+    KeyboardInterrupt,
+    SystemExit,
+    GeneratorExit,
+)
 
 
 def allocation_bytes():
@@ -227,7 +233,9 @@ def _capture_session(session, stimulus, collector, campaign):
     state = {"actual": [], "started": None}
     audit_key = campaign.get("actual_audit_key", "actual_schedule")
     with (directory / "collector.log").open("w") as log:
-        process = subprocess.Popen([str(collector)], env=env, stdout=log, stderr=log)
+        process = _launch_verified_collector(
+            collector, campaign["collector_sha256"], env, log
+        )
         session_error = None
         try:
             _record_stimuli(directory, process, stimulus, session, state)
@@ -256,6 +264,41 @@ def _capture_session(session, stimulus, collector, campaign):
                 raise session_error
     _confirm_collector_shutdown(directory, record, exit_code)
     return record
+
+
+def _launch_verified_collector(collector, expected_digest, env, log):
+    collector_fd = _open_verified_collector(collector, expected_digest)
+    try:
+        return subprocess.Popen(
+            [f"/proc/self/fd/{collector_fd}"],
+            env=env,
+            stdout=log,
+            stderr=log,
+            pass_fds=(collector_fd,),
+        )
+    finally:
+        os.close(collector_fd)
+
+
+def _open_verified_collector(collector, expected_digest):
+    """Copy verified bytes to a private inode and return a read-only descriptor."""
+    write_fd = os.memfd_create("spikenaut-collector", os.MFD_CLOEXEC)
+    digest = hashlib.sha256()
+    try:
+        with (
+            open(collector, "rb") as source,
+            os.fdopen(write_fd, "wb", closefd=False) as staged,
+        ):
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+                staged.write(chunk)
+            staged.flush()
+        if digest.hexdigest() != expected_digest:
+            raise RuntimeError("collector binary changed after campaign preflight")
+        os.fchmod(write_fd, 0o500)
+        return os.open(f"/proc/self/fd/{write_fd}", os.O_RDONLY)
+    finally:
+        os.close(write_fd)
 
 
 def _finish_capture(root, stimulus, status, completed_all_sessions, had_active_error):
@@ -359,8 +402,8 @@ def _stop_collector(process, directory, record, session_error):
     try:
         exit_code = process.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        process.kill()
-        record["collector_exit_code"] = process.wait()
+        exit_code = _kill_and_reap_collector(process)
+        record["collector_exit_code"] = exit_code
         record["status"] = "shutdown_timeout"
         try:
             write_json(directory / STIMULUS_AUDIT_NAME, record)
@@ -371,7 +414,29 @@ def _stop_collector(process, directory, record, session_error):
         )
         if session_error is None:
             session_error = shutdown_error
+    except BaseException:
+        _kill_and_reap_collector(process)
+        raise
     return exit_code, session_error
+
+
+def _kill_and_reap_collector(process):
+    """Best-effort finalization that cannot replace an active cleanup error."""
+    kill_sent = False
+    for _attempt in range(2):
+        try:
+            process.kill()
+            kill_sent = True
+            break
+        except COLLECTOR_FINALIZATION_ERRORS:
+            if process.poll() is not None:
+                return process.poll()
+    if not kill_sent:
+        return process.poll()
+    try:
+        return process.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
+    except COLLECTOR_FINALIZATION_ERRORS:
+        return process.poll()
 
 
 def _session_diagnostics(stimulus, record, audit_key):

@@ -56,7 +56,9 @@ def test_python_fixture_rejects_verifier_path_escaping_hermes_home(tmp_path):
     )
 
 
-def test_evaluation_worker_run_rejects_status_file_escaping_output(tmp_path, monkeypatch):
+def test_evaluation_worker_run_rejects_status_file_escaping_output(
+    tmp_path, monkeypatch
+):
     prepared = tmp_path / "prepared.json"
     prepared.write_text(json.dumps({}) + "\n")
     output = tmp_path / "results"
@@ -90,3 +92,49 @@ def test_python_stage_rejects_log_path_escaping_output(tmp_path, monkeypatch):
     assert not escaped_target.exists(), (
         f"stage log escaped output base: opened at {escaped_target}"
     )
+
+
+def test_python_stage_refuses_existing_log_symlink_without_truncating_target(
+    tmp_path, monkeypatch
+):
+    prepared = tmp_path / "prepared"
+    prepared.mkdir()
+    output = tmp_path / "results"
+    output.mkdir()
+    sentinel = output / "sentinel.log"
+    sentinel.write_text("do not truncate\n")
+    (output / "baselines.log").symlink_to(sentinel)
+
+    monkeypatch.setattr(
+        evaluator.subprocess, "run", lambda *a, **k: pytest.fail("log was opened")
+    )
+
+    with pytest.raises(FileExistsError):
+        evaluator._python_stage("baselines", prepared, output, 10.0)
+
+    assert sentinel.read_text() == "do not truncate\n"
+
+
+def test_exclusive_log_creation_is_relative_to_retained_output_descriptor(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "results"
+    output.mkdir()
+    real_open = evaluator.os.open
+    observed_dir_fd = None
+
+    def audited_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal observed_dir_fd
+        if path == "baselines.log":
+            observed_dir_fd = dir_fd
+        if dir_fd is None:
+            return real_open(path, flags, mode)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(evaluator.os, "open", audited_open)
+
+    with evaluator._open_exclusive_log(output, "baselines.log") as log:
+        log.write("captured\n")
+
+    assert observed_dir_fd is not None
+    assert (output / "baselines.log").read_text() == "captured\n"
