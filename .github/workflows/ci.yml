@@ -188,6 +188,24 @@ jobs:
           python3 -m tools.replay_frozen
           python3 -m unittest tests.test_replay_frozen -v
 
+  anticipation-julia:
+    name: Anticipation Julia
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3.0.2
+        with:
+          # Match the runtime used by the recorded pilot rather than letting a
+          # new Julia release change the trainer verdict without a code change.
+          version: '1.12.7'
+      - uses: julia-actions/cache@a7bed9df697e5d7309d68afe7542a87621a8b6c8 # v3.3.0
+      - name: Instantiate the pinned trainer environment
+        run: |
+          julia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'
+      - name: Test the time-resolved SynapticDistill trainer
+        run: |
+          julia --startup-file=no --project=tools/anticipation tools/anticipation/test_train.jl
+
   anticipation-python:
     name: Anticipation Python
     runs-on: ubuntu-latest

@@ -7,6 +7,9 @@ Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 SynapticDistill = "c4d8e2f3-9a0b-4c1d-8e5f-2a3b4c5d6e7f"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
+[sources]
+SynapticDistill = {rev = "a1fa491c70397b96967ba6cf8f08c2ce2fbb2fb7", url = "https://github.com/rmems/SynapticDistill.jl.git"}
+
 [compat]
 JSON3 = "1"
 SynapticDistill = "0.2"
