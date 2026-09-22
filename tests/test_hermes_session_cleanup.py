@@ -217,15 +217,11 @@ def test_process_cleanup_interrupt_retries_and_preserves_exception(
     monkeypatch.setattr(hermes_campaign, "_signal_process_group", interrupt_once)
     origin = time.monotonic()
     record = {}
+    process = InterruptingProcess()
+    task_config = {"cleanup_deadline_s": 130}
 
     with pytest.raises(KeyboardInterrupt) as caught:
-        stimulus._finish_task(
-            InterruptingProcess(),
-            record,
-            origin,
-            {"cleanup_deadline_s": 130},
-            None,
-        )
+        stimulus._finish_task(process, record, origin, task_config, None)
 
     assert caught.value is cleanup_interrupt
     assert signal_calls == 2
@@ -264,15 +260,12 @@ def test_expired_process_cleanup_retry_gets_dedicated_reap_interval(
     )
     monkeypatch.setattr(hermes_campaign, "_signal_process_group", lambda *_: None)
     expired_origin = time.monotonic() - 131
+    process = ExpiredProcess()
+    record = {}
+    task_config = {"cleanup_deadline_s": 130}
 
     with pytest.raises(hermes_campaign.subprocess.TimeoutExpired) as caught:
-        stimulus._finish_task(
-            ExpiredProcess(),
-            {},
-            expired_origin,
-            {"cleanup_deadline_s": 130},
-            None,
-        )
+        stimulus._finish_task(process, record, expired_origin, task_config, None)
 
     assert caught.value is errors[0]
     assert waits == [0, hermes_cleanup.TASK_REAP_TIMEOUT_SECONDS]

@@ -168,7 +168,8 @@ def _open_exclusive_log(output, leaf_name):
     """Create a private log relative to one retained output-directory inode."""
     if not leaf_name or Path(leaf_name).name != leaf_name:
         raise ValueError("stage log path escapes output directory")
-    directory_fd = os.open(
+    # The CLI output root is intentional; the fixed leaf stays under this dir_fd.
+    directory_fd = os.open(  # NOSONAR pythonsecurity:S8707
         output, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
     )
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL

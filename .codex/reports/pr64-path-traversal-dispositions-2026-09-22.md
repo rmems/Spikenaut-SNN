@@ -28,6 +28,19 @@ applicable trusted base.
 - `AaDC_9DIZncugQ_b-kcH` — `tools/anticipation/evaluate.py:161` — `pythonsecurity:S8707` (HIGH)
 - `AaDC_9DYZncugQ_b-kcI` — `tools/anticipation/evaluation_worker.py:13` — `pythonsecurity:S8707` (HIGH)
 
+## Operator-selected output root — false positive (S8707 x1)
+
+Determination: **False positive after sink hardening.** The evaluation output
+directory is an intentional operator-supplied CLI destination, not an LLM tool
+argument or HTTP request field. `_open_exclusive_log` retains a descriptor for
+that selected directory, rejects non-leaf log names, verifies the resolved log
+remains below the retained directory inode, and creates the fixed log leaf with
+`dir_fd`, `O_CREAT | O_EXCL`, and `O_NOFOLLOW`. The flagged `os.open(output, ...)`
+selects the operator-requested root; it does not derive or open an attacker-chosen
+descendant. Inline `# NOSONAR pythonsecurity:S8707` is applied to this sink.
+
+- `AaDHgxv2Hey2zawuA0yo` — `tools/anticipation/evaluate.py:171` — `pythonsecurity:S8707` (MAJOR)
+
 ## Insecure pseudorandom generator — false positive (S2245 x5)
 
 Determination: **False positive.** `write_fixture` uses `random.Random(session["seed"])`

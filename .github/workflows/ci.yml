@@ -209,4 +209,4 @@ jobs:
       - name: Check capture failure paths and scientific reporting
         run: |
           command -v bwrap
-          python -m pytest -q tests/test_anticipation_campaign.py tests/test_evaluation_deadline.py tests/test_hermes_*.py tests/test_path_confinement.py
+          python -m pytest -q tests/test_anticipation_campaign.py tests/test_collector_lifecycle.py tests/test_evaluation_deadline.py tests/test_hermes_*.py tests/test_path_confinement.py
