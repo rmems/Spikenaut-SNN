@@ -9,8 +9,10 @@ use nir_rs::types::{MetadataValue, TensorData};
 use nir_rs::{NirGraph, NirNode};
 use spikenaut_snn::graph::{
     INPUT_NODE, LIF_NODE, LINEAR_NODE, OUTPUT_NODE, Provenance, load_default_lif_graph,
+    load_lif_graph_from_mem_dir,
 };
 use spikenaut_snn::model::{MERGED_V2_PROVENANCE, NEURON_COUNT, SnnModel, TIMESTEP_SECONDS};
+use spikenaut_snn::{LoadMemGraphError, MemBankError, OUTPUT_WEIGHT_COUNT};
 
 /// The 16-LIF graph is `Input → Linear → LIF → Output`: four nodes, three edges.
 #[test]
@@ -215,6 +217,80 @@ fn read_q8_8_mem(name: &str) -> Vec<f64> {
             f64::from(bits.cast_signed()) / 256.0
         })
         .collect()
+}
+
+#[test]
+fn direct_memory_graph_matches_json_graph_and_retains_readout() {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("dataset/merged_v2");
+    let direct = load_lif_graph_from_mem_dir(&directory).expect("load direct memory graph");
+    let json = spikenaut_snn::build_lif_graph(&SnnModel::load_default().unwrap()).unwrap();
+
+    assert_eq!(
+        direct.graph.nodes, json.nodes,
+        "all graph parameters must agree"
+    );
+    assert_eq!(direct.graph.edges, json.edges, "graph topology must agree");
+    assert_eq!(
+        direct.graph.metadata.get("source"),
+        Some(&MetadataValue::String(directory.display().to_string()))
+    );
+    assert_eq!(direct.output_weights.len(), OUTPUT_WEIGHT_COUNT);
+    assert_eq!(
+        direct.output_weights,
+        read_q8_8_mem("parameters_output_weights.mem")
+    );
+}
+
+#[test]
+fn direct_loader_needs_only_the_four_memory_files() {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("dataset/merged_v2");
+    let directory = std::env::temp_dir().join(format!(
+        "spikenaut-mem-only-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    for name in spikenaut_snn::MEM_BANK_FILENAMES {
+        std::fs::copy(source.join(name), directory.join(name)).unwrap();
+    }
+    assert!(!directory.join("snn_model.json").exists());
+    let loaded = load_lif_graph_from_mem_dir(&directory).expect("load bank without JSON");
+    assert_eq!(loaded.graph.len(), 4);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn direct_loader_reports_file_and_line_for_bad_tokens() {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("dataset/merged_v2");
+    let directory = std::env::temp_dir().join(format!("spikenaut-bad-mem-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir(&directory).unwrap();
+    for name in spikenaut_snn::MEM_BANK_FILENAMES {
+        std::fs::copy(source.join(name), directory.join(name)).unwrap();
+    }
+    let path = directory.join("parameters_decay.mem");
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    text.replace_range(5..9, "nope");
+    std::fs::write(&path, text).unwrap();
+
+    let error = load_lif_graph_from_mem_dir(&directory).unwrap_err();
+    assert!(matches!(
+        error,
+        LoadMemGraphError::Bank(MemBankError::Token { line: 2, .. })
+    ));
+    assert!(error.to_string().contains("parameters_decay.mem:2"));
+
+    std::fs::copy(source.join("parameters_decay.mem"), &path).unwrap();
+    std::fs::remove_file(directory.join("parameters_output_weights.mem")).unwrap();
+    assert!(matches!(
+        load_lif_graph_from_mem_dir(&directory).unwrap_err(),
+        LoadMemGraphError::Bank(MemBankError::Io { path, .. })
+            if path.ends_with("parameters_output_weights.mem")
+    ));
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 /// The graph must carry exactly the parameters the FPGA holds.
