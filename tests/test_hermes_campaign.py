@@ -130,10 +130,12 @@ def test_csv_verifier_rejects_correct_values_in_wrong_key_order(tmp_path):
 def test_hermes_executable_is_explicit_for_api_and_cli(tmp_path):
     from tools.anticipation.hermes_campaign import HermesStimulus, main
 
+    runtime = FakeRuntime()
     with pytest.raises(TypeError, match="hermes_executable"):
-        HermesStimulus(tmp_path, runtime=FakeRuntime())
+        HermesStimulus(tmp_path, runtime=runtime)
 
-    arguments = [str(tmp_path), "--collector", str(tmp_path / "collector")]
+    collector = str(tmp_path / "collector")
+    arguments = [str(tmp_path), "--collector", collector]
     with pytest.raises(SystemExit) as error:
         main(arguments)
     assert error.value.code == 2
