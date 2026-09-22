@@ -187,3 +187,44 @@ jobs:
           python3 tools/replay_frozen.py
           python3 -m tools.replay_frozen
           python3 -m unittest tests.test_replay_frozen -v
+
+  anticipation-julia:
+    name: Anticipation Julia
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3.0.2
+        with:
+          # Match the runtime used by the recorded pilot rather than letting a
+          # new Julia release change the trainer verdict without a code change.
+          version: '1.12.7'
+      - uses: julia-actions/cache@a7bed9df697e5d7309d68afe7542a87621a8b6c8 # v3.3.0
+      - name: Instantiate the pinned trainer environment
+        run: |
+          julia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'
+      - name: Test the time-resolved SynapticDistill trainer
+        run: |
+          julia --startup-file=no --project=tools/anticipation tools/anticipation/test_train.jl
+
+  anticipation-python:
+    name: Anticipation Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Install the Python verifier sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap libseccomp2
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --version
+          bwrap --ro-bind / / --unshare-net -- /bin/true
+      - name: Install pinned experiment test dependencies
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r tools/anticipation/requirements-test.txt
+      - name: Check capture failure paths and scientific reporting
+        run: |
+          command -v bwrap
+          python -m pytest -q tests/test_anticipation_campaign.py tests/test_collector_lifecycle.py tests/test_evaluation_deadline.py tests/test_hermes_*.py tests/test_path_confinement.py
