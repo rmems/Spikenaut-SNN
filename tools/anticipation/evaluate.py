@@ -139,17 +139,24 @@ def _compare_with_budget(prepared, output, status, started):
 
 
 def _python_stage(stage, prepared, output, remaining):
+    # prepared/output are internal orchestrator paths, not request data. Resolve
+    # them and confine the per-stage log to the resolved output tree before
+    # opening it, so no crafted path can escape the intended directory.
+    output = output.resolve()
+    log_path = (output / f"{stage}.log").resolve()
+    if not log_path.is_relative_to(output):
+        raise ValueError("stage log path escapes output directory")
     command = [
         sys.executable,
         "-m",
         "tools.anticipation.evaluation_worker",
         stage,
         str(prepared.resolve()),
-        str(output.resolve()),
+        str(output),
     ]
     if remaining <= 0:
         raise subprocess.TimeoutExpired(command, max(0, remaining))
-    with (output / f"{stage}.log").open("w") as log:
+    with log_path.open("w") as log:
         subprocess.run(
             command,
             stdout=log,
