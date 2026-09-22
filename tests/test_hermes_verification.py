@@ -27,6 +27,41 @@ def test_verification_does_not_swallow_keyboard_interrupt(monkeypatch):
         task_verification.verify_fixture({}, {"kind": "json-output"})
 
 
+def test_runtime_roots_include_copied_virtual_environment(tmp_path, monkeypatch):
+    from tools.anticipation import task_verification
+
+    base = tmp_path / "base"
+    prefix = tmp_path / "venv"
+    interpreter = prefix / "bin" / "python"
+    base.mkdir()
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"copied interpreter")
+    monkeypatch.setattr(task_verification.sys, "base_prefix", str(base))
+    monkeypatch.setattr(task_verification.sys, "prefix", str(prefix))
+    monkeypatch.setattr(task_verification.sys, "executable", str(interpreter))
+
+    roots = task_verification._verification_runtime_roots()
+
+    assert any(interpreter.is_relative_to(root) for root in roots)
+
+
+def test_json_verifier_rejects_boolean_in_place_of_number(tmp_path):
+    from tools.anticipation.task_verification import verify_fixture
+
+    output = tmp_path / "output.json"
+    output.write_text('[{"id":"item-00000","score":false}]\n')
+    result = verify_fixture(
+        {},
+        {
+            "kind": "json-output",
+            "path": str(output),
+            "expected": [{"id": "item-00000", "score": 0}],
+        },
+    )
+
+    assert result == {"status": "failed", "reason": "output mismatch"}
+
+
 def test_python_verifier_requires_completion_sentinel(tmp_path):
     from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
 

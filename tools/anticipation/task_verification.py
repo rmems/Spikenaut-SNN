@@ -43,7 +43,7 @@ def write_fixture(session, scratch):
             }
             for i in range(count)
         ]
-        rng.shuffle(records)  # NOSONAR python:S2245 -- deterministic fixture RNG; see above
+        rng.shuffle(records)  # NOSONAR python:S2245 -- deterministic fixture RNG
         (scratch / "input.json").write_text(json.dumps(records, indent=2) + "\n")
         expected = [
             {"id": r["id"], "score": r["score"]}
@@ -152,18 +152,19 @@ def verification_command(session, verifier):
 def _verification_runtime_roots():
     runtime_roots = []
     python_base = Path(sys.base_prefix)
+    python_prefix = Path(sys.prefix)
+    interpreter = Path(sys.executable).resolve()
     candidates = [
         Path("/usr"),
         Path("/lib"),
         Path("/lib64"),
         python_base,
         python_base.resolve(),
+        python_prefix,
+        python_prefix.resolve(),
+        interpreter.parent,
     ]
-    for prefix in python_base.parents:
-        loader_root = prefix / "lib"
-        if (loader_root / "ld.so").exists():
-            candidates.append(loader_root)
-            break
+    candidates.extend(_python_loader_roots(python_base))
     for root in candidates:
         if not root.exists() or any(
             root.is_relative_to(bound) for bound in runtime_roots
@@ -176,13 +177,54 @@ def _verification_runtime_roots():
     return runtime_roots
 
 
+def _python_loader_roots(python_base):
+    for prefix in python_base.parents:
+        loader_root = prefix / "lib"
+        if (loader_root / "ld.so").exists():
+            return [loader_root]
+    return []
+
+
 def _verify_json_output(plan):
     actual = json.loads(Path(plan["path"]).read_text())
-    if actual != plan["expected"]:
+    if not _same_json_value(actual, plan["expected"]):
         return {"status": "failed", "reason": "output mismatch"}
     if isinstance(plan["expected"], dict) and list(actual) != list(plan["expected"]):
         return {"status": "failed", "reason": "output key order mismatch"}
     return {"status": "passed", "kind": "direct-json-comparison"}
+
+
+def _same_json_value(actual, expected):
+    if isinstance(expected, dict):
+        return _same_json_object(actual, expected)
+    if isinstance(expected, list):
+        return _same_json_array(actual, expected)
+    if _is_json_number(expected):
+        return _is_json_number(actual) and actual == expected
+    return type(actual) is type(expected) and actual == expected
+
+
+def _same_json_object(actual, expected):
+    return (
+        isinstance(actual, dict)
+        and set(actual) == set(expected)
+        and all(_same_json_value(actual[key], value) for key, value in expected.items())
+    )
+
+
+def _same_json_array(actual, expected):
+    return (
+        isinstance(actual, list)
+        and len(actual) == len(expected)
+        and all(
+            _same_json_value(left, right)
+            for left, right in zip(actual, expected, strict=True)
+        )
+    )
+
+
+def _is_json_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _run_verifier(command):

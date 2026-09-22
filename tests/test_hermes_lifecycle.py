@@ -270,7 +270,7 @@ def test_process_group_signal_race_preserves_timebox_cleanup(tmp_path, monkeypat
         def poll(self):
             return self.returncode
 
-        def wait(self):
+        def wait(self, _timeout=None):
             return self.returncode
 
     runtime = TrackingRuntime()
@@ -321,7 +321,7 @@ def test_normal_hermes_exit_still_cleans_process_group(tmp_path, monkeypatch):
         def poll(self):
             return self.returncode
 
-        def wait(self):
+        def wait(self, _timeout=None):
             return self.returncode
 
     signals = []
@@ -373,7 +373,7 @@ def test_final_signal_race_preserves_original_error_and_model_cleanup(
         def poll(self):
             return None
 
-        def wait(self):
+        def wait(self, _timeout=None):
             return 0
 
     runtime = TrackingRuntime()

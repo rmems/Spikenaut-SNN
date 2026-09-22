@@ -279,6 +279,110 @@ def test_comparison_uses_prepared_target_names_with_fallback(
     assert result["target_names"] == expected
 
 
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
+def test_comparison_replaces_report_link_without_modifying_target(tmp_path, link_kind):
+    from tools.anticipation.campaign import write_json
+    from tools.anticipation.report import comparison
+
+    prepared = tmp_path / "prepared.json"
+    output = tmp_path / "results"
+    output.mkdir()
+    write_json(
+        prepared,
+        {
+            "schema_version": "anticipation-prepared-v1",
+            "normalization": {"y_std": [1, 1, 1, 1]},
+        },
+    )
+    baseline = {
+        "persistence": {
+            "validation": {"primary": 1.0},
+            "test": {
+                "primary": 1.0,
+                "mae": [1, 1, 1, 1],
+                "rmse": [1, 1, 1, 1],
+                "per_session": {},
+            },
+        }
+    }
+    sentinel = tmp_path / "sentinel.md"
+    sentinel.write_text("sentinel\n")
+    report = output / "report.md"
+    if link_kind == "symlink":
+        report.symlink_to(sentinel)
+    else:
+        report.hardlink_to(sentinel)
+
+    comparison(prepared, output, baseline_results=baseline)
+
+    assert sentinel.read_text() == "sentinel\n"
+    assert report.read_text().startswith("# Anticipation pilot results\n")
+
+
+def test_budget_limited_run_has_no_promising_verdict(tmp_path, monkeypatch):
+    from tools.anticipation import report
+    from tools.anticipation.campaign import write_json
+
+    output = tmp_path / "results"
+    predictions = output / "snn" / "predictions.json"
+    write_json(
+        predictions,
+        {"arm": "uniform", "seed": 123, "predictions": []},
+    )
+    run = {
+        "arm": "uniform",
+        "seed": 123,
+        "status": "budget_limited",
+        "predictions": predictions.name,
+    }
+    favorable = {
+        "primary": 0.5,
+        "mae": [0.5, 0.5, 0.5, 0.5],
+        "rmse": [0.5, 0.5, 0.5, 0.5],
+        "per_session": {},
+    }
+    baseline = {
+        "persistence": {
+            "validation": {"primary": 1.0},
+            "test": {
+                "primary": 1.0,
+                "mae": [1.0, 1.0, 1.0, 1.0],
+                "rmse": [1.0, 1.0, 1.0, 1.0],
+                "per_session": {},
+            },
+        }
+    }
+    monkeypatch.setattr(report, "_prediction_metrics", lambda *_args: favorable)
+
+    scored = report._score_run(run, output, {}, np.ones(4), baseline, "persistence")
+
+    assert scored["promising"] is None
+    lines = report._summary_lines(
+        {"runs": [scored], "complete": False, "limits": "pilot"},
+        baseline,
+        "persistence",
+    )
+    assert any(line.endswith("| incomplete |") for line in lines)
+
+
+def test_cleanup_interrupt_persists_incomplete_capture_status(tmp_path):
+    from tools.anticipation import campaign
+    import json
+
+    class InterruptingStimulus:
+        def close(self):
+            raise KeyboardInterrupt
+
+    status = {"status": "finalizing", "sessions": []}
+
+    with pytest.raises(KeyboardInterrupt):
+        campaign._finish_capture(tmp_path, InterruptingStimulus(), status, True, False)
+
+    persisted = json.loads((tmp_path / campaign.CAPTURE_STATUS_NAME).read_text())
+    assert persisted["status"] == "incomplete"
+    assert persisted["cleanup_error"].startswith("KeyboardInterrupt:")
+
+
 def test_shutdown_timeout_preserves_executed_stimulus_audit(tmp_path, monkeypatch):
     from tools.anticipation import campaign
     from types import SimpleNamespace

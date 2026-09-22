@@ -24,6 +24,14 @@ from .task_verification import (
 )
 
 TASK_CLEANUP_ERRORS = (HTTPException, OSError, RuntimeError, TypeError, ValueError)
+TASK_CONTROL_FLOW_ERRORS = (
+    KeyboardInterrupt,
+    SystemExit,
+    GeneratorExit,
+)
+TASK_FINALIZATION_ERRORS = (
+    TASK_CLEANUP_ERRORS + (subprocess.SubprocessError,) + TASK_CONTROL_FLOW_ERRORS
+)
 
 
 PROTOCOL_ID = "hermes-ollama-inference-v4"
@@ -434,34 +442,86 @@ class HermesStimulus:
             )
 
     def _finish_task(self, process, record, origin, event, pending_error):
-        if process is not None:
-            leader_running = process.poll() is None
-            # Descendants can survive after the Hermes group leader exits.
-            # Always signal the isolated process group before model cleanup.
-            _signal_process_group(process, signal.SIGKILL)
-            if leader_running:
-                process.wait()
-                record["forced_kill"] = True
+        deadline = origin + event["cleanup_deadline_s"]
+        process_error = self._stop_task_process_safely(process, record, deadline)
         try:
-            record["model_cleanup"] = self.runtime.close(
-                deadline=origin + event["cleanup_deadline_s"]
-            )
-            record["model_cleanup_end_s"] = time.monotonic() - origin
-            if record["model_cleanup_end_s"] > event["cleanup_deadline_s"]:
-                raise RuntimeError(
-                    "owned model cleanup exceeded the 130s session deadline"
-                )
-        except TASK_CLEANUP_ERRORS as error:
-            record["model_cleanup_error"] = f"{type(error).__name__}: {error}"
-            record["status"] = "invalid"
-            record["workload_status"] = "invalid"
-            if pending_error is None:
-                pending_error = error
+            model_error = self._close_task_model_safely(record, origin, event)
+        finally:
+            self._finalize_task_record(record, origin)
+        error_to_raise = self._cleanup_error_to_raise(
+            pending_error, process_error, model_error
+        )
+        if error_to_raise is not None:
+            raise error_to_raise
+        return self._preferred_cleanup_error(pending_error, model_error)
+
+    def _stop_task_process_safely(self, process, record, deadline):
+        try:
+            self._stop_task_process(process, record, deadline)
+        except TASK_FINALIZATION_ERRORS as error:
+            self._record_task_cleanup_error(record, "process_cleanup_error", error)
+            return error
+        return None
+
+    @staticmethod
+    def _stop_task_process(process, record, deadline):
+        if process is None:
+            return
+        leader_running = process.poll() is None
+        # Descendants can survive after the Hermes group leader exits.
+        # Always signal the isolated process group before model cleanup.
+        _signal_process_group(process, signal.SIGKILL)
+        if leader_running:
+            process.wait(max(0, deadline - time.monotonic()))
+            record["forced_kill"] = True
+
+    def _close_task_model(self, record, origin, event):
+        record["model_cleanup"] = self.runtime.close(
+            deadline=origin + event["cleanup_deadline_s"]
+        )
+        record["model_cleanup_end_s"] = time.monotonic() - origin
+        if record["model_cleanup_end_s"] > event["cleanup_deadline_s"]:
+            raise RuntimeError("owned model cleanup exceeded the 130s session deadline")
+
+    def _close_task_model_safely(self, record, origin, event):
+        try:
+            self._close_task_model(record, origin, event)
+        except TASK_FINALIZATION_ERRORS as error:
+            self._record_task_cleanup_error(record, "model_cleanup_error", error)
+            return error
+        return None
+
+    @staticmethod
+    def _record_task_cleanup_error(record, key, error):
+        record[key] = f"{type(error).__name__}: {error}"
+        record["status"] = "invalid"
+        record["workload_status"] = "invalid"
+
+    @staticmethod
+    def _cleanup_error_to_raise(pending_error, process_error, model_error):
+        for error in (process_error, model_error):
+            if isinstance(error, TASK_CONTROL_FLOW_ERRORS):
+                return error
+        if pending_error is not None:
+            return None
+        if process_error is not None:
+            return process_error
+        if model_error is not None and not isinstance(model_error, TASK_CLEANUP_ERRORS):
+            return model_error
+        return None
+
+    @staticmethod
+    def _preferred_cleanup_error(*errors):
+        for error in errors:
+            if error is not None:
+                return error
+        return None
+
+    def _finalize_task_record(self, record, origin):
         record.setdefault("ended_at_utc", datetime.now(timezone.utc).isoformat())
         record.setdefault("actual_end_s", time.monotonic() - origin)
         if not self._records or self._records[-1] is not record:
             self._records.append(record)
-        return pending_error
 
 
 def _resolve_tool_path(value, scratch):

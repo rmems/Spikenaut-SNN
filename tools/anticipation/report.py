@@ -5,7 +5,7 @@ import argparse
 import json
 from pathlib import Path
 import numpy as np
-from .campaign import write_json, sha256
+from .campaign import sha256, write_json, write_text
 
 TARGETS = [
     "temperature_change_1s_c",
@@ -129,7 +129,7 @@ def comparison(prepared_path, output, baseline_results=None):
     report["seed_variation"] = _seed_variation(report)
     lines = _render_report(report, base, strongest)
     write_json(output / "comparison.json", report)
-    (output / "report.md").write_text("\n".join(lines) + "\n")
+    write_text(output / "report.md", "\n".join(lines) + "\n")
     return report
 
 
@@ -148,8 +148,9 @@ def _summary_lines(report, base, strongest):
         )
     for r in report["runs"]:
         if "test" in r:
+            verdict = r["promising"] if r.get("promising") is not None else "incomplete"
             lines.append(
-                f"| {r['arm']} LIF | {r['seed']} | {r['validation']['primary']:.5f} | {r['test']['primary']:.5f} | {r['test']['mae'][2]:.4f} | {r['test']['mae'][3]:.4f} | {r['promising']} |"
+                f"| {r['arm']} LIF | {r['seed']} | {r['validation']['primary']:.5f} | {r['test']['primary']:.5f} | {r['test']['mae'][2]:.4f} | {r['test']['mae'][3]:.4f} | {verdict} |"
             )
         else:
             lines.append(
@@ -279,11 +280,14 @@ def _score_run(run, output, data, std, base, strongest):
             if ref["primary"]
             else None
         )
-        item["promising"] = bool(
-            ref["primary"] > 0
-            and score["primary"] <= 0.95 * ref["primary"]
-            and all(score["mae"][i] <= 1.05 * ref["mae"][i] for i in (2, 3))
-        )
+        if item.get("status") == "complete":
+            item["promising"] = bool(
+                ref["primary"] > 0
+                and score["primary"] <= 0.95 * ref["primary"]
+                and all(score["mae"][i] <= 1.05 * ref["mae"][i] for i in (2, 3))
+            )
+        else:
+            item["promising"] = None
         item["diagnostics"] = pred.get("diagnostics")
     return item
 

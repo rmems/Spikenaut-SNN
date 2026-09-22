@@ -81,12 +81,18 @@ def build_campaign(root):
 
 
 def write_json(path, value):
+    write_text(path, json.dumps(value, indent=2, allow_nan=False) + "\n")
+
+
+def write_text(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as stream:
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent, delete=False
+    ) as stream:
         temporary = Path(stream.name)
         try:
-            stream.write(json.dumps(value, indent=2, allow_nan=False) + "\n")
+            stream.write(value)
             stream.close()
             temporary.replace(path)
         finally:
@@ -254,18 +260,46 @@ def _capture_session(session, stimulus, collector, campaign):
 
 def _finish_capture(root, stimulus, status, completed_all_sessions, had_active_error):
     cleanup_error = None
-    if stimulus is not None and hasattr(stimulus, "close"):
-        try:
-            status["stimulus_cleanup"] = stimulus.close()
-        except CAPTURE_OPERATION_ERRORS as error:
-            cleanup_error = error
-            status["status"] = "incomplete"
-            status["cleanup_error"] = f"{type(error).__name__}: {error}"
-    if completed_all_sessions and cleanup_error is None:
-        status["status"] = "complete"
-    write_json(root / CAPTURE_STATUS_NAME, status)
+    try:
+        cleanup_error = _close_stimulus_if_supported(stimulus, status)
+        if completed_all_sessions and cleanup_error is None:
+            status["status"] = "complete"
+    finally:
+        preserve_active_error = had_active_error or sys.exc_info()[0] is not None
+        _persist_capture_status(root, status, preserve_active_error)
     if cleanup_error is not None and not had_active_error:
         raise cleanup_error
+
+
+def _close_stimulus_if_supported(stimulus, status):
+    if stimulus is None or not hasattr(stimulus, "close"):
+        return None
+    return _close_stimulus(stimulus, status)
+
+
+def _close_stimulus(stimulus, status):
+    try:
+        status["stimulus_cleanup"] = stimulus.close()
+    except CAPTURE_OPERATION_ERRORS as error:
+        _record_cleanup_error(status, error)
+        return error
+    except BaseException as error:
+        _record_cleanup_error(status, error)
+        raise
+    return None
+
+
+def _record_cleanup_error(status, error):
+    status["status"] = "incomplete"
+    status["cleanup_error"] = f"{type(error).__name__}: {error}"
+
+
+def _persist_capture_status(root, status, preserve_active_error):
+    try:
+        write_json(root / CAPTURE_STATUS_NAME, status)
+    except (OSError, TypeError, ValueError):
+        if not preserve_active_error:
+            raise
 
 
 def _record_stimuli(directory, process, stimulus, session, state):

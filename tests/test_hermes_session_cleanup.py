@@ -9,6 +9,26 @@ from tests.ollama_fixture import ollama_server
 from tools.anticipation.hermes_campaign import HermesStimulus, OllamaRuntime
 
 
+class _TrackingRuntime(FakeRuntime):
+    closed = False
+
+    def close(self, *, deadline):
+        self.closed = True
+        return super().close(deadline=deadline)
+
+
+class _WaitFailure:
+    pid = 12345
+
+    @staticmethod
+    def poll():
+        return None
+
+    @staticmethod
+    def wait(_timeout=None):
+        raise OSError("wait failed")
+
+
 def test_session_forwards_absolute_cleanup_deadline(tmp_path):
     received = {}
 
@@ -37,10 +57,129 @@ def test_session_cleanup_does_not_swallow_keyboard_interrupt(tmp_path):
         runtime=InterruptingRuntime(),
     )
     origin = time.monotonic()
+    record = {}
     task_config = {"cleanup_deadline_s": 130}
 
     with pytest.raises(KeyboardInterrupt):
-        stimulus._finish_task(None, {}, origin, task_config, None)
+        stimulus._finish_task(None, record, origin, task_config, None)
+
+    assert stimulus.session_records() == [record]
+    assert record["status"] == "invalid"
+    assert record["model_cleanup_error"].startswith("KeyboardInterrupt:")
+
+
+def test_process_wait_error_still_closes_model_and_records_task(tmp_path, monkeypatch):
+    from tools.anticipation import hermes_campaign
+
+    runtime = _TrackingRuntime()
+    stimulus = HermesStimulus(
+        tmp_path,
+        hermes_executable=tmp_path / "hermes",
+        runtime=runtime,
+    )
+    monkeypatch.setattr(hermes_campaign, "_signal_process_group", lambda *_: None)
+    origin = time.monotonic()
+    process = _WaitFailure()
+    record = {}
+    task_config = {"cleanup_deadline_s": 130}
+
+    with pytest.raises(OSError, match="wait failed"):
+        stimulus._finish_task(process, record, origin, task_config, None)
+
+    assert runtime.closed is True
+    assert stimulus.session_records() == [record]
+    assert record["process_cleanup_error"] == "OSError: wait failed"
+    assert record["model_cleanup"]["unloaded"] is True
+
+
+def test_pending_task_error_wins_over_process_wait_error(tmp_path, monkeypatch):
+    from tools.anticipation import hermes_campaign
+
+    runtime = _TrackingRuntime()
+    stimulus = HermesStimulus(
+        tmp_path,
+        hermes_executable=tmp_path / "hermes",
+        runtime=runtime,
+    )
+    monkeypatch.setattr(hermes_campaign, "_signal_process_group", lambda *_: None)
+    origin = time.monotonic()
+    process = _WaitFailure()
+    record = {}
+    task_config = {"cleanup_deadline_s": 130}
+    task_error = ValueError("task failed")
+
+    result = stimulus._finish_task(
+        process,
+        record,
+        origin,
+        task_config,
+        task_error,
+    )
+
+    assert result is task_error
+    assert runtime.closed is True
+    assert stimulus.session_records() == [record]
+    assert record["process_cleanup_error"] == "OSError: wait failed"
+
+
+def test_process_wait_uses_remaining_cleanup_deadline(tmp_path, monkeypatch):
+    from tools.anticipation import hermes_campaign
+
+    observed = {}
+
+    class TimeoutProcess:
+        pid = 12345
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def wait(timeout):
+            observed["timeout"] = timeout
+            raise hermes_campaign.subprocess.TimeoutExpired("hermes", timeout)
+
+    runtime = _TrackingRuntime()
+    stimulus = HermesStimulus(
+        tmp_path,
+        hermes_executable=tmp_path / "hermes",
+        runtime=runtime,
+    )
+    monkeypatch.setattr(hermes_campaign, "_signal_process_group", lambda *_: None)
+    origin = time.monotonic() - 129
+    process = TimeoutProcess()
+    record = {}
+    task_config = {"cleanup_deadline_s": 130}
+
+    with pytest.raises(hermes_campaign.subprocess.TimeoutExpired):
+        stimulus._finish_task(process, record, origin, task_config, None)
+
+    assert 0 <= observed["timeout"] <= 1
+    assert runtime.closed is True
+    assert stimulus.session_records() == [record]
+    assert record["process_cleanup_error"].startswith("TimeoutExpired:")
+
+
+def test_cleanup_interrupt_wins_over_pending_task_error(tmp_path):
+    class InterruptingRuntime(FakeRuntime):
+        def close(self, *, deadline):
+            raise KeyboardInterrupt
+
+    stimulus = HermesStimulus(
+        tmp_path,
+        hermes_executable=tmp_path / "hermes",
+        runtime=InterruptingRuntime(),
+    )
+    origin = time.monotonic()
+    record = {}
+    task_config = {"cleanup_deadline_s": 130}
+    task_error = ValueError("task failed")
+
+    with pytest.raises(KeyboardInterrupt):
+        stimulus._finish_task(None, record, origin, task_config, task_error)
+
+    assert stimulus.session_records() == [record]
+    assert record["model_cleanup_error"].startswith("KeyboardInterrupt:")
 
 
 def test_dripping_cleanup_obeys_session_deadline_and_reconciles(monkeypatch):
