@@ -102,7 +102,9 @@ class HermesStimulus:
 
     def _ensure_hermes_executable(self):
         if not self.hermes_executable.is_file():
-            raise FileNotFoundError(self.hermes_executable)
+            if self._hermes_executable_digest is not None:
+                raise FileNotFoundError(self.hermes_executable)
+            return
         current = hashlib.sha256(self.hermes_executable.read_bytes()).hexdigest()
         if self._hermes_executable_digest is None:
             self._hermes_executable_digest = current

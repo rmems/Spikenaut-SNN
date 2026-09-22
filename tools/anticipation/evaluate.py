@@ -102,7 +102,7 @@ def _train(prepared, output, snn, remaining, status, julia, julia_version):
     status["trainer_command"] = command
     with _open_exclusive_log(output, "training.log") as log:
         try:
-            process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            process = subprocess.run(  # NOSONAR pythonsecurity:S603 -- Julia trainer argv is orchestrator-controlled, not request data  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 command, stdout=log, stderr=log, timeout=remaining, check=False
             )
             status["trainer_exit_code"] = process.returncode
@@ -150,17 +150,16 @@ def _python_stage(stage, prepared, output, remaining):
     log_name = f"{stage}.log"
     if remaining <= 0:
         raise subprocess.TimeoutExpired([_EVALUATION_WORKER, stage], max(0.0, remaining))
-    worker_argv = [
-        sys.executable,
-        "-m",
-        _EVALUATION_WORKER,
-        stage,
-        os.fspath(prepared),
-        os.fspath(output),
-    ]
     with _open_exclusive_log(output, log_name) as log:
         subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-            worker_argv,
+            [
+                sys.executable,
+                "-m",
+                _EVALUATION_WORKER,
+                stage,
+                os.fspath(prepared),
+                os.fspath(output),
+            ],
             stdout=log,
             stderr=log,
             timeout=remaining,
