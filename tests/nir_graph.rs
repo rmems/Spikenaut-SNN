@@ -241,42 +241,33 @@ fn direct_memory_graph_matches_json_graph_and_retains_readout() {
     );
 }
 
+fn copy_memory_bank(destination: &Path) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("dataset/merged_v2");
+    for name in spikenaut_snn::MEM_BANK_FILENAMES {
+        std::fs::copy(source.join(name), destination.join(name)).unwrap();
+    }
+}
+
 #[test]
 fn direct_loader_needs_only_the_four_memory_files() {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("dataset/merged_v2");
-    let directory = std::env::temp_dir().join(format!(
-        "spikenaut-mem-only-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).unwrap();
-    for name in spikenaut_snn::MEM_BANK_FILENAMES {
-        std::fs::copy(source.join(name), directory.join(name)).unwrap();
-    }
-    assert!(!directory.join("snn_model.json").exists());
-    let loaded = load_lif_graph_from_mem_dir(&directory).expect("load bank without JSON");
+    let directory = tempfile::tempdir().unwrap();
+    copy_memory_bank(directory.path());
+    assert!(!directory.path().join("snn_model.json").exists());
+    let loaded = load_lif_graph_from_mem_dir(directory.path()).expect("load bank without JSON");
     assert_eq!(loaded.graph.len(), 4);
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
 fn direct_loader_reports_file_and_line_for_bad_tokens() {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("dataset/merged_v2");
-    let directory = std::env::temp_dir().join(format!("spikenaut-bad-mem-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&directory);
-    std::fs::create_dir(&directory).unwrap();
-    for name in spikenaut_snn::MEM_BANK_FILENAMES {
-        std::fs::copy(source.join(name), directory.join(name)).unwrap();
-    }
-    let path = directory.join("parameters_decay.mem");
+    let directory = tempfile::tempdir().unwrap();
+    copy_memory_bank(directory.path());
+    let path = directory.path().join("parameters_decay.mem");
     let mut text = std::fs::read_to_string(&path).unwrap();
     text.replace_range(5..9, "nope");
     std::fs::write(&path, text).unwrap();
 
-    let error = load_lif_graph_from_mem_dir(&directory).unwrap_err();
+    let error = load_lif_graph_from_mem_dir(directory.path()).unwrap_err();
     assert!(matches!(
         error,
         LoadMemGraphError::Bank(MemBankError::Token { line: 2, .. })
@@ -284,13 +275,52 @@ fn direct_loader_reports_file_and_line_for_bad_tokens() {
     assert!(error.to_string().contains("parameters_decay.mem:2"));
 
     std::fs::copy(source.join("parameters_decay.mem"), &path).unwrap();
-    std::fs::remove_file(directory.join("parameters_output_weights.mem")).unwrap();
+    std::fs::remove_file(directory.path().join("parameters_output_weights.mem")).unwrap();
     assert!(matches!(
-        load_lif_graph_from_mem_dir(&directory).unwrap_err(),
+        load_lif_graph_from_mem_dir(directory.path()).unwrap_err(),
         LoadMemGraphError::Bank(MemBankError::Io { path, .. })
             if path.ends_with("parameters_output_weights.mem")
     ));
-    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn direct_loader_rejects_unrecognized_memory_images() {
+    let directory = tempfile::tempdir().unwrap();
+    copy_memory_bank(directory.path());
+    let extra = directory.path().join("parameters_bias.mem");
+    std::fs::write(&extra, "0000\n").unwrap();
+
+    let error = load_lif_graph_from_mem_dir(directory.path()).unwrap_err();
+    assert!(error.to_string().contains("unrecognized memory image"));
+    assert!(error.to_string().contains("parameters_bias.mem"));
+}
+
+#[test]
+fn direct_loader_accepts_bare_carriage_return_line_endings() {
+    let directory = tempfile::tempdir().unwrap();
+    copy_memory_bank(directory.path());
+    let path = directory.path().join("parameters.mem");
+    let cr_only = std::fs::read_to_string(&path).unwrap().replace('\n', "\r");
+    std::fs::write(&path, cr_only).unwrap();
+
+    load_lif_graph_from_mem_dir(directory.path()).expect("bare CR is a valid line ending");
+}
+
+#[cfg(unix)]
+#[test]
+fn direct_loader_rejects_a_non_utf8_provenance_path() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let directory = root
+        .path()
+        .join(OsString::from_vec(b"memory-bank-\xff".to_vec()));
+    std::fs::create_dir(&directory).unwrap();
+    copy_memory_bank(&directory);
+
+    let error = load_lif_graph_from_mem_dir(&directory).unwrap_err();
+    assert!(error.to_string().contains("not valid UTF-8"));
 }
 
 /// The graph must carry exactly the parameters the FPGA holds.

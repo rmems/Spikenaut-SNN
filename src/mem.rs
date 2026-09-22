@@ -37,6 +37,7 @@ impl Q88MemBank {
     /// No JSON file is opened or embedded on this path.
     pub fn from_dir(directory: impl AsRef<Path>) -> Result<Self, MemBankError> {
         let directory = directory.as_ref();
+        reject_unrecognized_images(directory)?;
         let thresholds = read_image(directory, 0, NEURON_COUNT)?;
         let decays = read_image(directory, 1, NEURON_COUNT)?;
         let weights = read_image(directory, 2, NEURON_COUNT * NEURON_COUNT)?;
@@ -68,6 +69,28 @@ impl Q88MemBank {
     }
 }
 
+fn reject_unrecognized_images(directory: &Path) -> Result<(), MemBankError> {
+    let entries = std::fs::read_dir(directory).map_err(|source| MemBankError::Io {
+        path: directory.to_path_buf(),
+        source,
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| MemBankError::Io {
+            path: directory.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        if path.extension().is_some_and(|extension| extension == "mem")
+            && !MEM_BANK_FILENAMES
+                .iter()
+                .any(|expected| path.file_name().is_some_and(|name| name == *expected))
+        {
+            return Err(MemBankError::UnrecognizedImage { path });
+        }
+    }
+    Ok(())
+}
+
 fn read_image(
     directory: &Path,
     file_index: usize,
@@ -83,9 +106,9 @@ fn read_image(
         source,
     })?;
 
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     let mut values = Vec::new();
-    for (line_index, line) in text.lines().enumerate() {
-        let token = line.strip_suffix('\r').unwrap_or(line);
+    for (line_index, token) in normalized.lines().enumerate() {
         if token.len() != 4
             || !token
                 .bytes()
@@ -128,6 +151,11 @@ pub enum MemBankError {
         /// Underlying UTF-8 error.
         source: std::string::FromUtf8Error,
     },
+    /// A `.mem` image outside the canonical four-file bank was present.
+    UnrecognizedImage {
+        /// Unexpected image path.
+        path: PathBuf,
+    },
     /// A line was not exactly four uppercase hexadecimal digits.
     Token {
         /// Canonical image path.
@@ -163,6 +191,9 @@ impl fmt::Display for MemBankError {
             Self::Io { path, source } => write!(f, "read {}: {source}", path.display()),
             Self::Utf8 { path, source } => {
                 write!(f, "decode {} as UTF-8: {source}", path.display())
+            }
+            Self::UnrecognizedImage { path } => {
+                write!(f, "unrecognized memory image {}", path.display())
             }
             Self::Token { path, line, token } => write!(
                 f,

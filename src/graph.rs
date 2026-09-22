@@ -104,7 +104,7 @@ use crate::model::{
 };
 #[cfg(doc)]
 use crate::model::{Neuron, tau_from_decay};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Name of the graph's input node.
 pub const INPUT_NODE: &str = "input";
@@ -141,13 +141,17 @@ pub fn load_lif_graph_from_mem_dir(
     directory: impl AsRef<Path>,
 ) -> Result<MemBankGraph, LoadMemGraphError> {
     let directory = directory.as_ref();
+    let source = directory
+        .to_str()
+        .ok_or_else(|| LoadMemGraphError::NonUtf8Source {
+            path: directory.to_path_buf(),
+        })?;
     let bank = Q88MemBank::from_dir(directory)?;
-    let source = directory.display().to_string();
     let graph = build_lif_graph_with_provenance(
         &bank.model,
         TIMESTEP_SECONDS,
         Some(Provenance {
-            source: &source,
+            source,
             description: "validated four-file signed Q8.8 memory bank; output readout retained separately",
         }),
     )?;
@@ -160,6 +164,11 @@ pub fn load_lif_graph_from_mem_dir(
 /// Failure at either stage of direct memory-to-graph construction.
 #[derive(Debug)]
 pub enum LoadMemGraphError {
+    /// The directory cannot be represented unambiguously in NIR metadata.
+    NonUtf8Source {
+        /// Original path, preserved without lossy conversion.
+        path: PathBuf,
+    },
     /// Memory-bank decoding or validation failed.
     Bank(MemBankError),
     /// NIR graph construction failed.
@@ -169,6 +178,9 @@ pub enum LoadMemGraphError {
 impl std::fmt::Display for LoadMemGraphError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NonUtf8Source { path } => {
+                write!(f, "memory-bank directory is not valid UTF-8: {path:?}")
+            }
             Self::Bank(error) => error.fmt(f),
             Self::Graph(error) => error.fmt(f),
         }
@@ -177,6 +189,7 @@ impl std::fmt::Display for LoadMemGraphError {
 impl std::error::Error for LoadMemGraphError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::NonUtf8Source { .. } => None,
             Self::Bank(error) => Some(error),
             Self::Graph(error) => Some(error),
         }
