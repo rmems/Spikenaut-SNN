@@ -15,6 +15,22 @@ import pytest
 from tests.ollama_fixture import ollama_server
 
 
+def test_model_status_interrupt_is_not_treated_as_transient(monkeypatch):
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    runtime = OllamaRuntime()
+    runtime._owned_model = "granite4.2:8b"
+
+    def interrupt_status(_deadline):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runtime, "_models", interrupt_status)
+    monkeypatch.setattr(runtime, "_unload_exact", lambda *_args: None)
+
+    with pytest.raises(KeyboardInterrupt):
+        runtime._close_loaded("granite4.2:8b", float("inf"))
+
+
 def test_runtime_refuses_existing_model_and_verifies_owned_unload():
     from tools.anticipation.hermes_campaign import OllamaRuntime
 

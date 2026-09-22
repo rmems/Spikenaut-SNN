@@ -15,6 +15,18 @@ import pytest
 from tests.hermes_fixture import FakeRuntime
 
 
+def test_verification_does_not_swallow_keyboard_interrupt(monkeypatch):
+    from tools.anticipation import task_verification
+
+    def interrupt_verifier(_plan):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(task_verification, "_verify_json_output", interrupt_verifier)
+
+    with pytest.raises(KeyboardInterrupt):
+        task_verification.verify_fixture({}, {"kind": "json-output"})
+
+
 def test_python_verifier_requires_completion_sentinel(tmp_path):
     from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
 

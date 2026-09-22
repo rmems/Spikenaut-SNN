@@ -15,6 +15,14 @@ MODEL_PLAN = (
 )
 
 
+def _session_split(index):
+    if index <= 6:
+        return "train"
+    if index <= 9:
+        return "validation"
+    return "test"
+
+
 def _prompt(family, records, target_tokens, seed, scratch):
     scratch = Path(scratch).resolve()
     common = (
@@ -119,7 +127,7 @@ def _hermes_session(root, i, family, target_tokens):
     prompt = _prompt(family, records, target_tokens, seed, scratch)
     return {
         "session_id": f"session-{i:02}",
-        "split": "train" if i <= 6 else "validation" if i <= 9 else "test",
+        "split": _session_split(i),
         "seed": seed,
         "model": model,
         "advertised_context_length": advertised_context,

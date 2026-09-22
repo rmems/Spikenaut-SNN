@@ -26,6 +26,27 @@ def test_session_forwards_absolute_cleanup_deadline(tmp_path):
     assert received["deadline"] == origin + 130
 
 
+def test_session_cleanup_does_not_swallow_keyboard_interrupt(tmp_path):
+    class InterruptingRuntime(FakeRuntime):
+        def close(self, *, deadline):
+            raise KeyboardInterrupt
+
+    stimulus = HermesStimulus(
+        tmp_path,
+        hermes_executable=tmp_path / "hermes",
+        runtime=InterruptingRuntime(),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        stimulus._finish_task(
+            None,
+            {},
+            time.monotonic(),
+            {"cleanup_deadline_s": 130},
+            None,
+        )
+
+
 def test_dripping_cleanup_obeys_session_deadline_and_reconciles(monkeypatch):
     with ollama_server() as (endpoint, state):
         runtime = OllamaRuntime(endpoint=endpoint, durable_cleanup_timeout_seconds=0.8)

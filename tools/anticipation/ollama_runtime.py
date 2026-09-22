@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from http.client import HTTPException
 from pathlib import Path
 import threading
 import time
@@ -19,6 +20,13 @@ DURABLE_CLEANUP_INITIAL_BACKOFF_SECONDS = 0.05
 DURABLE_CLEANUP_MAX_BACKOFF_SECONDS = 1.0
 CONTROL_PLANE_TIMEOUT_SECONDS = 30
 EXCLUDED_MODELS = {"muse-glimmer:30b", "nemotron-3.5-lightning:30b"}
+OLLAMA_OPERATION_ERRORS = (
+    HTTPException,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 
 
 def _local_endpoint(endpoint):
@@ -215,7 +223,7 @@ class OllamaRuntime:
                         "Ollama preload response did not confirm completion"
                     )
                 self._preload_outcome["response"] = response
-            except BaseException as error:
+            except OLLAMA_OPERATION_ERRORS as error:
                 self._preload_outcome["error"] = error
             finally:
                 self._preload_done.set()
@@ -244,7 +252,7 @@ class OllamaRuntime:
                 if self._contains_model(resident, model):
                     self._unload_exact(model, deadline)
                     return
-            except BaseException as error:
+            except OLLAMA_OPERATION_ERRORS as error:
                 last_error = error
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -352,7 +360,7 @@ class OllamaRuntime:
     def _close_loaded(self, owned_model, cleanup_deadline):
         try:
             resident = self._models(cleanup_deadline)
-        except BaseException:
+        except OLLAMA_OPERATION_ERRORS:
             resident = None
         if resident is not None and not self._contains_model(resident, owned_model):
             self._reject_unowned_residents(resident)
@@ -455,7 +463,7 @@ class OllamaRuntime:
                     retry_deadline_utc=retry_deadline_utc,
                 )
                 return
-            except BaseException as error:
+            except OLLAMA_OPERATION_ERRORS as error:
                 last_error = error
 
             remaining = deadline - time.monotonic()

@@ -373,6 +373,18 @@ time.sleep(30)
     assert stopped, "audit failure must not orphan the collector"
 
 
+def test_session_audit_does_not_swallow_keyboard_interrupt(tmp_path, monkeypatch):
+    from tools.anticipation import campaign
+
+    def interrupt_diagnostics(*_args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(campaign, "_session_diagnostics", interrupt_diagnostics)
+
+    with pytest.raises(KeyboardInterrupt):
+        campaign._publish_session_audit(object(), tmp_path, {}, "actual_schedule", None)
+
+
 @pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
 def test_json_writer_preserves_staging_link_target(tmp_path, link_kind):
     from tools.anticipation.campaign import write_json

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+from http.client import HTTPException
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,17 @@ import tempfile
 SHUTDOWN_TIMEOUT_SECONDS = 30
 MATRIX_SIZE = 2048
 TRANSFER_ELEMENTS = 16 * 1024 * 1024
+CAPTURE_STATUS_NAME = "capture-status.json"
+STIMULUS_AUDIT_NAME = "stimulus-audit.json"
+CAPTURE_OPERATION_ERRORS = (
+    AttributeError,
+    HTTPException,
+    LookupError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 
 
 def allocation_bytes():
@@ -160,7 +172,7 @@ def capture(root, collector, *, campaign=None, stimulus_factory=None):
         "status": "running",
         "sessions": [],
     }
-    write_json(root / "capture-status.json", status)
+    write_json(root / CAPTURE_STATUS_NAME, status)
     active_session = None
     stimulus = None
     completed_all_sessions = False
@@ -168,12 +180,12 @@ def capture(root, collector, *, campaign=None, stimulus_factory=None):
         stimulus = (stimulus_factory or Stimulus)()
         if hasattr(stimulus, "prepare"):
             status["stimulus_preflight"] = stimulus.prepare()
-            write_json(root / "capture-status.json", status)
+            write_json(root / CAPTURE_STATUS_NAME, status)
         for session in campaign["sessions"]:
             active_session = session["session_id"]
             record = _capture_session(session, stimulus, collector, campaign)
             status["sessions"].append(record)
-            write_json(root / "capture-status.json", status)
+            write_json(root / CAPTURE_STATUS_NAME, status)
             print(
                 json.dumps({"session": session["session_id"], "state": "complete"}),
                 flush=True,
@@ -215,7 +227,9 @@ def _capture_session(session, stimulus, collector, campaign):
             _record_stimuli(directory, process, stimulus, session, state)
         except BaseException as error:
             session_error = error
+            raise
         finally:
+            had_active_error = sys.exc_info()[0] is not None
             record = {
                 "session_id": session["session_id"],
                 "started_at_utc": state["started"],
@@ -232,7 +246,7 @@ def _capture_session(session, stimulus, collector, campaign):
                 exit_code, session_error = _stop_collector(
                     process, directory, record, session_error
                 )
-            if session_error is not None:
+            if session_error is not None and not had_active_error:
                 raise session_error
     _confirm_collector_shutdown(directory, record, exit_code)
     return record
@@ -243,13 +257,13 @@ def _finish_capture(root, stimulus, status, completed_all_sessions, had_active_e
     if stimulus is not None and hasattr(stimulus, "close"):
         try:
             status["stimulus_cleanup"] = stimulus.close()
-        except BaseException as error:
+        except CAPTURE_OPERATION_ERRORS as error:
             cleanup_error = error
             status["status"] = "incomplete"
             status["cleanup_error"] = f"{type(error).__name__}: {error}"
     if completed_all_sessions and cleanup_error is None:
         status["status"] = "complete"
-    write_json(root / "capture-status.json", status)
+    write_json(root / CAPTURE_STATUS_NAME, status)
     if cleanup_error is not None and not had_active_error:
         raise cleanup_error
 
@@ -286,14 +300,14 @@ def _record_stimuli(directory, process, stimulus, session, state):
 def _publish_session_audit(stimulus, directory, record, audit_key, session_error):
     try:
         _session_diagnostics(stimulus, record, audit_key)
-        write_json(directory / "stimulus-audit.json", record)
-    except BaseException as error:
+        write_json(directory / STIMULUS_AUDIT_NAME, record)
+    except CAPTURE_OPERATION_ERRORS as error:
         record["audit_error"] = f"{type(error).__name__}: {error}"
         if session_error is None:
             session_error = error
         try:
-            write_json(directory / "stimulus-audit.json", record)
-        except BaseException as write_error:
+            write_json(directory / STIMULUS_AUDIT_NAME, record)
+        except (OSError, TypeError, ValueError) as write_error:
             record["audit_write_error"] = f"{type(write_error).__name__}: {write_error}"
             if session_error is None:
                 session_error = write_error
@@ -315,8 +329,8 @@ def _stop_collector(process, directory, record, session_error):
         record["collector_exit_code"] = process.wait()
         record["status"] = "shutdown_timeout"
         try:
-            write_json(directory / "stimulus-audit.json", record)
-        except BaseException:
+            write_json(directory / STIMULUS_AUDIT_NAME, record)
+        except (OSError, TypeError, ValueError):
             pass
         shutdown_error = RuntimeError(
             "collector failed graceful shutdown; capture incomplete"
@@ -348,7 +362,7 @@ def _confirm_collector_shutdown(directory, record, exit_code):
     manifest = json.loads((directory / "session_manifest.json").read_text())
     record["collector_exit_code"] = exit_code
     record["status"] = "collector_stopped"
-    write_json(directory / "stimulus-audit.json", record)
+    write_json(directory / STIMULUS_AUDIT_NAME, record)
     if (
         exit_code
         or not manifest.get("ended_at_utc")
@@ -356,7 +370,7 @@ def _confirm_collector_shutdown(directory, record, exit_code):
     ):
         raise RuntimeError("collector manifest incomplete or write failures")
     record["status"] = "complete"
-    write_json(directory / "stimulus-audit.json", record)
+    write_json(directory / STIMULUS_AUDIT_NAME, record)
 
 
 def _wait_for_collector(directory, process):

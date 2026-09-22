@@ -75,7 +75,14 @@ def verify_fixture(session, plan):
             "stdout": completed.stdout,
             "stderr": completed.stderr,
         }
-    except BaseException as error:
+    except (
+        LookupError,
+        OSError,
+        RuntimeError,
+        subprocess.SubprocessError,
+        TypeError,
+        ValueError,
+    ) as error:
         return {
             "status": "failed",
             "reason": f"{type(error).__name__}: {error}",
@@ -134,12 +141,20 @@ def verification_command(session, verifier):
 
 def _verification_runtime_roots():
     runtime_roots = []
-    for root in (
+    python_base = Path(sys.base_prefix)
+    candidates = [
         Path("/usr"),
         Path("/lib"),
         Path("/lib64"),
-        Path(sys.base_prefix).resolve(),
-    ):
+        python_base,
+        python_base.resolve(),
+    ]
+    for prefix in python_base.parents:
+        loader_root = prefix / "lib"
+        if (loader_root / "ld.so").exists():
+            candidates.append(loader_root)
+            break
+    for root in candidates:
         if not root.exists() or any(
             root.is_relative_to(bound) for bound in runtime_roots
         ):

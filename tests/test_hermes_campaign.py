@@ -97,7 +97,8 @@ def test_session_files_config_and_argv_are_hermetic_and_bounded(tmp_path):
             "AWS_SECRET_ACCESS_KEY": "secret",
         },
     )
-    assert env["PATH"] == "/bin" and env["HOME"] == "/home/test"
+    assert env["PATH"] == "/bin"
+    assert env["HOME"] == "/home/test"
     assert env["HERMES_HOME"] == session["hermes_home"]
     assert env["HERMES_SAFE_MODE"] == "1"
     assert env["OPENAI_API_KEY"] == "no-key-required"
@@ -132,8 +133,9 @@ def test_hermes_executable_is_explicit_for_api_and_cli(tmp_path):
     with pytest.raises(TypeError, match="hermes_executable"):
         HermesStimulus(tmp_path, runtime=FakeRuntime())
 
+    arguments = [str(tmp_path), "--collector", str(tmp_path / "collector")]
     with pytest.raises(SystemExit) as error:
-        main([str(tmp_path), "--collector", str(tmp_path / "collector")])
+        main(arguments)
     assert error.value.code == 2
 
 
@@ -372,7 +374,8 @@ def test_malformed_object_like_stream_line_fails_but_diagnostic_does_not():
     from tools.anticipation.hermes_campaign import HermesStimulus
 
     events, diagnostics = HermesStimulus._events("plain warning\n")
-    assert events == [] and diagnostics == ["plain warning"]
+    assert events == []
+    assert diagnostics == ["plain warning"]
     with pytest.raises(RuntimeError, match="malformed"):
         HermesStimulus._events("plain warning\n{broken\n")
 

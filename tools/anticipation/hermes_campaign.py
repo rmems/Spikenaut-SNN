@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+from http.client import HTTPException
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,8 @@ from .task_verification import (
     write_fixture,
     verify_fixture,
 )
+
+TASK_CLEANUP_ERRORS = (HTTPException, OSError, RuntimeError, TypeError, ValueError)
 
 
 PROTOCOL_ID = "hermes-ollama-inference-v4"
@@ -306,6 +309,7 @@ class HermesStimulus:
             record["workload_status"] = "invalid"
             record.setdefault("task_outcome", "unknown")
             record.setdefault("error", f"{type(error).__name__}: {error}")
+            raise
         finally:
             pending_error = self._finish_task(
                 process, record, origin, event, pending_error
@@ -447,7 +451,7 @@ class HermesStimulus:
                 raise RuntimeError(
                     "owned model cleanup exceeded the 130s session deadline"
                 )
-        except BaseException as error:
+        except TASK_CLEANUP_ERRORS as error:
             record["model_cleanup_error"] = f"{type(error).__name__}: {error}"
             record["status"] = "invalid"
             record["workload_status"] = "invalid"
