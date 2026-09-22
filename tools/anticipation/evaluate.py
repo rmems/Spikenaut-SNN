@@ -153,34 +153,41 @@ def _python_stage(stage, prepared, output, remaining):
 
 
 def _run_baselines_worker(prepared, output, remaining):
-    return _spawn_python_worker("baselines", prepared, output, remaining)
-
-
-def _run_comparison_worker(prepared, output, remaining):
-    return _spawn_python_worker("comparison", prepared, output, remaining)
-
-
-def _spawn_python_worker(stage, prepared, output, remaining):
     output = output.resolve()
     prepared = Path(prepared).resolve()
     write_json(
         output / "worker-invocation.json",
         {"prepared": os.fspath(prepared)},
     )
-    with _open_exclusive_log(output, f"{stage}.log") as log:
-        if stage == "baselines":
-            worker_argv = [sys.executable, "-m", _EVALUATION_WORKER, "baselines"]
-        else:
-            worker_argv = [sys.executable, "-m", _EVALUATION_WORKER, "comparison"]
-        subprocess.run(  # nosec B603
-            worker_argv,
+    with _open_exclusive_log(output, "baselines.log") as log:
+        subprocess.run(  # nosec B603  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            [sys.executable, "-m", _EVALUATION_WORKER, "baselines"],
             stdout=log,
             stderr=log,
             timeout=remaining,
             check=True,
             cwd=output,
         )
-    return json.loads((output / f"{stage}-status.json").read_text())["complete"]
+    return json.loads((output / "baselines-status.json").read_text())["complete"]
+
+
+def _run_comparison_worker(prepared, output, remaining):
+    output = output.resolve()
+    prepared = Path(prepared).resolve()
+    write_json(
+        output / "worker-invocation.json",
+        {"prepared": os.fspath(prepared)},
+    )
+    with _open_exclusive_log(output, "comparison.log") as log:
+        subprocess.run(  # nosec B603  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            [sys.executable, "-m", _EVALUATION_WORKER, "comparison"],
+            stdout=log,
+            stderr=log,
+            timeout=remaining,
+            check=True,
+            cwd=output,
+        )
+    return json.loads((output / "comparison-status.json").read_text())["complete"]
 
 
 def _open_exclusive_log(output, leaf_name):
