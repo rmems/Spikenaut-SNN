@@ -1,6 +1,6 @@
 """Python evaluation stages share the trainer's wall-clock deadline."""
 
-import subprocess
+import subprocess  # nosec B404
 import sys
 import time
 

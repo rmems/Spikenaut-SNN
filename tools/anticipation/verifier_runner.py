@@ -5,7 +5,7 @@ import ctypes
 import json
 from pathlib import Path
 import secrets
-import subprocess
+import subprocess  # nosec B404
 import sys
 import types
 

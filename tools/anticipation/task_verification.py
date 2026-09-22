@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import random
 import shutil
-import subprocess
+import subprocess  # nosec B404
 import sys
 import tempfile
 

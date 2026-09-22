@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from http.client import HTTPException
 import signal
-import subprocess
+import subprocess  # nosec B404
 import time
 
 

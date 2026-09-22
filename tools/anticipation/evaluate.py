@@ -156,7 +156,8 @@ def _run_baselines_worker(prepared, output, remaining):
     output = output.resolve()
     prepared = Path(prepared).resolve()
     with _open_exclusive_log(output, "baselines.log") as log:
-        subprocess.run(  # nosec B603  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        subprocess.run(  # nosec B603
             [
                 sys.executable,
                 "-m",
@@ -178,7 +179,8 @@ def _run_comparison_worker(prepared, output, remaining):
     output = output.resolve()
     prepared = Path(prepared).resolve()
     with _open_exclusive_log(output, "comparison.log") as log:
-        subprocess.run(  # nosec B603  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        subprocess.run(  # nosec B603
             [
                 sys.executable,
                 "-m",

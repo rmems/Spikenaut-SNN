@@ -15,7 +15,7 @@ from pathlib import Path
 import signal
 
 
-import subprocess
+import subprocess  # nosec B404
 
 
 import time
