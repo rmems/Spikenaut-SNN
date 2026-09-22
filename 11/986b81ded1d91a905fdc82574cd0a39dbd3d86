@@ -1,0 +1,25 @@
+tests/nir_graph.rs
+  s_176a15af4e07cc::t_6c24cb7dd5561b 244,247,249-256,263-265,270,278,280,284-323
+Cargo.toml
+  s_176a15af4e07cc::t_6c24cb7dd5561b 61-63
+src/graph.rs
+  s_176a15af4e07cc::t_f68c1b33d9bbf7 107,144-148,154,167-171,181-183,192
+src/mem.rs
+  s_176a15af4e07cc::t_f68c1b33d9bbf7 40,72-93,109,111,154-158,195-196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "11986b81ded1d91a905fdc82574cd0a39dbd3d86",
+  "prompts": {},
+  "sessions": {
+    "s_176a15af4e07cc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c10b-f3fe-7eb1-83a0-3423737857f2",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Raul Cardenas Montoya <montoyaraul34@gmail.com>"
+    }
+  }
+}
