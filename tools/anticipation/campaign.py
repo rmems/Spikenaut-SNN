@@ -280,7 +280,7 @@ def _launch_verified_collector(collector, expected_digest, env, log):
     collector_fd = _open_verified_collector(collector, expected_digest)
     try:
         executable = _proc_fd_executable(collector_fd)
-        return subprocess.Popen(  # NOSONAR pythonsecurity:S603 -- argv is a verified memfd proc-fd path, not request data  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        return subprocess.Popen(  # nosec B603  # NOSONAR pythonsecurity:S603 -- argv is a verified memfd proc-fd path, not request data  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             [executable],
             env=env,
             stdout=log,

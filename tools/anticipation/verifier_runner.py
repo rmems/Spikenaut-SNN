@@ -140,6 +140,13 @@ def validate_call(node):
         raise ValueError("candidate keyword calls are unsupported")
 
 
+def _normalize_function_code(module_code):
+    for const in module_code.co_consts:
+        if isinstance(const, types.CodeType) and const.co_name == "normalize":
+            return const
+    raise ValueError("candidate must define normalize")
+
+
 def load_candidate(candidate):
     source = candidate.read_bytes()
     if len(source) > 65536:
@@ -153,16 +160,7 @@ def load_candidate(candidate):
     validate_function(function)
     validate_candidate_tree(tree, function)
     module_code = compile(tree, str(candidate), "exec")
-    func_code = next(
-        (
-            const
-            for const in module_code.co_consts
-            if isinstance(const, types.CodeType) and const.co_name == "normalize"
-        ),
-        None,
-    )
-    if func_code is None:
-        raise ValueError("candidate must define normalize")
+    func_code = _normalize_function_code(module_code)
     return types.FunctionType(func_code, {"__builtins__": dict(SAFE_BUILTINS)})
 
 
@@ -203,7 +201,7 @@ def verify():
     expected = [
         [word.strip().lower() for word in words if word.strip()] for words in inputs
     ]
-    child = subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+    child = subprocess.Popen(  # nosec B603  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         [sys.executable, "-I", "-B", "/harness/runner.py", "--child"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,

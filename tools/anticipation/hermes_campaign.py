@@ -297,7 +297,7 @@ class HermesStimulus:
         forced_kill = False
         try:
             self._ensure_hermes_executable()
-            process = subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            process = subprocess.Popen(  # nosec B603  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 self.command(session),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

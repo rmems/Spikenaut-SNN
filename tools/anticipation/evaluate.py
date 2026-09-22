@@ -102,7 +102,7 @@ def _train(prepared, output, snn, remaining, status, julia, julia_version):
     status["trainer_command"] = command
     with _open_exclusive_log(output, "training.log") as log:
         try:
-            process = subprocess.run(  # NOSONAR pythonsecurity:S603 -- Julia trainer argv is orchestrator-controlled, not request data  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            process = subprocess.run(  # nosec B603  # NOSONAR pythonsecurity:S603 -- Julia trainer argv is orchestrator-controlled, not request data  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 command, stdout=log, stderr=log, timeout=remaining, check=False
             )
             status["trainer_exit_code"] = process.returncode
@@ -145,18 +145,23 @@ def _compare_with_budget(prepared, output, status, started):
 def _python_stage(stage, prepared, output, remaining):
     if stage not in _ALLOWED_PYTHON_STAGES:
         raise ValueError(f"unsupported evaluation stage: {stage}")
-    output = output.resolve()
-    prepared = Path(prepared).resolve()
-    log_name = f"{stage}.log"
     if remaining <= 0:
         raise subprocess.TimeoutExpired([_EVALUATION_WORKER, stage], max(0.0, remaining))
-    with _open_exclusive_log(output, log_name) as log:
-        subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+    if stage == "baselines":
+        return _run_baselines_worker(prepared, output, remaining)
+    return _run_comparison_worker(prepared, output, remaining)
+
+
+def _run_baselines_worker(prepared, output, remaining):
+    output = output.resolve()
+    prepared = Path(prepared).resolve()
+    with _open_exclusive_log(output, "baselines.log") as log:
+        subprocess.run(  # nosec B603  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             [
                 sys.executable,
                 "-m",
                 _EVALUATION_WORKER,
-                stage,
+                "baselines",
                 os.fspath(prepared),
                 os.fspath(output),
             ],
@@ -166,7 +171,29 @@ def _python_stage(stage, prepared, output, remaining):
             check=True,
             cwd=Path(__file__).resolve().parents[2],
         )
-    return json.loads((output / f"{stage}-status.json").read_text())["complete"]
+    return json.loads((output / "baselines-status.json").read_text())["complete"]
+
+
+def _run_comparison_worker(prepared, output, remaining):
+    output = output.resolve()
+    prepared = Path(prepared).resolve()
+    with _open_exclusive_log(output, "comparison.log") as log:
+        subprocess.run(  # nosec B603  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            [
+                sys.executable,
+                "-m",
+                _EVALUATION_WORKER,
+                "comparison",
+                os.fspath(prepared),
+                os.fspath(output),
+            ],
+            stdout=log,
+            stderr=log,
+            timeout=remaining,
+            check=True,
+            cwd=Path(__file__).resolve().parents[2],
+        )
+    return json.loads((output / "comparison-status.json").read_text())["complete"]
 
 
 def _open_exclusive_log(output, leaf_name):
