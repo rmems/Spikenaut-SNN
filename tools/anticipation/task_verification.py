@@ -18,13 +18,18 @@ VERIFIER_CPU_LIMIT_SECONDS = 4
 def write_fixture(session, scratch):
     family = session["task"]["family"]
     count = session["task"]["fixture_records"]
-    rng = random.Random(session["seed"])
+    # NOSONAR python:S2245 -- deterministic non-security test-fixture RNG; the
+    # seed is the declared campaign seed and the output is experiment data
+    # (fixture rows/records/order), never a secret, token, nonce, salt, or
+    # authorization value. A CSPRNG would break the seed->fixture replay
+    # contract the campaign and tests depend on.
+    rng = random.Random(session["seed"])  # NOSONAR
     if family == "csv-aggregation":
         rows = ["category,amount"]
         totals = {}
         for _ in range(count):
-            category = rng.choice(("alpha", "beta", "delta", "gamma"))
-            amount = rng.randint(1, 99)
+            category = rng.choice(("alpha", "beta", "delta", "gamma"))  # NOSONAR
+            amount = rng.randint(1, 99)  # NOSONAR
             rows.append(f"{category},{amount}")
             totals[category] = totals.get(category, 0) + amount
         (scratch / "input.csv").write_text("\n".join(rows) + "\n")
@@ -33,8 +38,8 @@ def write_fixture(session, scratch):
         records = [
             {
                 "id": f"item-{i:05}",
-                "score": rng.randint(0, 1000),
-                "enabled": rng.choice((True, False)),
+                "score": rng.randint(0, 1000),  # NOSONAR
+                "enabled": rng.choice((True, False)),  # NOSONAR
             }
             for i in range(count)
         ]
@@ -92,6 +97,11 @@ def verify_fixture(session, plan):
 def verification_command(session, verifier):
     sandbox, limiter = _verification_tools()
     runtime_roots = _verification_runtime_roots()
+    # NOSONAR python:S5443 -- "/tmp" here is a private tmpfs mounted inside a
+    # fresh --unshare-all bubblewrap mount namespace, not the shared, world-
+    # writable host /tmp. No other process can observe or write this mount, so
+    # there is no shared-temp-directory risk. HOME (below) points at this same
+    # private mount.
     command = [
         limiter,
         f"--as={VERIFIER_AS_LIMIT_BYTES}",
@@ -107,7 +117,7 @@ def verification_command(session, verifier):
         "--dev",
         "/dev",
         "--tmpfs",
-        "/tmp",
+        "/tmp",  # NOSONAR
     ]
     for root in runtime_roots:
         command.extend(("--ro-bind", str(root), str(root)))
@@ -126,7 +136,7 @@ def verification_command(session, verifier):
             "/work",
             "--setenv",
             "HOME",
-            "/tmp",
+            "/tmp",  # NOSONAR python:S5443 -- private in-namespace tmpfs; see above
             "--setenv",
             "PATH",
             "/usr/bin:/bin",
@@ -207,7 +217,10 @@ def _python_fixture(session, scratch, count):
         "def normalize(words):\n"
         "    return sorted(w.strip().upper() for w in words if w.strip())\n"
     )
-    verifier = Path(session["hermes_home"]) / "harness-runner.py"
+    home = Path(session["hermes_home"]).resolve()
+    verifier = (home / "harness-runner.py").resolve()
+    if not verifier.is_relative_to(home):
+        raise ValueError("verifier path escapes hermes_home")
     verifier.write_bytes(Path(__file__).with_name("verifier_runner.py").read_bytes())
     return {
         "kind": "fixed-python-test",
