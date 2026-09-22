@@ -153,49 +153,34 @@ def _python_stage(stage, prepared, output, remaining):
 
 
 def _run_baselines_worker(prepared, output, remaining):
-    output = output.resolve()
-    prepared = Path(prepared).resolve()
-    with _open_exclusive_log(output, "baselines.log") as log:
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        subprocess.run(  # nosec B603
-            [
-                sys.executable,
-                "-m",
-                _EVALUATION_WORKER,
-                "baselines",
-                os.fspath(prepared),
-                os.fspath(output),
-            ],
-            stdout=log,
-            stderr=log,
-            timeout=remaining,
-            check=True,
-            cwd=Path(__file__).resolve().parents[2],
-        )
-    return json.loads((output / "baselines-status.json").read_text())["complete"]
+    return _spawn_python_worker("baselines", prepared, output, remaining)
 
 
 def _run_comparison_worker(prepared, output, remaining):
+    return _spawn_python_worker("comparison", prepared, output, remaining)
+
+
+def _spawn_python_worker(stage, prepared, output, remaining):
     output = output.resolve()
     prepared = Path(prepared).resolve()
-    with _open_exclusive_log(output, "comparison.log") as log:
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+    write_json(
+        output / "worker-invocation.json",
+        {"prepared": os.fspath(prepared)},
+    )
+    with _open_exclusive_log(output, f"{stage}.log") as log:
+        if stage == "baselines":
+            worker_argv = [sys.executable, "-m", _EVALUATION_WORKER, "baselines"]
+        else:
+            worker_argv = [sys.executable, "-m", _EVALUATION_WORKER, "comparison"]
         subprocess.run(  # nosec B603
-            [
-                sys.executable,
-                "-m",
-                _EVALUATION_WORKER,
-                "comparison",
-                os.fspath(prepared),
-                os.fspath(output),
-            ],
+            worker_argv,
             stdout=log,
             stderr=log,
             timeout=remaining,
             check=True,
-            cwd=Path(__file__).resolve().parents[2],
+            cwd=output,
         )
-    return json.loads((output / "comparison-status.json").read_text())["complete"]
+    return json.loads((output / f"{stage}-status.json").read_text())["complete"]
 
 
 def _open_exclusive_log(output, leaf_name):
