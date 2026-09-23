@@ -149,7 +149,6 @@ pub mod graph;
 pub mod ipc;
 pub mod json;
 pub mod kinetic;
-pub mod mem;
 pub mod model;
 pub mod neuromod_host;
 pub mod silicon;
@@ -171,8 +170,8 @@ pub use encode::{
 #[allow(deprecated)]
 pub use encode::{CHANNEL_MAP, TelemetryEncoder, TelemetrySource};
 pub use graph::{
-    LoadMemGraphError, MemBankGraph, Provenance, build_lif_graph, build_lif_graph_with_provenance,
-    load_default_lif_graph, load_lif_graph_from_mem_dir, resistance_from_decay,
+    Provenance, build_lif_graph, build_lif_graph_with_provenance, load_default_lif_graph,
+    resistance_from_decay,
 };
 pub use ipc::{
     IpcBatchContext, IpcBridgeError, decode_ipc_message, encode_ipc_message,
@@ -182,7 +181,6 @@ pub use kinetic::{
     ClockMismatch, KINETIC_DT_SECONDS, KINETIC_SIGNALS_CRATE_VERSION, KineticError,
     KineticFeatures, KineticPipeline, LiveKineticFrontEnd,
 };
-pub use mem::{MEM_BANK_FILENAMES, MemBankError, Q88MemBank};
 pub use model::{MERGED_V2_PROVENANCE, ModelError, Neuron, SnnModel, is_q8_8, quantize_q8_8};
 pub use neuromod_host::{HOST_NETWORK_INITIAL_WEIGHT, HostGifLayer, HostLif, HostNetwork};
 pub use silicon::{

@@ -58,6 +58,3 @@ nir-rs = "0.4.4"
 plasticity-lab = { version = "0.2.1", optional = true }
 silicon-bridge = { version = "0.3", default-features = false }
 synaptic-wiring = "0.3"
-
-[dev-dependencies]
-tempfile = "3"
