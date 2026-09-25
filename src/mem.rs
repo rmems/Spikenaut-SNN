@@ -8,6 +8,7 @@
 //! claim unauditable.
 
 use std::fmt;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::decision::OUTPUT_WEIGHT_COUNT;
@@ -38,10 +39,27 @@ impl Q88MemBank {
     pub fn from_dir(directory: impl AsRef<Path>) -> Result<Self, MemBankError> {
         let directory = directory.as_ref();
         reject_unrecognized_images(directory)?;
-        let thresholds = read_image(directory, 0, NEURON_COUNT)?;
-        let decays = read_image(directory, 1, NEURON_COUNT)?;
-        let weights = read_image(directory, 2, NEURON_COUNT * NEURON_COUNT)?;
-        let output_weights = read_image(directory, 3, OUTPUT_WEIGHT_COUNT)?;
+        let snapshots = snapshot_canonical_images(directory)?;
+        let thresholds = parse_image(
+            directory.join(MEM_BANK_FILENAMES[0]),
+            &snapshots[0],
+            NEURON_COUNT,
+        )?;
+        let decays = parse_image(
+            directory.join(MEM_BANK_FILENAMES[1]),
+            &snapshots[1],
+            NEURON_COUNT,
+        )?;
+        let weights = parse_image(
+            directory.join(MEM_BANK_FILENAMES[2]),
+            &snapshots[2],
+            NEURON_COUNT * NEURON_COUNT,
+        )?;
+        let output_weights = parse_image(
+            directory.join(MEM_BANK_FILENAMES[3]),
+            &snapshots[3],
+            OUTPUT_WEIGHT_COUNT,
+        )?;
 
         validate_decays(directory, &decays)?;
 
@@ -96,17 +114,57 @@ fn reject_unrecognized_images(directory: &Path) -> Result<(), MemBankError> {
     Ok(())
 }
 
-fn read_image(
+const HEX_WORD_LEN: usize = 4;
+const MAX_LINE_SUFFIX_BYTES: usize = 2;
+
+fn max_canonical_image_bytes(expected_words: usize) -> usize {
+    expected_words.saturating_mul(HEX_WORD_LEN + MAX_LINE_SUFFIX_BYTES)
+}
+
+fn snapshot_canonical_images(directory: &Path) -> Result<[Vec<u8>; 4], MemBankError> {
+    let expected = [
+        NEURON_COUNT,
+        NEURON_COUNT,
+        NEURON_COUNT * NEURON_COUNT,
+        OUTPUT_WEIGHT_COUNT,
+    ];
+    let mut snapshots: [Vec<u8>; 4] = std::array::from_fn(|_| Vec::new());
+    for (file_index, slot) in snapshots.iter_mut().enumerate() {
+        *slot = read_bounded_image(directory, file_index, expected[file_index])?;
+    }
+    Ok(snapshots)
+}
+
+fn read_bounded_image(
     directory: &Path,
     file_index: usize,
-    expected: usize,
-) -> Result<Vec<f64>, MemBankError> {
+    expected_words: usize,
+) -> Result<Vec<u8>, MemBankError> {
     let path = directory.join(MEM_BANK_FILENAMES[file_index]);
-    let bytes = std::fs::read(&path).map_err(|source| MemBankError::Io {
+    let max_bytes = max_canonical_image_bytes(expected_words);
+    let file = std::fs::File::open(&path).map_err(|source| MemBankError::Io {
         path: path.clone(),
         source,
     })?;
-    let text = String::from_utf8(bytes).map_err(|source| MemBankError::Utf8 {
+    let mut bytes = Vec::new();
+    file.take((max_bytes as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|source| MemBankError::Io {
+            path: path.clone(),
+            source,
+        })?;
+    if bytes.len() > max_bytes {
+        return Err(MemBankError::TooLarge {
+            path,
+            max_bytes,
+            actual: bytes.len(),
+        });
+    }
+    Ok(bytes)
+}
+
+fn parse_image(path: PathBuf, bytes: &[u8], expected: usize) -> Result<Vec<f64>, MemBankError> {
+    let text = String::from_utf8(bytes.to_owned()).map_err(|source| MemBankError::Utf8 {
         path: path.clone(),
         source,
     })?;
@@ -179,6 +237,15 @@ pub enum MemBankError {
         /// Observed number of words.
         actual: usize,
     },
+    /// An image exceeded the bounded size for its required word count.
+    TooLarge {
+        /// Canonical image path.
+        path: PathBuf,
+        /// Maximum permitted byte length.
+        max_bytes: usize,
+        /// Observed byte length.
+        actual: usize,
+    },
     /// A decoded word violated a semantic constraint.
     Value {
         /// Canonical image path.
@@ -212,6 +279,15 @@ impl fmt::Display for MemBankError {
             } => write!(
                 f,
                 "{}: expected {expected} words, got {actual}",
+                path.display()
+            ),
+            Self::TooLarge {
+                path,
+                max_bytes,
+                actual,
+            } => write!(
+                f,
+                "{}: expected at most {max_bytes} bytes, got {actual}",
                 path.display()
             ),
             Self::Value {

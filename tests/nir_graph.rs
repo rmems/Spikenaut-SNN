@@ -12,7 +12,7 @@ use spikenaut_snn::graph::{
     load_lif_graph_from_mem_dir,
 };
 use spikenaut_snn::model::{MERGED_V2_PROVENANCE, NEURON_COUNT, SnnModel, TIMESTEP_SECONDS};
-use spikenaut_snn::{LoadMemGraphError, MemBankError, OUTPUT_WEIGHT_COUNT};
+use spikenaut_snn::{LoadMemGraphError, MemBankError, OUTPUT_WEIGHT_COUNT, Q88MemBank};
 
 /// The 16-LIF graph is `Input → Linear → LIF → Output`: four nodes, three edges.
 #[test]
@@ -293,6 +293,29 @@ fn direct_loader_rejects_unrecognized_memory_images() {
     let error = load_lif_graph_from_mem_dir(directory.path()).unwrap_err();
     assert!(error.to_string().contains("unrecognized memory image"));
     assert!(error.to_string().contains("parameters_bias.mem"));
+}
+
+#[test]
+fn direct_loader_rejects_oversized_memory_image() {
+    let directory = tempfile::tempdir().unwrap();
+    copy_memory_bank(directory.path());
+    let path = directory.path().join("parameters.mem");
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes.extend(std::iter::repeat_n(b'0', 10_000));
+    std::fs::write(&path, bytes).unwrap();
+
+    let error = Q88MemBank::from_dir(directory.path()).unwrap_err();
+    assert!(matches!(
+        error,
+        MemBankError::TooLarge {
+            ref path,
+            max_bytes,
+            actual,
+        } if path.ends_with("parameters.mem")
+            && max_bytes == 16 * (4 + 2)
+            && actual > max_bytes
+    ));
+    assert!(error.to_string().contains("parameters.mem"));
 }
 
 #[test]
