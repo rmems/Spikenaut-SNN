@@ -248,6 +248,20 @@ fn copy_memory_bank(destination: &Path) {
     }
 }
 
+fn assert_oversized_parameters_mem_error(error: MemBankError) {
+    let expected_max = NEURON_COUNT * (4 + 2);
+    let message = error.to_string();
+    assert!(message.contains("parameters.mem"));
+    assert!(message.contains(&format!("expected at most {expected_max} bytes")));
+    let actual = message
+        .split("got ")
+        .nth(1)
+        .and_then(|suffix| suffix.split_whitespace().next())
+        .and_then(|digits| digits.parse::<usize>().ok())
+        .unwrap_or_else(|| panic!("expected TooLarge byte count in {message:?}"));
+    assert!(actual > expected_max);
+}
+
 #[test]
 fn direct_loader_needs_only_the_four_memory_files() {
     let directory = tempfile::tempdir().unwrap();
@@ -301,21 +315,11 @@ fn direct_loader_rejects_oversized_memory_image() {
     copy_memory_bank(directory.path());
     let path = directory.path().join("parameters.mem");
     let mut bytes = std::fs::read(&path).unwrap();
-    bytes.extend(std::iter::repeat_n(b'0', 10_000));
-    std::fs::write(&path, bytes).unwrap();
+    bytes.resize(bytes.len() + 10_000, 0);
+    std::fs::write(path, bytes).unwrap();
 
     let error = Q88MemBank::from_dir(directory.path()).unwrap_err();
-    assert!(matches!(
-        error,
-        MemBankError::TooLarge {
-            ref path,
-            max_bytes,
-            actual,
-        } if path.ends_with("parameters.mem")
-            && max_bytes == 16 * (4 + 2)
-            && actual > max_bytes
-    ));
-    assert!(error.to_string().contains("parameters.mem"));
+    assert_oversized_parameters_mem_error(error);
 }
 
 #[test]
