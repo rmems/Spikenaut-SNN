@@ -98,11 +98,13 @@ use nir_rs::nodes::{Input, Lif, Linear, Output};
 use nir_rs::types::{MetadataValue, Tensor};
 use nir_rs::{NirGraph, NirNode};
 
+use crate::mem::{MemBankError, Q88MemBank};
 use crate::model::{
     MERGED_V2_PROVENANCE, MODEL_RELATIVE_PATH, ModelError, SnnModel, TIMESTEP_SECONDS, check_q8_8,
 };
 #[cfg(doc)]
 use crate::model::{Neuron, tau_from_decay};
+use std::path::{Path, PathBuf};
 
 /// Name of the graph's input node.
 pub const INPUT_NODE: &str = "input";
@@ -115,6 +117,94 @@ pub const LIF_NODE: &str = "lif";
 
 /// Name of the graph's output node.
 pub const OUTPUT_NODE: &str = "output";
+
+/// A direct-memory graph plus the explicitly retained decision readout image.
+///
+/// The public NIR topology ends at the 16 hidden spikes.  Consequently the
+/// 16×3 output image cannot be represented there without changing its
+/// contract; returning it alongside the graph prevents silent data loss.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemBankGraph {
+    /// Input → Linear → LIF → Output hidden-layer graph.
+    pub graph: NirGraph,
+    /// Neuron-major 16×3 decision-module weights.
+    pub output_weights: Vec<f64>,
+}
+
+/// Build the existing hidden-layer graph directly from a four-file Q8.8 bank.
+///
+/// # Errors
+///
+/// Returns [`LoadMemGraphError::Bank`] for file/layout errors and
+/// [`LoadMemGraphError::Graph`] if validated values cannot form a NIR graph.
+pub fn load_lif_graph_from_mem_dir(
+    directory: impl AsRef<Path>,
+) -> Result<MemBankGraph, LoadMemGraphError> {
+    let directory = directory.as_ref();
+    let source = directory
+        .to_str()
+        .ok_or_else(|| LoadMemGraphError::NonUtf8Source {
+            path: directory.to_path_buf(),
+        })?;
+    let bank = Q88MemBank::from_dir(directory)?;
+    let graph = build_lif_graph_with_provenance(
+        &bank.model,
+        TIMESTEP_SECONDS,
+        Some(Provenance {
+            source,
+            description: "validated four-file signed Q8.8 memory bank; output readout retained separately",
+        }),
+    )?;
+    Ok(MemBankGraph {
+        graph,
+        output_weights: bank.output_weights,
+    })
+}
+
+/// Failure at either stage of direct memory-to-graph construction.
+#[derive(Debug)]
+pub enum LoadMemGraphError {
+    /// The directory cannot be represented unambiguously in NIR metadata.
+    NonUtf8Source {
+        /// Original path, preserved without lossy conversion.
+        path: PathBuf,
+    },
+    /// Memory-bank decoding or validation failed.
+    Bank(MemBankError),
+    /// NIR graph construction failed.
+    Graph(ModelError),
+}
+
+impl std::fmt::Display for LoadMemGraphError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonUtf8Source { path } => {
+                write!(f, "memory-bank directory is not valid UTF-8: {path:?}")
+            }
+            Self::Bank(error) => error.fmt(f),
+            Self::Graph(error) => error.fmt(f),
+        }
+    }
+}
+impl std::error::Error for LoadMemGraphError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NonUtf8Source { .. } => None,
+            Self::Bank(error) => Some(error),
+            Self::Graph(error) => Some(error),
+        }
+    }
+}
+impl From<MemBankError> for LoadMemGraphError {
+    fn from(value: MemBankError) -> Self {
+        Self::Bank(value)
+    }
+}
+impl From<ModelError> for LoadMemGraphError {
+    fn from(value: ModelError) -> Self {
+        Self::Graph(value)
+    }
+}
 
 /// Resting potential every unit leaks toward.
 const RESTING_POTENTIAL: f64 = 0.0;

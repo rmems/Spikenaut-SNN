@@ -9,8 +9,10 @@ use nir_rs::types::{MetadataValue, TensorData};
 use nir_rs::{NirGraph, NirNode};
 use spikenaut_snn::graph::{
     INPUT_NODE, LIF_NODE, LINEAR_NODE, OUTPUT_NODE, Provenance, load_default_lif_graph,
+    load_lif_graph_from_mem_dir,
 };
 use spikenaut_snn::model::{MERGED_V2_PROVENANCE, NEURON_COUNT, SnnModel, TIMESTEP_SECONDS};
+use spikenaut_snn::{LoadMemGraphError, MemBankError, OUTPUT_WEIGHT_COUNT, Q88MemBank};
 
 /// The 16-LIF graph is `Input → Linear → LIF → Output`: four nodes, three edges.
 #[test]
@@ -215,6 +217,137 @@ fn read_q8_8_mem(name: &str) -> Vec<f64> {
             f64::from(bits.cast_signed()) / 256.0
         })
         .collect()
+}
+
+#[test]
+fn direct_memory_graph_matches_json_graph_and_retains_readout() {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("dataset/merged_v2");
+    let direct = load_lif_graph_from_mem_dir(&directory).expect("load direct memory graph");
+    let json = spikenaut_snn::build_lif_graph(&SnnModel::load_default().unwrap()).unwrap();
+
+    assert_eq!(
+        direct.graph.nodes, json.nodes,
+        "all graph parameters must agree"
+    );
+    assert_eq!(direct.graph.edges, json.edges, "graph topology must agree");
+    assert_eq!(
+        direct.graph.metadata.get("source"),
+        Some(&MetadataValue::String(directory.display().to_string()))
+    );
+    assert_eq!(direct.output_weights.len(), OUTPUT_WEIGHT_COUNT);
+    assert_eq!(
+        direct.output_weights,
+        read_q8_8_mem("parameters_output_weights.mem")
+    );
+}
+
+fn copy_memory_bank(destination: &Path) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("dataset/merged_v2");
+    for name in spikenaut_snn::MEM_BANK_FILENAMES {
+        std::fs::copy(source.join(name), destination.join(name)).unwrap();
+    }
+}
+
+fn assert_oversized_parameters_mem_error(error: MemBankError) {
+    let expected_max = NEURON_COUNT * (4 + 2);
+    let message = error.to_string();
+    assert!(message.contains("parameters.mem"));
+    assert!(message.contains(&format!("expected at most {expected_max} bytes")));
+    let actual = message
+        .split("got ")
+        .nth(1)
+        .and_then(|suffix| suffix.split_whitespace().next())
+        .and_then(|digits| digits.parse::<usize>().ok())
+        .unwrap_or_else(|| panic!("expected TooLarge byte count in {message:?}"));
+    assert!(actual > expected_max);
+}
+
+#[test]
+fn direct_loader_needs_only_the_four_memory_files() {
+    let directory = tempfile::tempdir().unwrap();
+    copy_memory_bank(directory.path());
+    assert!(!directory.path().join("snn_model.json").exists());
+    let loaded = load_lif_graph_from_mem_dir(directory.path()).expect("load bank without JSON");
+    assert_eq!(loaded.graph.len(), 4);
+}
+
+#[test]
+fn direct_loader_reports_file_and_line_for_bad_tokens() {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("dataset/merged_v2");
+    let directory = tempfile::tempdir().unwrap();
+    copy_memory_bank(directory.path());
+    let path = directory.path().join("parameters_decay.mem");
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    text.replace_range(5..9, "nope");
+    std::fs::write(&path, text).unwrap();
+
+    let error = load_lif_graph_from_mem_dir(directory.path()).unwrap_err();
+    assert!(matches!(
+        error,
+        LoadMemGraphError::Bank(MemBankError::Token { line: 2, .. })
+    ));
+    assert!(error.to_string().contains("parameters_decay.mem:2"));
+
+    std::fs::copy(source.join("parameters_decay.mem"), &path).unwrap();
+    std::fs::remove_file(directory.path().join("parameters_output_weights.mem")).unwrap();
+    assert!(matches!(
+        load_lif_graph_from_mem_dir(directory.path()).unwrap_err(),
+        LoadMemGraphError::Bank(MemBankError::Io { path, .. })
+            if path.ends_with("parameters_output_weights.mem")
+    ));
+}
+
+#[test]
+fn direct_loader_rejects_unrecognized_memory_images() {
+    let directory = tempfile::tempdir().unwrap();
+    copy_memory_bank(directory.path());
+    let extra = directory.path().join("parameters_bias.mem");
+    std::fs::write(&extra, "0000\n").unwrap();
+
+    let error = load_lif_graph_from_mem_dir(directory.path()).unwrap_err();
+    assert!(error.to_string().contains("unrecognized memory image"));
+    assert!(error.to_string().contains("parameters_bias.mem"));
+}
+
+#[test]
+fn direct_loader_rejects_oversized_memory_image() {
+    let directory = tempfile::tempdir().unwrap();
+    copy_memory_bank(directory.path());
+    let path = directory.path().join("parameters.mem");
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes.resize(bytes.len() + 10_000, 0);
+    std::fs::write(path, bytes).unwrap();
+
+    let error = Q88MemBank::from_dir(directory.path()).unwrap_err();
+    assert_oversized_parameters_mem_error(error);
+}
+
+#[test]
+fn direct_loader_accepts_bare_carriage_return_line_endings() {
+    let directory = tempfile::tempdir().unwrap();
+    copy_memory_bank(directory.path());
+    let path = directory.path().join("parameters.mem");
+    let cr_only = std::fs::read_to_string(&path).unwrap().replace('\n', "\r");
+    std::fs::write(&path, cr_only).unwrap();
+
+    load_lif_graph_from_mem_dir(directory.path()).expect("bare CR is a valid line ending");
+}
+
+#[cfg(unix)]
+#[test]
+fn direct_loader_rejects_a_non_utf8_provenance_path() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let directory = root
+        .path()
+        .join(OsString::from_vec(b"memory-bank-\xff".to_vec()));
+    std::fs::create_dir(&directory).unwrap();
+    copy_memory_bank(&directory);
+
+    let error = load_lif_graph_from_mem_dir(&directory).unwrap_err();
+    assert!(error.to_string().contains("not valid UTF-8"));
 }
 
 /// The graph must carry exactly the parameters the FPGA holds.
