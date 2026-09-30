@@ -700,12 +700,13 @@ fn nir_rs_resolves_from_crates_io() {
             "kinetic-signals",
             "limbic-critic",
             "neuromod",
+            "neuromod06",
             "nir-rs",
             "plasticity-lab",
             "silicon-bridge",
             "synaptic-wiring",
         ],
-        "`[dependencies]` must declare the nine reviewed registry crates, found: {names:?}",
+        "`[dependencies]` must declare the ten reviewed registry crates, found: {names:?}",
     );
 
     let lock_path: PathBuf = root.join("Cargo.lock");

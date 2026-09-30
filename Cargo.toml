@@ -13,7 +13,7 @@ publish = false
 
 [features]
 default = []
-training = ["dep:plasticity-lab"]
+training = ["dep:plasticity-lab", "dep:neuromod06"]
 
 # The only dependencies of this repository, all resolved from crates.io.
 # Deliberately unpinned to any checkout: the lockfile must resolve
@@ -26,7 +26,7 @@ training = ["dep:plasticity-lab"]
 # Default features are empty; the optional `serde`, `ndarray`, and `wasm-js`
 # features are left off.
 #
-# neuromod: 0.6.x is experimental pre-1.0, so `"0.6"` is `>=0.6.0, <0.7.0`.
+# neuromod: 0.7.x is experimental pre-1.0, so `"0.7"` is `>=0.7.0, <0.8.0`.
 # Declared from crates.io (issue #5). Host-side experiments only — they do
 # not rewrite Spikenaut weights, Distill, FPGA, or training loops.
 #
@@ -45,6 +45,9 @@ training = ["dep:plasticity-lab"]
 #
 # plasticity-lab: optional host-side training/session orchestration over the
 # synthetic neuromod network. It never rewrites the shipped exp-025 artifacts.
+# 0.2.1 still requires neuromod ^0.6, so the training feature also names that
+# 0.6 crate (as `neuromod06`) and does not pass 0.7 `SpikingNetwork` values
+# into the published trainer.
 #
 # silicon-bridge: checked signed Q8.8 parameter encoding only. Its optional
 # UART feature stays disabled; live board transport remains a separate gate.
@@ -53,7 +56,10 @@ axon-encoder = "0.5"
 corpus-ipc = { version = "0.1", default-features = false }
 kinetic-signals = "0.4"
 limbic-critic = "0.3"
-neuromod = "0.6"
+neuromod = "0.7"
+# Names plasticity-lab 0.2.1's neuromod 0.6.0 pin. Not a git checkout and not
+# a second host experiment; the default `neuromod` dependency is 0.7.0.
+neuromod06 = { package = "neuromod", version = "0.6", optional = true }
 nir-rs = "0.4.4"
 plasticity-lab = { version = "0.2.1", optional = true }
 silicon-bridge = { version = "0.3", default-features = false }

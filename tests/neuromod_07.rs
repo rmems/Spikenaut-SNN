@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Behavioral contract for the `neuromod` 0.6 host experiments.
+//! Behavioral contract for the `neuromod` 0.7 host experiments.
 
-use neuromod::{GifLayerError, NeuroModulators, NonFiniteClass, RmStdpConfig, StepError};
+use neuromod::{
+    ChannelVector, GifLayerError, ModulatorField, NeuroModulators, NonFiniteClass, RmStdpConfig,
+    StepError,
+};
 use spikenaut_snn::{HostGifLayer, HostNetwork};
 
 const STIMULI: [f32; 16] = [0.55; 16];
@@ -31,6 +34,93 @@ fn assert_same_network(left: &HostNetwork, right: &HostNetwork) {
         assert_eq!(left_neuron.weights, right_neuron.weights);
         assert_eq!(left_neuron.eligibility, right_neuron.eligibility);
     }
+}
+
+/// Compile-time lock: a new `StepError` variant fails this crate until named.
+fn all_step_errors() -> [StepError; 6] {
+    [
+        StepError::InputLenMismatch {
+            expected: 16,
+            got: 1,
+        },
+        StepError::NonFiniteStimulus {
+            index: 0,
+            class: NonFiniteClass::Nan,
+        },
+        StepError::NonFiniteModulator {
+            field: ModulatorField::Dopamine,
+            class: NonFiniteClass::Nan,
+        },
+        StepError::NonFinitePredictiveState {
+            index: 0,
+            class: NonFiniteClass::Nan,
+        },
+        StepError::StepCounterExhausted { global_step: -1 },
+        StepError::CheckpointShapeMismatch {
+            field: ChannelVector::PredictiveState,
+            expected: 16,
+            got: 0,
+        },
+    ]
+}
+
+/// Compile-time lock: a new `GifLayerError` variant fails this crate until named.
+fn all_gif_layer_errors() -> [GifLayerError; 13] {
+    [
+        GifLayerError::NonFiniteParam {
+            field: "leak",
+            class: NonFiniteClass::Nan,
+        },
+        GifLayerError::NonFiniteWeight {
+            index: 0,
+            class: NonFiniteClass::Nan,
+        },
+        GifLayerError::NonFiniteInput {
+            index: 0,
+            class: NonFiniteClass::Nan,
+        },
+        GifLayerError::NumericOverflow {
+            neuron: 0,
+            stage: "drive",
+            class: NonFiniteClass::PosInfinity,
+        },
+        GifLayerError::FanInExceedsInputs {
+            fan_in: 17,
+            num_inputs: 16,
+        },
+        GifLayerError::InvalidWeightRange { min: 1.0, max: 0.0 },
+        GifLayerError::InputLenMismatch {
+            expected: 16,
+            got: 15,
+        },
+        GifLayerError::OutputLenMismatch {
+            expected: 16,
+            got: 1,
+        },
+        GifLayerError::SourceOutOfRange {
+            neuron: 0,
+            source: 16,
+            num_inputs: 16,
+        },
+        GifLayerError::TooManyInputs {
+            num_inputs: usize::MAX,
+            max: u32::MAX as usize,
+        },
+        GifLayerError::MalformedCheckpoint { detail: "test" },
+        GifLayerError::StepCounterExhausted {
+            step_count: i64::MAX,
+        },
+        GifLayerError::RasterTooLarge {
+            num_steps: usize::MAX,
+            num_neurons: 16,
+        },
+    ]
+}
+
+#[test]
+fn published_error_enums_name_the_0_7_variants() {
+    assert_eq!(all_step_errors().len(), 6);
+    assert_eq!(all_gif_layer_errors().len(), 13);
 }
 
 #[test]
@@ -90,6 +180,57 @@ fn a_rejected_modulator_changes_neither_network_state_nor_rng_position() {
         control.step(&STIMULI, &valid).unwrap()
     );
     assert_same_network(&victim, &control);
+}
+
+#[test]
+fn a_non_finite_predictive_state_is_rejected_without_mutation() {
+    let mut victim = HostNetwork::new(21);
+    let mut control = HostNetwork::new(21);
+    let modulators = NeuroModulators::default();
+    victim.inner_mut().predictive_state[2] = f32::NAN;
+
+    assert_eq!(
+        victim.step(&STIMULI, &modulators),
+        Err(StepError::NonFinitePredictiveState {
+            index: 2,
+            class: NonFiniteClass::Nan,
+        })
+    );
+    assert_eq!(victim.inner().global_step, 0);
+    assert_eq!(
+        victim.inner().input_spike_times,
+        control.inner().input_spike_times
+    );
+
+    victim.inner_mut().predictive_state[2] = 0.0;
+    assert_eq!(
+        victim.step(&STIMULI, &modulators).unwrap(),
+        control.step(&STIMULI, &modulators).unwrap()
+    );
+    assert_same_network(&victim, &control);
+}
+
+#[test]
+fn a_malformed_checkpoint_shape_is_rejected_without_mutation() {
+    let mut victim = HostNetwork::new(23);
+    let control = HostNetwork::new(23);
+    let modulators = NeuroModulators::default();
+    victim.inner_mut().predictive_state.pop();
+
+    assert_eq!(
+        victim.step(&STIMULI, &modulators),
+        Err(StepError::CheckpointShapeMismatch {
+            field: ChannelVector::PredictiveState,
+            expected: 16,
+            got: 15,
+        })
+    );
+    assert_eq!(victim.inner().global_step, 0);
+    assert_eq!(victim.inner().predictive_state.len(), 15);
+    assert_eq!(
+        victim.inner().input_spike_times,
+        control.inner().input_spike_times
+    );
 }
 
 #[test]
@@ -203,6 +344,51 @@ fn gif_layer_rejects_the_wrong_input_width() {
         Err(GifLayerError::InputLenMismatch {
             expected: 16,
             got: 15,
+        })
+    );
+    assert_eq!(layer.inner().step_count(), 0);
+}
+
+#[test]
+fn gif_layer_rejects_a_non_finite_input_without_advancing() {
+    let mut layer = HostGifLayer::new(3).unwrap();
+    let mut invalid = [1.0; 16];
+    invalid[4] = f32::NAN;
+    assert_eq!(
+        layer.step(&invalid),
+        Err(GifLayerError::NonFiniteInput {
+            index: 4,
+            class: NonFiniteClass::Nan,
+        })
+    );
+    assert_eq!(layer.inner().step_count(), 0);
+}
+
+#[test]
+fn gif_layer_rejects_a_non_finite_weight_without_advancing() {
+    let mut layer = HostGifLayer::new(5).unwrap();
+    layer.inner_mut().weights_mut()[0] = f32::INFINITY;
+    assert_eq!(
+        layer.step(&[1.0; 16]),
+        Err(GifLayerError::NonFiniteWeight {
+            index: 0,
+            class: NonFiniteClass::PosInfinity,
+        })
+    );
+    assert_eq!(layer.inner().step_count(), 0);
+}
+
+#[test]
+fn gif_layer_rejects_a_non_finite_parameter_without_advancing() {
+    let mut layer = HostGifLayer::new(7).unwrap();
+    let mut params = *layer.inner().params();
+    params.leak = f32::NAN;
+    *layer.inner_mut().params_mut() = params;
+    assert_eq!(
+        layer.step(&[1.0; 16]),
+        Err(GifLayerError::NonFiniteParam {
+            field: "leak",
+            class: NonFiniteClass::Nan,
         })
     );
     assert_eq!(layer.inner().step_count(), 0);

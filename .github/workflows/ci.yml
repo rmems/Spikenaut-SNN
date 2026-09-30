@@ -40,7 +40,7 @@ jobs:
 
       # rust-toolchain.toml pins 1.98.1 with rustfmt and clippy -- the MSRV
       # kinetic-signals 0.4.0 and nir-rs 0.4.4 declare (axon-encoder 0.5.0
-      # and neuromod 0.6.0 / plasticity-lab 0.2.1 declare 1.98.1). `rustup show` installs
+      # and neuromod 0.7.0 / plasticity-lab 0.2.1 declare 1.98.1). `rustup show` installs
       # exactly that, so CI cannot drift onto a newer compiler and quietly
       # accept code the pinned toolchain would reject.
       - name: Install the pinned toolchain

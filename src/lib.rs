@@ -36,10 +36,10 @@
 //! [`CHANNEL_MAP`]: encode::CHANNEL_MAP
 //! [`LIVE_COLUMNS`]: encode::LIVE_COLUMNS
 //!
-//! Its nine direct dependencies are deliberate: [`nir_rs`],
-//! [`axon_encoder`], [`kinetic_signals`], [`neuromod`], `limbic-critic`,
-//! `synaptic-wiring`, `corpus-ipc`, `silicon-bridge`, and the optional
-//! `plasticity-lab`, all from crates.io.
+//! Its ten direct dependencies are deliberate: [`nir_rs`],
+//! [`axon_encoder`], [`kinetic_signals`], [`neuromod`], `neuromod06`,
+//! `limbic-critic`, `synaptic-wiring`, `corpus-ipc`, `silicon-bridge`, and
+//! the optional `plasticity-lab`, all from crates.io.
 //! The bound is the claim, not the number: `tests/nir_graph.rs` asserts the
 //! manifest's exact *runtime* dependency set, so adopting a crate this library
 //! links against fails that test until the adoption is deliberate. Dev- and
@@ -55,11 +55,12 @@
 //! the RAW / KINETIC / HYBRID ablation, which stays open.
 //!
 //! [`neuromod_host`] preserves the thin `LifNeuron` adapter and adds parallel
-//! `neuromod` 0.6 experiments: a caller-seeded non-negative R-STDP network and
+//! `neuromod` 0.7 experiments: a caller-seeded non-negative R-STDP network and
 //! a sparse GIF layer. [`critic`] supplies checked TD modulators, [`wiring`]
 //! supplies a deterministic 12:4 Dale recurrent proposal, and [`ipc`] builds
 //! validated versioned messages without transport. With the `training` feature,
-//! `training` runs `plasticity-lab` only over that synthetic network. None of
+//! `training` runs `plasticity-lab` 0.2.1 over a synthetic neuromod 0.6
+//! network — that trainer cannot accept a 0.7 `SpikingNetwork`. None of
 //! these paths executes or rewrites the shipped signed bank, Distill, or FPGA
 //! artifacts. [`silicon`] is the distinct deployment boundary: it runs the
 //! shipped bank through `silicon-bridge`'s checked signed Q8.8 path and adapts
