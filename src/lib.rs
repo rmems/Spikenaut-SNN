@@ -36,10 +36,11 @@
 //! [`CHANNEL_MAP`]: encode::CHANNEL_MAP
 //! [`LIVE_COLUMNS`]: encode::LIVE_COLUMNS
 //!
-//! Its ten direct dependencies are deliberate: [`nir_rs`],
-//! [`axon_encoder`], [`kinetic_signals`], [`neuromod`], `neuromod06`,
-//! `limbic-critic`, `synaptic-wiring`, `corpus-ipc`, `silicon-bridge`, and
-//! the optional `plasticity-lab`, all from crates.io.
+//! Its direct dependencies are deliberate: [`nir_rs`],
+//! [`axon_encoder`], [`kinetic_signals`], [`neuromod`] (0.7 host engine, plus
+//! an optional crates.io 0.6 alias for the trainer), `limbic-critic`,
+//! `synaptic-wiring`, `corpus-ipc`, `silicon-bridge`, and the optional
+//! `plasticity-lab`, all from crates.io.
 //! The bound is the claim, not the number: `tests/nir_graph.rs` asserts the
 //! manifest's exact *runtime* dependency set, so adopting a crate this library
 //! links against fails that test until the adoption is deliberate. Dev- and
