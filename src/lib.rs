@@ -60,8 +60,8 @@
 //! a sparse GIF layer. [`critic`] supplies checked TD modulators, [`wiring`]
 //! supplies a deterministic 12:4 Dale recurrent proposal, and [`ipc`] builds
 //! validated versioned messages without transport. With the `training` feature,
-//! `training` runs `plasticity-lab` 0.2.1 over a synthetic neuromod 0.6
-//! network — that trainer cannot accept a 0.7 `SpikingNetwork`. None of
+//! `training` runs `plasticity-lab` 0.2.1 over a same-shape neuromod 0.6
+//! bank — that trainer cannot wrap the 0.7 [`HostNetwork`] engine. None of
 //! these paths executes or rewrites the shipped signed bank, Distill, or FPGA
 //! artifacts. [`silicon`] is the distinct deployment boundary: it runs the
 //! shipped bank through `silicon-bridge`'s checked signed Q8.8 path and adapts

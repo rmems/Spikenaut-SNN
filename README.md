@@ -352,8 +352,10 @@ src/                               # Rust, `spikenaut-snn`
                                    # typed JSON only, no transport
 ├── silicon.rs                     # Checked silicon-bridge 0.3 signed Q8.8
                                    # export; KxN exporter to NxK HDL adapter
-├── training.rs                    # Optional plasticity-lab 0.2.1 session over
-                                   # the synthetic seeded HostNetwork only
+├── training.rs                    # Optional plasticity-lab 0.2.1 session:
+                                   # same-shape bank as the 0.7 HostNetwork,
+                                   # on neuromod 0.6 because the trainer
+                                   # cannot accept a 0.7 SpikingNetwork
 └── json.rs                        # Strict reader, so the dependency list
                                    # stays at what Cargo.toml declares
 ```
@@ -363,9 +365,10 @@ to consumers in a standard form. The Rust crate still does not run the
 **shipped exp-025 bank** — `Neuron::membrane_potential` is decoded and never
 advanced. `HostNetwork` and `HostGifLayer` are explicitly separate experiments
 with synthetic non-negative weights / GIF dynamics; neither is the bank.
-The optional `HostTrainingSession` applies `plasticity-lab` only to that
-synthetic `HostNetwork`; its in-memory weight deltas are not a new exp-025
-checkpoint and are not written into `dataset/merged_v2/`.
+The optional `HostTrainingSession` cannot wrap the 0.7 `HostNetwork`
+(`plasticity-lab` 0.2.1 still takes neuromod 0.6). It trains a same-shape
+synthetic bank and proves real in-memory weight deltas; those deltas are
+not a new exp-025 checkpoint and are not written into `dataset/merged_v2/`.
 `stim::LiveStimAdapter` builds the input the network would eat; it does not
 step the shipped weights. `decision::replay_output_row` converts one
 already-scored Distill row into a shadow-policy decision; it does not
@@ -466,10 +469,12 @@ evidence gates.
 ### Optional host training experiment
 
 The `training` Cargo feature adopts [`plasticity-lab`](https://crates.io/crates/plasticity-lab)
-0.2 from crates.io. It wraps the existing caller-seeded, synthetic
-`HostNetwork`, uses one persistent RNG stream across the whole batch, and
-returns the published `TrainingSummary`, including the exact per-weight deltas
-that were applied:
+0.2 from crates.io. `HostNetwork` is the neuromod 0.7 experiment. The session
+cannot pass that 0.7 `SpikingNetwork` into the published trainer, so it builds
+a same-shape neuromod 0.6 bank (same 16 LIF cells and uniform initial weights),
+uses one persistent RNG stream across the whole batch, and returns the
+published `TrainingSummary`, including the exact per-weight deltas that were
+applied:
 
 ```rust
 use spikenaut_snn::{HostTrainingSession, TrainingConfig, TrainingExample};
@@ -588,7 +593,7 @@ Spikenaut-SNN is a weights and model repository that now also carries a thin Rus
 | [`synaptic-wiring`](https://crates.io/crates/synaptic-wiring) 0.3.0 | Deterministic topology, Dale polarity, delayed propagation | **Declared** from crates.io — parallel 16-neuron 12:4 recurrent proposal only; it does not reinterpret the shipped dense input matrix or change `.mem` layout — [#16](https://github.com/rmems/Spikenaut-SNN/issues/16) |
 | [`corpus-ipc`](https://crates.io/crates/corpus-ipc) 0.1.0 | Versioned stimulus, spike, and modulator wire messages | **Declared** from crates.io with transport features disabled — validated typed JSON only; no ZMQ/server, and no invented mapping between the two crates' different modulator vocabularies |
 | [`silicon-bridge`](https://crates.io/crates/silicon-bridge) 0.3.0 | Checked signed Q8.8 `.mem` export | **Declared** from crates.io with default features disabled — `export_shipped_fpga_image` rejects invalid shapes/ranges, preserves signed hidden and readout words, and explicitly adapts KxN exporter order to NxK silicon-hdl order; all four vault images match byte-for-byte. The UART feature stays disabled, and this does not prove live UART or FPGA parity — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
-| [`plasticity-lab`](https://crates.io/crates/plasticity-lab) 0.2.1 | Reproducible reward-modulated training sessions | **Declared** from crates.io as optional feature `training` — `HostTrainingSession` uses a synthetic seeded 16-LIF network with the same initial weights as `HostNetwork`, on neuromod 0.6 because the trainer cannot accept a 0.7 `SpikingNetwork`, and does not export or overwrite exp-025 artifacts — [#17](https://github.com/rmems/Spikenaut-SNN/issues/17) |
+| [`plasticity-lab`](https://crates.io/crates/plasticity-lab) 0.2.1 | Reproducible reward-modulated training sessions | **Declared** from crates.io as optional feature `training` — `HostTrainingSession` uses the synthetic seeded `HostNetwork` shape on neuromod 0.6 (the published trainer cannot accept the 0.7 `HostNetwork` engine), proves real in-memory weight deltas, and does not export or overwrite exp-025 artifacts — [#17](https://github.com/rmems/Spikenaut-SNN/issues/17) |
 | `brainstem-daemon` | 1 kHz headless inference host | **Peer process, not a dependency** — [#11](https://github.com/rmems/Spikenaut-SNN/issues/11) |
 | `thalamic-relay` | NVML supervisor, 85 °C / 350 W brake | **Peer process, not a dependency** — [#12](https://github.com/rmems/Spikenaut-SNN/issues/12) |
 | `SynapticDistill.jl` | Training sidecar that writes the `.mem` artifacts | **Sidecar, not a Cargo dependency** — Distill pin landed; closed [#13](https://github.com/rmems/Spikenaut-SNN/issues/13) |

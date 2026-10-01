@@ -3,8 +3,7 @@
 //! Behavioral contract for the `neuromod` 0.7 host experiments.
 
 use neuromod::{
-    ChannelVector, GifLayerError, ModulatorField, NeuroModulators, NonFiniteClass, RmStdpConfig,
-    StepError,
+    ChannelVector, GifLayerError, NeuroModulators, NonFiniteClass, RmStdpConfig, StepError,
 };
 use spikenaut_snn::{HostGifLayer, HostNetwork};
 
@@ -37,90 +36,46 @@ fn assert_same_network(left: &HostNetwork, right: &HostNetwork) {
 }
 
 /// Compile-time lock: a new `StepError` variant fails this crate until named.
-fn all_step_errors() -> [StepError; 6] {
-    [
-        StepError::InputLenMismatch {
-            expected: 16,
-            got: 1,
-        },
-        StepError::NonFiniteStimulus {
-            index: 0,
-            class: NonFiniteClass::Nan,
-        },
-        StepError::NonFiniteModulator {
-            field: ModulatorField::Dopamine,
-            class: NonFiniteClass::Nan,
-        },
-        StepError::NonFinitePredictiveState {
-            index: 0,
-            class: NonFiniteClass::Nan,
-        },
-        StepError::StepCounterExhausted { global_step: -1 },
-        StepError::CheckpointShapeMismatch {
-            field: ChannelVector::PredictiveState,
-            expected: 16,
-            got: 0,
-        },
-    ]
+fn assert_known_step_error(error: StepError) {
+    match error {
+        StepError::InputLenMismatch { .. }
+        | StepError::NonFiniteStimulus { .. }
+        | StepError::NonFiniteModulator { .. }
+        | StepError::NonFinitePredictiveState { .. }
+        | StepError::StepCounterExhausted { .. }
+        | StepError::CheckpointShapeMismatch { .. } => {}
+    }
 }
 
 /// Compile-time lock: a new `GifLayerError` variant fails this crate until named.
-fn all_gif_layer_errors() -> [GifLayerError; 13] {
-    [
-        GifLayerError::NonFiniteParam {
-            field: "leak",
-            class: NonFiniteClass::Nan,
-        },
-        GifLayerError::NonFiniteWeight {
-            index: 0,
-            class: NonFiniteClass::Nan,
-        },
-        GifLayerError::NonFiniteInput {
-            index: 0,
-            class: NonFiniteClass::Nan,
-        },
-        GifLayerError::NumericOverflow {
-            neuron: 0,
-            stage: "drive",
-            class: NonFiniteClass::PosInfinity,
-        },
-        GifLayerError::FanInExceedsInputs {
-            fan_in: 17,
-            num_inputs: 16,
-        },
-        GifLayerError::InvalidWeightRange { min: 1.0, max: 0.0 },
-        GifLayerError::InputLenMismatch {
-            expected: 16,
-            got: 15,
-        },
-        GifLayerError::OutputLenMismatch {
-            expected: 16,
-            got: 1,
-        },
-        GifLayerError::SourceOutOfRange {
-            neuron: 0,
-            source: 16,
-            num_inputs: 16,
-        },
-        GifLayerError::TooManyInputs {
-            num_inputs: usize::MAX,
-            max: u32::MAX as usize,
-        },
-        GifLayerError::MalformedCheckpoint { detail: "test" },
-        GifLayerError::StepCounterExhausted {
-            step_count: i64::MAX,
-        },
-        GifLayerError::RasterTooLarge {
-            num_steps: usize::MAX,
-            num_neurons: 16,
-        },
-    ]
+fn assert_known_gif_layer_error(error: GifLayerError) {
+    match error {
+        GifLayerError::NonFiniteParam { .. }
+        | GifLayerError::NonFiniteWeight { .. }
+        | GifLayerError::NonFiniteInput { .. }
+        | GifLayerError::NumericOverflow { .. }
+        | GifLayerError::FanInExceedsInputs { .. }
+        | GifLayerError::InvalidWeightRange { .. }
+        | GifLayerError::InputLenMismatch { .. }
+        | GifLayerError::OutputLenMismatch { .. }
+        | GifLayerError::SourceOutOfRange { .. }
+        | GifLayerError::TooManyInputs { .. }
+        | GifLayerError::MalformedCheckpoint { .. }
+        | GifLayerError::StepCounterExhausted { .. }
+        | GifLayerError::RasterTooLarge { .. } => {}
+    }
 }
 
 #[test]
 fn published_error_enums_name_the_0_7_variants() {
-    assert_eq!(all_step_errors().len(), 6);
-    assert_eq!(all_gif_layer_errors().len(), 13);
+    assert_known_step_error(StepError::InputLenMismatch {
+        expected: 16,
+        got: 1,
+    });
+    assert_known_gif_layer_error(GifLayerError::InputLenMismatch {
+        expected: 16,
+        got: 15,
+    });
 }
 
 #[test]

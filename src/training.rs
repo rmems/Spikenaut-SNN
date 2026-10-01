@@ -2,13 +2,14 @@
 
 //! Optional host-side training sessions through `plasticity-lab` 0.2.1.
 //!
-//! [`HostTrainingSession`] applies the published trainer to a synthetic,
-//! non-negative 16-LIF network built with the same dimensions and initial
-//! weights as [`crate::HostNetwork`]. `plasticity-lab` 0.2.1 still depends on
-//! `neuromod` 0.6, so this session names that crate (`neuromod06`) and never
-//! passes a 0.7 [`neuromod::SpikingNetwork`] into the trainer. It never loads,
-//! rewrites, or exports the shipped signed exp-025 bank; `SynapticDistill.jl`
-//! remains the artifact-producing sidecar until an explicit parity path exists.
+//! [`HostTrainingSession`] is the optional trainer for the synthetic host
+//! experiment. [`crate::HostNetwork`] is the neuromod 0.7 network (16 LIF,
+//! uniform `2.0/16` weights). `plasticity-lab` 0.2.1 still requires neuromod
+//! 0.6, so this session cannot wrap that 0.7 [`neuromod::SpikingNetwork`]. It
+//! names the 0.6 crate (`neuromod06`) and builds a same-shape bank for the
+//! trainer only. It never loads, rewrites, or exports the shipped signed
+//! exp-025 bank; `SynapticDistill.jl` remains the artifact-producing sidecar
+//! until an explicit parity path exists.
 
 use neuromod06::{SeedableRng, SpikingNetwork, StdRng};
 use plasticity_lab::PlasticityTrainer;
