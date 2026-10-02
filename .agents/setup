@@ -6,7 +6,7 @@
 # be safe to run more than once. See https://ampcode.com/docs/orbs/customizing
 #
 # Installs only what this repo's CI and manifests need:
-#   - apt: build-essential, pkg-config, bubblewrap, libseccomp2
+#   - apt: build-essential, pkg-config, bubblewrap, libseccomp2, curl, ca-certificates
 #   - Rust 1.98.1 (+rustfmt, clippy) [default]
 #   - uv + Python 3.11 venv with tools/anticipation/requirements-test.txt (hash-pinned)
 #   - juliaup 1.12.7 + Pkg.instantiate() for tools/anticipation
@@ -36,8 +36,8 @@ apt_install() {
   fi
 }
 
-# --- System packages (C toolchain; bubblewrap + libseccomp2 for the Hermes tests (ci.yml)) ---
-apt_install build-essential pkg-config bubblewrap libseccomp2
+# --- System packages (C toolchain; bubblewrap + libseccomp2 for the Hermes tests (ci.yml); curl for the installers) ---
+apt_install build-essential pkg-config bubblewrap libseccomp2 curl ca-certificates
 
 # --- Rust (rustup) ---
 export PATH="$HOME/.cargo/bin:$PATH"
