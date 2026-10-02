@@ -20,7 +20,7 @@ write docs or code comments that claim otherwise.
 | `config.json` | Machine-readable model header |
 | `tools/` | Python verification tools (stdlib only): Q8.8 verifier, model-bank attestation, parity and replay tools |
 | `tools/anticipation/` | Anticipation campaign (Python + Julia project, `requirements-test.txt`) |
-| `tests/` | Python tests (pytest/unittest) |
+| `tests/` | Rust integration tests (`*.rs`, run by `cargo test`) and Python tests (pytest/unittest, `test_*.py`) |
 | `docs/anticipation/` | Anticipation docs |
 
 ## Toolchain
@@ -33,7 +33,9 @@ write docs or code comments that claim otherwise.
 - Julia **1.12.7** for `tools/anticipation` (CI).
 - The Hermes tests need `bubblewrap` and `libseccomp2`. CI also sets
   `kernel.apparmor_restrict_unprivileged_userns=0` (Ubuntu).
-- No GPU needed. FPGA loading is out of scope for CI.
+- No GPU needed for CI or the tests. Real acquisition in the anticipation campaign
+  (`tools/anticipation/campaign.py`) needs a CUDA GPU and CUDA-enabled PyTorch
+  (`docs/anticipation/README.md`). FPGA loading is out of scope for CI.
 
 ## Commands (from `.github/workflows/ci.yml`)
 
@@ -43,9 +45,10 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked
 cargo check --locked --no-default-features
 cargo test --locked --all-features
-cargo doc --locked --no-deps --all-features
+RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps --all-features
 
-# Python tools (each also has --self-test and a `python3 -m tools.<name>` form)
+# Python tools. CI also runs each one except replay_frozen.py with --self-test, and runs
+# most of them in the `python3 -m tools.<name>` form too.
 python3 tools/verify_q88.py
 python3 tools/measure_hamming.py
 python3 tools/live_stim_parity.py
@@ -69,5 +72,5 @@ python -m pytest -q tests/test_anticipation_campaign.py tests/test_collector_lif
   the parity tools when changing encoding.
 - GitHub Actions are pinned to commit SHAs with exact version comments, and Dependabot bumps
   them. Keep new actions pinned the same way.
-- Commit subjects follow Conventional Commits with scopes (`feat(nir):`, `feat(deps):`) and
-  Linear/GitHub IDs.
+- Commit subjects follow Conventional Commits, usually with a scope (`feat(nir):`, `feat(deps):`),
+  and end with the PR number. Some also carry a Linear or GitHub issue ID (`RM-1713`, `GH#60`).
