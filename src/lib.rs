@@ -39,8 +39,10 @@
 //! Its direct dependencies are deliberate: [`nir_rs`],
 //! [`axon_encoder`], [`kinetic_signals`], [`neuromod`] (0.7 host engine, plus
 //! an optional crates.io 0.6 alias for the trainer), `limbic-critic`,
-//! `synaptic-wiring`, `corpus-ipc`, `silicon-bridge`, and the optional
-//! `plasticity-lab`, all from crates.io.
+//! `synaptic-wiring`, `corpus-ipc`, `silicon-bridge`, the optional
+//! `plasticity-lab`, and the optional `myelin-accelerator` 0.2.0 consumer
+//! (`myelin` for the CPU-safe stub, `myelin-cuda` for real launches), all
+//! from crates.io.
 //! The bound is the claim, not the number: `tests/nir_graph.rs` asserts the
 //! manifest's exact *runtime* dependency set, so adopting a crate this library
 //! links against fails that test until the adoption is deliberate. Dev- and
@@ -153,6 +155,8 @@ pub mod json;
 pub mod kinetic;
 pub mod mem;
 pub mod model;
+#[cfg(feature = "myelin")]
+pub mod myelin;
 pub mod neuromod_host;
 pub mod silicon;
 pub mod stim;

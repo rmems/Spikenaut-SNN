@@ -13,6 +13,8 @@ publish = false
 
 [features]
 default = []
+myelin = ["dep:myelin-accelerator"]
+myelin-cuda = ["myelin", "myelin-accelerator/cuda"]
 training = ["dep:plasticity-lab", "dep:neuromod06"]
 
 # The only dependencies of this repository, all resolved from crates.io.
@@ -51,11 +53,19 @@ training = ["dep:plasticity-lab", "dep:neuromod06"]
 #
 # silicon-bridge: checked signed Q8.8 parameter encoding only. Its optional
 # UART feature stays disabled; live board transport remains a separate gate.
+#
+# myelin-accelerator: optional Rust/CUDA compute layer for issue #73.
+# Pinned `=0.2.0` from crates.io for this qualification. The `myelin` feature
+# enables the CPU-safe stub (no toolkit/GPU required); `myelin-cuda` forwards
+# to the published `cuda` feature for real sm_120 launches. Weighted LIF has
+# no high-level wrapper in v0.2 and its raw symbols need direct `cust`
+# launches, so that path is explicitly out of the CPU scope (no `cust` dep).
 [dependencies]
 axon-encoder = "0.5"
 corpus-ipc = { version = "0.1", default-features = false }
 kinetic-signals = "0.4"
 limbic-critic = "0.3"
+myelin-accelerator = { version = "=0.2.0", default-features = false, optional = true }
 neuromod = "0.7"
 # Names plasticity-lab 0.2.1's neuromod 0.6.0 pin. Not a git checkout and not
 # a second host experiment; the default `neuromod` dependency is 0.7.0.

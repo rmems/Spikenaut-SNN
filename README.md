@@ -356,6 +356,11 @@ src/                               # Rust, `spikenaut-snn`
                                    # same-shape bank as the 0.7 HostNetwork,
                                    # on neuromod 0.6 because the trainer
                                    # cannot accept a 0.7 SpikingNetwork
+├── myelin.rs                      # Optional myelin-accelerator 0.2.0
+                                   # consumer (#73): CPU-safe stub behind
+                                   # `myelin`, CUDA launches behind
+                                   # `myelin-cuda`; no cust dep, no raw LIF
+                                   # launches in CPU scope
 └── json.rs                        # Strict reader, so the dependency list
                                    # stays at what Cargo.toml declares
 ```
@@ -594,6 +599,7 @@ Spikenaut-SNN is a weights and model repository that now also carries a thin Rus
 | [`corpus-ipc`](https://crates.io/crates/corpus-ipc) 0.1.0 | Versioned stimulus, spike, and modulator wire messages | **Declared** from crates.io with transport features disabled — validated typed JSON only; no ZMQ/server, and no invented mapping between the two crates' different modulator vocabularies |
 | [`silicon-bridge`](https://crates.io/crates/silicon-bridge) 0.3.0 | Checked signed Q8.8 `.mem` export | **Declared** from crates.io with default features disabled — `export_shipped_fpga_image` rejects invalid shapes/ranges, preserves signed hidden and readout words, and explicitly adapts KxN exporter order to NxK silicon-hdl order; all four vault images match byte-for-byte. The UART feature stays disabled, and this does not prove live UART or FPGA parity — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
 | [`plasticity-lab`](https://crates.io/crates/plasticity-lab) 0.2.1 | Reproducible reward-modulated training sessions | **Declared** from crates.io as optional feature `training` — `HostTrainingSession` uses the synthetic seeded `HostNetwork` shape on neuromod 0.6 (the published trainer cannot accept the 0.7 `HostNetwork` engine), proves real in-memory weight deltas, and does not export or overwrite exp-025 artifacts — [#17](https://github.com/rmems/Spikenaut-SNN/issues/17) |
+| [`myelin-accelerator`](https://crates.io/crates/myelin-accelerator) 0.2.0 | Rust/CUDA compute layer (Poisson, STDP, ternary GEMV/GEMM) | **Declared** from crates.io as optional features `myelin` (CPU-safe stub, no toolkit/GPU) / `myelin-cuda` (forwards to the published `cuda` feature) — pinned `=0.2.0`; raw LIF symbols need direct `cust` launches and stay out of scope — [#73](https://github.com/rmems/Spikenaut-SNN/issues/73) |
 | `brainstem-daemon` | 1 kHz headless inference host | **Peer process, not a dependency** — [#11](https://github.com/rmems/Spikenaut-SNN/issues/11) |
 | `thalamic-relay` | NVML supervisor, 85 °C / 350 W brake | **Peer process, not a dependency** — [#12](https://github.com/rmems/Spikenaut-SNN/issues/12) |
 | `SynapticDistill.jl` | Training sidecar that writes the `.mem` artifacts | **Sidecar, not a Cargo dependency** — Distill pin landed; closed [#13](https://github.com/rmems/Spikenaut-SNN/issues/13) |
