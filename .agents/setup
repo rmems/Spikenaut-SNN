@@ -11,6 +11,7 @@
 #   - uv + Python 3.11 venv with tools/anticipation/requirements-test.txt (hash-pinned)
 #   - juliaup 1.12.7 + Pkg.instantiate() for tools/anticipation
 #   - cargo fetch --locked
+#   - tool directories exposed to later shells (/etc/profile.d + /usr/local/bin links)
 #
 # It ends with a dependency fetch/prebuild, not a test run.
 set -euo pipefail
@@ -76,5 +77,34 @@ julia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instanti
 
 # --- Prefetch crates (no build, no tests) ---
 cargo fetch --locked
+
+# --- Expose the tools to later shells ---
+# The PATH exports above last only for this script; Amp starts the agent's shell
+# separately. Login shells get these directories from /etc/profile.d, and every other
+# shell finds the entry points through symlinks in /usr/local/bin (on the default PATH).
+# In login shells the venv's bin comes first, so python3 is the venv's Python.
+# The links skip python and pip so the system python3 stays the default elsewhere.
+repo_root="$(pwd)"
+tool_dirs=("$HOME/.cargo/bin" "$HOME/.juliaup/bin" "$repo_root/.venv/bin")
+# shellcheck disable=SC2016 # $PATH must expand when the profile is sourced, not now.
+printf 'export PATH="%s:$PATH"\n' "$(IFS=:; echo "${tool_dirs[*]}")" |
+  $SUDO tee /etc/profile.d/amp-orb-Spikenaut-SNN.sh >/dev/null
+for dir in "${tool_dirs[@]}"; do
+  [ -d "$dir" ] || continue
+  for tool in "$dir"/*; do
+    name="${tool##*/}"
+    case "$name" in
+      python* | pip* | activate* | deactivate | Activate.ps1) continue ;;
+    esac
+    if [ -f "$tool" ] && [ -x "$tool" ]; then
+      $SUDO ln -sfn "$tool" "/usr/local/bin/$name"
+    fi
+  done
+done
+
+# .venv/ is not in .gitignore here, so keep it out of `git status` in the orb.
+exclude_file="$(git rev-parse --git-path info/exclude)"
+mkdir -p "$(dirname "$exclude_file")"
+grep -qxF '/.venv/' "$exclude_file" 2>/dev/null || echo '/.venv/' >>"$exclude_file"
 
 echo "Amp orb setup for Spikenaut-SNN finished."
