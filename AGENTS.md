@@ -18,8 +18,8 @@ write docs or code comments that claim otherwise.
 | `src/` | Rust crate: model, encoding/stim, decision contract, NIR graph, IPC, Q8.8 memory, kinetic/silicon/neuromod glue, `training` |
 | `dataset/merged_v2/` | Shipped model bank: Q8.8 `.mem` parameter files, `snn_model.json`, `model_bank.json` |
 | `config.json` | Machine-readable model header |
-| `tools/` | Python verification tools (stdlib only): Q8.8 verifier, model-bank attestation, parity and replay tools |
-| `tools/anticipation/` | Anticipation campaign (Python + Julia project, `requirements-test.txt`) |
+| `tools/*.py` | Python verification tools (stdlib only): Q8.8 verifier, model-bank attestation, parity and replay tools |
+| `tools/anticipation/` | Anticipation campaign (Python + Julia project). Needs third-party packages (NumPy, Matplotlib, and PyTorch for acquisition); see `requirements-test.txt` |
 | `tests/` | Rust integration tests (`*.rs`, run by `cargo test`) and Python tests (pytest/unittest, `test_*.py`) |
 | `docs/anticipation/` | Anticipation docs |
 
@@ -28,8 +28,9 @@ write docs or code comments that claim otherwise.
 - Rust **1.98.1** with rustfmt and clippy (`rust-toolchain.toml`, `rust-version`). It's pinned to the
   highest MSRV among the crates.io dependencies, so don't loosen it.
 - Feature `training` (off by default) pulls `plasticity-lab`.
-- Python **3.11** in CI. `tools/` uses the standard library only. The anticipation tests use the
-  hash-pinned `tools/anticipation/requirements-test.txt`.
+- Python **3.11** in CI. The top-level `tools/*.py` scripts use the standard library only;
+  `tools/anticipation/` does not, and its tests use the hash-pinned
+  `tools/anticipation/requirements-test.txt`.
 - Julia **1.12.7** for `tools/anticipation` (CI).
 - The Hermes tests need `bubblewrap` and `libseccomp2`. CI also sets
   `kernel.apparmor_restrict_unprivileged_userns=0` (Ubuntu).
