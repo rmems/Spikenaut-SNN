@@ -320,6 +320,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "neuromod"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24e8c6418345bd055f33bfb45d90cdb98f3caad2fd16c62b43fca6d91c1182d0"
+dependencies = [
+ "rand",
+ "serde",
+]
+
+[[package]]
 name = "nir-rs"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -356,7 +366,7 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "557c71ef72a6101f63ba7c1b845cc6b6ccdb5c2b8e1bc66149192d0eb4f6130d"
 dependencies = [
- "neuromod",
+ "neuromod 0.6.0",
  "rand",
  "serde",
  "thiserror 2.0.20",
@@ -507,7 +517,8 @@ dependencies = [
  "corpus-ipc",
  "kinetic-signals",
  "limbic-critic",
- "neuromod",
+ "neuromod 0.6.0",
+ "neuromod 0.7.0",
  "nir-rs",
  "plasticity-lab",
  "silicon-bridge",

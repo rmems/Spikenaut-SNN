@@ -36,29 +36,43 @@ fn a_subthreshold_step_leaks_without_firing() {
     assert!(cell.check_fire().is_none());
 }
 
-/// Acceptance from issue #5: `neuromod` resolves to 0.6.x from crates.io,
-/// not from a git or sibling-path pin. The `"0.6"` caret is
-/// `>=0.6.0, <0.7.0`; a later 0.6.x lockfile bump must still pass.
+/// Acceptance from issue #5: the direct `neuromod` dependency resolves to
+/// 0.7.x from crates.io, not from a git or sibling-path pin. The `"0.7"`
+/// caret is `>=0.7.0, <0.8.0`. `plasticity-lab` 0.2.1 still locks 0.6.0
+/// as a second registry copy; that pin is not this crate's host engine.
 #[test]
 fn neuromod_resolves_from_crates_io() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let lock = std::fs::read_to_string(root.join("Cargo.lock")).expect("read Cargo.lock");
 
-    let entry = lock
+    let entries: Vec<&str> = lock
         .split("[[package]]")
-        .find(|block| block.contains(r#"name = "neuromod""#))
-        .expect("Cargo.lock has a neuromod package entry");
+        .filter(|block| block.contains(r#"name = "neuromod""#))
+        .collect();
+    assert!(
+        !entries.is_empty(),
+        "Cargo.lock has at least one neuromod package entry"
+    );
 
+    let neuromod_07 = entries
+        .iter()
+        .copied()
+        .find(|block| block.contains(r#"version = "0.7.0""#))
+        .expect("Cargo.lock must lock neuromod 0.7.0");
     assert!(
-        entry.contains(r#"source = "registry+https://github.com/rust-lang/crates.io-index""#),
-        "neuromod must come from the crates.io registry, got:\n{entry}",
+        neuromod_07.contains(r#"source = "registry+https://github.com/rust-lang/crates.io-index""#),
+        "neuromod 0.7.0 must come from the crates.io registry, got:\n{neuromod_07}",
     );
-    // Same series check as axon-encoder's `"0.5"` caret: `version = "0.6.`
-    // matches 0.6.0 and 0.6.10, not 0.7.0.
+
+    let root_pkg = lock
+        .split("[[package]]")
+        .find(|block| block.contains(r#"name = "spikenaut-snn""#))
+        .expect("Cargo.lock has a spikenaut-snn package entry");
     assert!(
-        entry.contains(r#"version = "0.6."#),
-        "neuromod must resolve to 0.6.x (>=0.6, <0.7), got:\n{entry}",
+        root_pkg.contains("neuromod 0.7.0"),
+        "spikenaut-snn must depend on neuromod 0.7.0, got:\n{root_pkg}",
     );
+
     assert!(
         !lock.contains("source = \"git+") && !lock.contains("[[patch"),
         "every locked package must come from the registry",

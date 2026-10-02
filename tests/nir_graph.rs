@@ -700,12 +700,13 @@ fn nir_rs_resolves_from_crates_io() {
             "kinetic-signals",
             "limbic-critic",
             "neuromod",
+            "neuromod",
             "nir-rs",
             "plasticity-lab",
             "silicon-bridge",
             "synaptic-wiring",
         ],
-        "`[dependencies]` must declare the nine reviewed registry crates, found: {names:?}",
+        "`[dependencies]` must declare the reviewed registry crates, found: {names:?}",
     );
 
     let lock_path: PathBuf = root.join("Cargo.lock");
@@ -740,10 +741,10 @@ fn plasticity_training_remains_optional_and_off_by_default() {
         "the default feature set must stay empty",
     );
     assert!(
-        manifest
-            .lines()
-            .any(|line| line.trim() == "training = [\"dep:plasticity-lab\"]"),
-        "the training feature must enable plasticity-lab explicitly",
+        manifest.lines().any(|line| {
+            line.trim() == "training = [\"dep:plasticity-lab\", \"dep:neuromod06\"]"
+        }),
+        "the training feature must enable plasticity-lab and its neuromod 0.6 alias",
     );
     assert!(
         manifest.lines().any(|line| {
