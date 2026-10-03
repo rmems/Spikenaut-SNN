@@ -92,9 +92,12 @@ cargo fetch --locked
 # separately. Login shells get these directories from /etc/profile.d, and every other
 # shell finds the entry points through symlinks in /usr/local/bin (on the default PATH).
 # In login shells the venv's bin comes first, so python3 is the venv's Python.
-# Non-login shells do not read /etc/profile.d, so also link the venv's python,
-# python3, and console scripts. Skip pip and the activate helpers; ~/.local/bin
-# still skips uv's sourced env files.
+# Non-login shells do not read /etc/profile.d. A symlink to .venv/bin/python
+# does not work: CPython looks for pyvenv.cfg next to the executed path, so
+# /usr/local/bin/python would be the base interpreter. Wrappers exec the venv
+# path, which does see pyvenv.cfg. Console scripts are real files and can be
+# linked. Skip pip and the activate helpers; ~/.local/bin still skips uv's
+# sourced env files.
 repo_root="$(pwd)"
 tool_dirs=("$HOME/.cargo/bin" "$HOME/.juliaup/bin" "$repo_root/.venv/bin" "$HOME/.local/bin")
 # shellcheck disable=SC2016 # $PATH must expand when the profile is sourced, not now.
@@ -106,9 +109,20 @@ for dir in "${tool_dirs[@]}"; do
     name="${tool##*/}"
     case "$name" in
       # uv's installer also drops env/env.fish (sourced, not run) in ~/.local/bin.
-      # Link the venv interpreters (python, python3, python3.11); skip pip and
-      # the activate helpers, which are not the documented `python -m pytest` path.
+      # Skip pip and the activate helpers, which are not the documented
+      # `python -m pytest` path.
       pip* | activate* | deactivate | Activate.ps1 | env | env.fish) continue ;;
+      python*)
+        # Only the venv interpreters need a wrapper. A symlink loses pyvenv.cfg.
+        if [ "$dir" = "$repo_root/.venv/bin" ]; then
+          $SUDO tee "/usr/local/bin/$name" >/dev/null <<EOF
+#!/bin/sh
+exec $(printf '%q' "$tool") "\$@"
+EOF
+          $SUDO chmod 755 "/usr/local/bin/$name"
+        fi
+        continue
+        ;;
     esac
     if [ -f "$tool" ] && [ -x "$tool" ]; then
       $SUDO ln -sfn "$tool" "/usr/local/bin/$name"
