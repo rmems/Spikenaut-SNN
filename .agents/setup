@@ -52,9 +52,11 @@ fi
 # dies before Python or Julia. Skip that when rustfmt and clippy are installed.
 # --no-self-update covers the path that does install a missing component.
 rust_components="$(rustup component list --toolchain 1.98.1 --installed 2>/dev/null || true)"
-# Names are `rustfmt-<target>` and `clippy-<target>`, not `rustfmt-preview-*`.
-if printf '%s\n' "$rust_components" | grep -q '^rustfmt-[^-]*$' \
-  && printf '%s\n' "$rust_components" | grep -q '^clippy-[^-]*$'; then
+# `component list --installed` prints `rustfmt-<target>` and `clippy-<target>`,
+# for example `rustfmt-x86_64-unknown-linux-gnu`. Preview components are
+# `rustfmt-preview-*` and must not count.
+if printf '%s\n' "$rust_components" | grep -Eq '^rustfmt-[A-Za-z0-9_]+-[A-Za-z0-9_]+-[A-Za-z0-9_]+(-[A-Za-z0-9_]+)?$' \
+  && printf '%s\n' "$rust_components" | grep -Eq '^clippy-[A-Za-z0-9_]+-[A-Za-z0-9_]+-[A-Za-z0-9_]+(-[A-Za-z0-9_]+)?$'; then
   echo "Rust 1.98.1 with rustfmt and clippy is already installed; skipping channel sync."
 else
   rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy --no-self-update
