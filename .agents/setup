@@ -83,11 +83,10 @@ fi
 # channel, including ones that were never installed.
 juliaup add "$JULIA_CHANNEL"
 juliaup default "$JULIA_CHANNEL"
-julia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'
 
 # --- Expose the tools to later shells ---
-# Do this before cargo fetch. Amp continues after a failed or timed-out setup,
-# and the fetch is the step most likely to fail last.
+# Do this before Pkg.instantiate and cargo fetch. Amp continues after a failed
+# or timed-out setup, and those are the steps most likely to fail on the network.
 # The PATH exports above last only for this script; Amp starts the agent's shell
 # separately. Login shells get these directories from /etc/profile.d, and every other
 # shell finds the entry points through symlinks in /usr/local/bin (on the default PATH).
@@ -134,8 +133,11 @@ EOF
   done
 done
 
-# --- Prefetch crates (no build, no tests) ---
+# --- Prefetch packages (no build, no tests) ---
 # Last on purpose: a registry failure must not skip the PATH exposure above.
+# Project.toml pulls a Git dependency, so instantiate can fail the same way
+# cargo fetch can.
+julia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'
 cargo fetch --locked
 
 echo "Amp orb setup for Spikenaut-SNN finished."
