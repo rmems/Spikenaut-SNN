@@ -55,6 +55,12 @@ export PATH="$HOME/.local/bin:$PATH"
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
+# .venv/ is not in .gitignore. Exclude it before creating it so a later
+# installer failure still leaves `git status` clean (Amp continues after a
+# failed or timed-out setup).
+exclude_file="$(git rev-parse --git-path info/exclude)"
+mkdir -p "$(dirname "$exclude_file")"
+grep -qxF '/.venv/' "$exclude_file" 2>/dev/null || echo '/.venv/' >>"$exclude_file"
 # ci.yml Python jobs use 3.11. An executable .venv from another interpreter
 # (the base image ships 3.14) must be recreated, not reused.
 uv python install 3.11
@@ -71,9 +77,10 @@ export PATH="$HOME/.juliaup/bin:$PATH"
 if ! command -v juliaup >/dev/null 2>&1; then
   curl -fsSL https://install.julialang.org | sh -s -- --yes --default-channel "$JULIA_CHANNEL"
 fi
-if ! juliaup list 2>/dev/null | grep -qF "$JULIA_CHANNEL"; then
-  juliaup add "$JULIA_CHANNEL"
-fi
+# `juliaup add` is idempotent: an installed channel prints "already installed"
+# and exits 0. `juliaup list` cannot gate this — it prints every available
+# channel, including ones that were never installed.
+juliaup add "$JULIA_CHANNEL"
 juliaup default "$JULIA_CHANNEL"
 julia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'
 
@@ -85,7 +92,9 @@ cargo fetch --locked
 # separately. Login shells get these directories from /etc/profile.d, and every other
 # shell finds the entry points through symlinks in /usr/local/bin (on the default PATH).
 # In login shells the venv's bin comes first, so python3 is the venv's Python.
-# The links skip python and pip so the system python3 stays the default elsewhere.
+# Non-login shells do not read /etc/profile.d, so also link the venv's python,
+# python3, and console scripts. Skip pip and the activate helpers; ~/.local/bin
+# still skips uv's sourced env files.
 repo_root="$(pwd)"
 tool_dirs=("$HOME/.cargo/bin" "$HOME/.juliaup/bin" "$repo_root/.venv/bin" "$HOME/.local/bin")
 # shellcheck disable=SC2016 # $PATH must expand when the profile is sourced, not now.
@@ -97,17 +106,14 @@ for dir in "${tool_dirs[@]}"; do
     name="${tool##*/}"
     case "$name" in
       # uv's installer also drops env/env.fish (sourced, not run) in ~/.local/bin.
-      python* | pip* | activate* | deactivate | Activate.ps1 | env | env.fish) continue ;;
+      # Link the venv interpreters (python, python3, python3.11); skip pip and
+      # the activate helpers, which are not the documented `python -m pytest` path.
+      pip* | activate* | deactivate | Activate.ps1 | env | env.fish) continue ;;
     esac
     if [ -f "$tool" ] && [ -x "$tool" ]; then
       $SUDO ln -sfn "$tool" "/usr/local/bin/$name"
     fi
   done
 done
-
-# .venv/ is not in .gitignore here, so keep it out of `git status` in the orb.
-exclude_file="$(git rev-parse --git-path info/exclude)"
-mkdir -p "$(dirname "$exclude_file")"
-grep -qxF '/.venv/' "$exclude_file" 2>/dev/null || echo '/.venv/' >>"$exclude_file"
 
 echo "Amp orb setup for Spikenaut-SNN finished."
