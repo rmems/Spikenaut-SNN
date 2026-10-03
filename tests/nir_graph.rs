@@ -699,13 +699,15 @@ fn nir_rs_resolves_from_crates_io() {
             "corpus-ipc",
             "kinetic-signals",
             "limbic-critic",
+            "myelin-accelerator",
+            "neuromod",
             "neuromod",
             "nir-rs",
             "plasticity-lab",
             "silicon-bridge",
             "synaptic-wiring",
         ],
-        "`[dependencies]` must declare the nine reviewed registry crates, found: {names:?}",
+        "`[dependencies]` must declare the reviewed registry crates, found: {names:?}",
     );
 
     let lock_path: PathBuf = root.join("Cargo.lock");
@@ -740,16 +742,51 @@ fn plasticity_training_remains_optional_and_off_by_default() {
         "the default feature set must stay empty",
     );
     assert!(
-        manifest
-            .lines()
-            .any(|line| line.trim() == "training = [\"dep:plasticity-lab\"]"),
-        "the training feature must enable plasticity-lab explicitly",
+        manifest.lines().any(|line| {
+            line.trim() == "training = [\"dep:plasticity-lab\", \"dep:neuromod06\"]"
+        }),
+        "the training feature must enable plasticity-lab and its neuromod 0.6 alias",
     );
     assert!(
         manifest.lines().any(|line| {
             line.trim() == "plasticity-lab = { version = \"0.2.1\", optional = true }"
         }),
         "plasticity-lab must remain an optional 0.2.1 dependency",
+    );
+}
+
+/// The Myelin consumer is intentionally opt-in with a CPU/CUDA split.
+/// `myelin` enables the CPU-safe stub; `myelin-cuda` forwards to the
+/// published `cuda` feature. Neither may be on by default, and the
+/// dependency must stay optional and CUDA-free unless asked.
+#[test]
+fn myelin_features_remain_optional_and_off_by_default() {
+    let manifest =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+            .expect("read Cargo.toml");
+
+    assert!(
+        manifest.lines().any(|line| line.trim() == "default = []"),
+        "the default feature set must stay empty",
+    );
+    assert!(
+        manifest
+            .lines()
+            .any(|line| line.trim() == "myelin = [\"dep:myelin-accelerator\"]"),
+        "the myelin feature must enable only the optional dependency",
+    );
+    assert!(
+        manifest.lines().any(|line| {
+            line.trim() == "myelin-cuda = [\"myelin\", \"myelin-accelerator/cuda\"]"
+        }),
+        "myelin-cuda must enable myelin plus the published cuda feature",
+    );
+    assert!(
+        manifest.lines().any(|line| {
+            line.trim()
+                == "myelin-accelerator = { version = \"=0.2.0\", default-features = false, optional = true }"
+        }),
+        "myelin-accelerator must remain an optional pinned =0.2.0 dependency",
     );
 }
 

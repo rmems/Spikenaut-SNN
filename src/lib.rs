@@ -36,10 +36,13 @@
 //! [`CHANNEL_MAP`]: encode::CHANNEL_MAP
 //! [`LIVE_COLUMNS`]: encode::LIVE_COLUMNS
 //!
-//! Its nine direct dependencies are deliberate: [`nir_rs`],
-//! [`axon_encoder`], [`kinetic_signals`], [`neuromod`], `limbic-critic`,
-//! `synaptic-wiring`, `corpus-ipc`, `silicon-bridge`, and the optional
-//! `plasticity-lab`, all from crates.io.
+//! Its direct dependencies are deliberate: [`nir_rs`],
+//! [`axon_encoder`], [`kinetic_signals`], [`neuromod`] (0.7 host engine, plus
+//! an optional crates.io 0.6 alias for the trainer), `limbic-critic`,
+//! `synaptic-wiring`, `corpus-ipc`, `silicon-bridge`, the optional
+//! `plasticity-lab`, and the optional `myelin-accelerator` 0.2.0 consumer
+//! (`myelin` for the CPU-safe stub, `myelin-cuda` for real launches), all
+//! from crates.io.
 //! The bound is the claim, not the number: `tests/nir_graph.rs` asserts the
 //! manifest's exact *runtime* dependency set, so adopting a crate this library
 //! links against fails that test until the adoption is deliberate. Dev- and
@@ -55,11 +58,12 @@
 //! the RAW / KINETIC / HYBRID ablation, which stays open.
 //!
 //! [`neuromod_host`] preserves the thin `LifNeuron` adapter and adds parallel
-//! `neuromod` 0.6 experiments: a caller-seeded non-negative R-STDP network and
+//! `neuromod` 0.7 experiments: a caller-seeded non-negative R-STDP network and
 //! a sparse GIF layer. [`critic`] supplies checked TD modulators, [`wiring`]
 //! supplies a deterministic 12:4 Dale recurrent proposal, and [`ipc`] builds
 //! validated versioned messages without transport. With the `training` feature,
-//! `training` runs `plasticity-lab` only over that synthetic network. None of
+//! `training` runs `plasticity-lab` 0.2.1 over a same-shape neuromod 0.6
+//! bank — that trainer cannot wrap the 0.7 [`HostNetwork`] engine. None of
 //! these paths executes or rewrites the shipped signed bank, Distill, or FPGA
 //! artifacts. [`silicon`] is the distinct deployment boundary: it runs the
 //! shipped bank through `silicon-bridge`'s checked signed Q8.8 path and adapts
@@ -151,6 +155,8 @@ pub mod json;
 pub mod kinetic;
 pub mod mem;
 pub mod model;
+#[cfg(feature = "myelin")]
+pub mod myelin;
 pub mod neuromod_host;
 pub mod silicon;
 pub mod stim;
