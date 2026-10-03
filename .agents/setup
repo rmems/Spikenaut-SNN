@@ -55,9 +55,11 @@ export PATH="$HOME/.local/bin:$PATH"
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
-# ci.yml Python jobs use 3.11.
+# ci.yml Python jobs use 3.11. An executable .venv from another interpreter
+# (the base image ships 3.14) must be recreated, not reused.
 uv python install 3.11
-if [ ! -x .venv/bin/python ]; then
+if ! .venv/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)' 2>/dev/null; then
+  rm -rf .venv
   uv venv --python 3.11 .venv
 fi
 uv pip install --python .venv/bin/python --require-hashes --only-binary=:all: -r tools/anticipation/requirements-test.txt
@@ -69,7 +71,7 @@ export PATH="$HOME/.juliaup/bin:$PATH"
 if ! command -v juliaup >/dev/null 2>&1; then
   curl -fsSL https://install.julialang.org | sh -s -- --yes --default-channel "$JULIA_CHANNEL"
 fi
-if ! juliaup status | awk -v ch="$JULIA_CHANNEL" '{for (i = 1; i <= NF; i++) if ($i == ch) found = 1} END {exit !found}'; then
+if ! juliaup list 2>/dev/null | grep -qF "$JULIA_CHANNEL"; then
   juliaup add "$JULIA_CHANNEL"
 fi
 juliaup default "$JULIA_CHANNEL"
