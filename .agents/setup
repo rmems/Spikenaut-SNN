@@ -68,7 +68,8 @@ if ! .venv/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info[:2]
   rm -rf .venv
   uv venv --python 3.11 .venv
 fi
-uv pip install --python .venv/bin/python --require-hashes --only-binary=:all: -r tools/anticipation/requirements-test.txt
+# sync, not install: install keeps packages the requirements file no longer lists.
+uv pip sync --python .venv/bin/python --require-hashes --only-binary=:all: tools/anticipation/requirements-test.txt
 
 # --- Julia (juliaup) ---
 # ci.yml anticipation job pins Julia 1.12.7.
@@ -84,10 +85,9 @@ juliaup add "$JULIA_CHANNEL"
 juliaup default "$JULIA_CHANNEL"
 julia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'
 
-# --- Prefetch crates (no build, no tests) ---
-cargo fetch --locked
-
 # --- Expose the tools to later shells ---
+# Do this before cargo fetch. Amp continues after a failed or timed-out setup,
+# and the fetch is the step most likely to fail last.
 # The PATH exports above last only for this script; Amp starts the agent's shell
 # separately. Login shells get these directories from /etc/profile.d, and every other
 # shell finds the entry points through symlinks in /usr/local/bin (on the default PATH).
@@ -115,6 +115,10 @@ for dir in "${tool_dirs[@]}"; do
       python*)
         # Only the venv interpreters need a wrapper. A symlink loses pyvenv.cfg.
         if [ "$dir" = "$repo_root/.venv/bin" ]; then
+          # tee follows an existing symlink. On a rerun, /usr/local/bin/python
+          # may already point at the base interpreter; writing through it would
+          # replace that binary. Unlink first, then write the wrapper.
+          $SUDO rm -f "/usr/local/bin/$name"
           $SUDO tee "/usr/local/bin/$name" >/dev/null <<EOF
 #!/bin/sh
 exec $(printf '%q' "$tool") "\$@"
@@ -129,5 +133,9 @@ EOF
     fi
   done
 done
+
+# --- Prefetch crates (no build, no tests) ---
+# Last on purpose: a registry failure must not skip the PATH exposure above.
+cargo fetch --locked
 
 echo "Amp orb setup for Spikenaut-SNN finished."
