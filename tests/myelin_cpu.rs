@@ -257,17 +257,30 @@ fn weighted_lif_oracle_16x16_trace_matches_documented_dynamics() {
     let mut rng = CaseRng::new(516_016);
     let weights: Vec<f32> = (0..N * N).map(|_| rng.next_unit_f32()).collect();
     let inputs: Vec<f32> = (0..N).map(|_| rng.next_unit_f32()).collect();
-    let run = || {
-        let mut membrane = vec![0.0f32; N];
-        let mut refract = vec![0u32; N];
-        let mut trace = Vec::with_capacity(8 * N);
-        for _ in 0..8 {
-            let spikes =
-                lif_step_weighted_oracle(&mut membrane, &weights, &inputs, &mut refract, N);
-            trace.extend_from_slice(&spikes);
-            trace.extend(membrane.iter().map(|v| v.to_bits()));
-        }
-        (trace, refract)
-    };
-    assert_eq!(run(), run(), "seeded 16×16 trace must replay exactly");
+    assert_eq!(
+        run_weighted_trace(&weights, &inputs, N, 8),
+        run_weighted_trace(&weights, &inputs, N, 8),
+        "seeded 16×16 trace must replay exactly"
+    );
+}
+
+/// One weighted-LIF oracle trace: per-tick spike flags plus membrane bits,
+/// with the final refractory state. Bit-exact, so any device divergence in
+/// the future diff lands on the device, not on this trace.
+fn run_weighted_trace(
+    weights: &[f32],
+    inputs: &[f32],
+    neurons: usize,
+    ticks: usize,
+) -> (Vec<u32>, Vec<u32>) {
+    let mut membrane = vec![0.0f32; neurons];
+    let mut refract = vec![0u32; neurons];
+    let mut trace = Vec::with_capacity(ticks * 2 * neurons);
+    for _ in 0..ticks {
+        let spikes =
+            lif_step_weighted_oracle(&mut membrane, weights, inputs, &mut refract, neurons);
+        trace.extend_from_slice(&spikes);
+        trace.extend(membrane.iter().map(|v| v.to_bits()));
+    }
+    (trace, refract)
 }

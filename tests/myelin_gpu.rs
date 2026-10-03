@@ -21,6 +21,9 @@ use myelin_accelerator::oracle::{
 use myelin_accelerator::{GpuAccelerator, GpuBuffer};
 use spikenaut_snn::myelin::cuda::require_gpu_accelerator;
 
+/// Fixed fixture seed for the 16x16 GEMV case (replayable from logs).
+const GEMV_SEED: u64 = 2026_1002;
+
 fn gpu() -> GpuAccelerator {
     require_gpu_accelerator().expect("GPU required: no CPU fallback counts as a CUDA pass")
 }
@@ -107,71 +110,98 @@ fn gpu_stdp_advances_weights_and_traces_per_published_expectations() {
     // traces, pre = post = [1, 0], dt = 20 ms, so decay = exp(-1).
     // Tolerance 1e-5 absorbs device `__expf` vs host `exp`.
     let accelerator = gpu();
-    let run_once = |accelerator: &GpuAccelerator| {
-        let mut weights = GpuBuffer::from_slice(&[1.0f32; 4]).expect("weights");
-        let pre = GpuBuffer::from_slice(&[1.0f32, 0.0]).expect("pre spikes");
-        let post = GpuBuffer::from_slice(&[1.0f32, 0.0]).expect("post spikes");
-        let mut pre_traces = GpuBuffer::from_slice(&[1.0f32; 2]).expect("pre traces");
-        let mut post_traces = GpuBuffer::from_slice(&[1.0f32; 2]).expect("post traces");
-        accelerator
-            .stdp_update(
-                &mut weights,
-                &pre,
-                &post,
-                &mut pre_traces,
-                &mut post_traces,
-                2,
-                2,
-                20.0,
-            )
-            .expect("stdp_update");
-        (
-            weights.to_vec().expect("read weights"),
-            pre_traces.to_vec().expect("read pre traces"),
-            post_traces.to_vec().expect("read post traces"),
-        )
-    };
-    let (weights, pre_traces, post_traces) = run_once(&accelerator);
+    let (weights, pre_traces, post_traces) = run_stdp_2x2(&accelerator);
     let decay = (-1.0f32).exp();
-    let expected_traces = [1.0 + decay, decay];
-    for (i, (&got, &expected)) in pre_traces.iter().zip(&expected_traces).enumerate() {
-        assert!(
-            (got - expected).abs() < 1e-5,
-            "pre_traces[{i}]: got {got}, expected {expected}"
-        );
-    }
-    for (i, (&got, &expected)) in post_traces.iter().zip(&expected_traces).enumerate() {
-        assert!(
-            (got - expected).abs() < 1e-5,
-            "post_traces[{i}]: got {got}, expected {expected}"
-        );
-    }
+    assert_close(&pre_traces, &[1.0 + decay, decay], "pre_traces");
+    assert_close(&post_traces, &[1.0 + decay, decay], "post_traces");
     // Row-major [post][pre]: w[0] sees LTP+LTD, w[1] LTP only, w[2] LTD
     // only, w[3] neither.
-    let expected_weights = [
-        1.0 + 0.01 * (1.0 + decay) - 0.012 * (1.0 + decay),
-        1.0 + 0.01 * decay,
-        1.0 - 0.012 * decay,
-        1.0,
-    ];
-    for (i, (&got, &expected)) in weights.iter().zip(&expected_weights).enumerate() {
+    assert_close(
+        &weights,
+        &[
+            1.0 + 0.01 * (1.0 + decay) - 0.012 * (1.0 + decay),
+            1.0 + 0.01 * decay,
+            1.0 - 0.012 * decay,
+            1.0,
+        ],
+        "weights",
+    );
+    // Separate identical fixture state repeats device output exactly.
+    let replay = run_stdp_2x2(&accelerator);
+    assert_eq!(
+        (weights, pre_traces, post_traces),
+        replay,
+        "identical fixture state must replay exactly"
+    );
+}
+
+/// One 2x2 STDP launch; returns `(weights, pre_traces, post_traces)`.
+fn run_stdp_2x2(accelerator: &GpuAccelerator) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let mut weights = GpuBuffer::from_slice(&[1.0f32; 4]).expect("weights");
+    let pre = GpuBuffer::from_slice(&[1.0f32, 0.0]).expect("pre spikes");
+    let post = GpuBuffer::from_slice(&[1.0f32, 0.0]).expect("post spikes");
+    let mut pre_traces = GpuBuffer::from_slice(&[1.0f32; 2]).expect("pre traces");
+    let mut post_traces = GpuBuffer::from_slice(&[1.0f32; 2]).expect("post traces");
+    accelerator
+        .stdp_update(
+            &mut weights,
+            &pre,
+            &post,
+            &mut pre_traces,
+            &mut post_traces,
+            2,
+            2,
+            20.0,
+        )
+        .expect("stdp_update");
+    (
+        weights.to_vec().expect("read weights"),
+        pre_traces.to_vec().expect("read pre traces"),
+        post_traces.to_vec().expect("read post traces"),
+    )
+}
+
+/// Element-wise closeness with per-index diagnostics.
+fn assert_close(got: &[f32], expected: &[f32], what: &str) {
+    assert_eq!(got.len(), expected.len(), "{what}: length mismatch");
+    for (i, (&got, &expected)) in got.iter().zip(expected).enumerate() {
         assert!(
             (got - expected).abs() < 1e-5,
-            "weights[{i}]: got {got}, expected {expected}"
+            "{what}[{i}]: got {got}, expected {expected}"
         );
     }
-    // Separate identical fixture state repeats device output exactly.
-    let (weights2, pre2, post2) = run_once(&accelerator);
-    assert_eq!((weights, pre_traces, post_traces), (weights2, pre2, post2));
 }
 
 #[test]
 #[ignore = "requires CUDA device (sm_120); run with --ignored"]
 fn gpu_ternary_gemv_matches_oracle_on_seeded_16x16() {
     let accelerator = gpu();
+    let (got, expected) = run_gemv_16x16(&accelerator);
+    assert_f32(
+        &got,
+        &expected,
+        TERNARY_ABS_TOL,
+        TERNARY_REL_TOL,
+        GEMV_SEED,
+        "ternary_gemv 16x16",
+    );
+
+    let packed = GpuBuffer::from_slice(&[0u32]).expect("upload packed");
+    let scales = GpuBuffer::from_slice(&[0.5f32]).expect("upload scales");
+    let x = GpuBuffer::from_slice(&[0.0f32]).expect("upload x");
+    let mut y = GpuBuffer::<f32>::alloc(1).expect("alloc y");
+    assert!(
+        accelerator
+            .ternary_gemv(&packed, &scales, &x, &mut y, -1, 1, 1, false)
+            .is_err(),
+        "negative m must be rejected"
+    );
+}
+
+/// Seeded 16x16 GEMV launch; returns `(device, oracle)`.
+fn run_gemv_16x16(accelerator: &GpuAccelerator) -> (Vec<f32>, Vec<f32>) {
     let (m, k, group_size) = (16usize, 16usize, 8usize);
-    let seed = 2026_1002u64;
-    let mut rng = CaseRng::new(seed);
+    let mut rng = CaseRng::new(GEMV_SEED);
     let trits: Vec<i8> = (0..m * k).map(|_| rng.next_trit()).collect();
     let packed = pack_ternary_matrix(&trits, m, k);
     let scales = uniform_group_scales(m, k, group_size, 0.5);
@@ -194,32 +224,7 @@ fn gpu_ternary_gemv_matches_oracle_on_seeded_16x16() {
             false,
         )
         .expect("ternary_gemv");
-    let got = d_y.to_vec().expect("read y");
-    assert_f32(
-        &got,
-        &expected,
-        TERNARY_ABS_TOL,
-        TERNARY_REL_TOL,
-        seed,
-        "ternary_gemv 16x16",
-    );
-
-    let mut d_y = GpuBuffer::<f32>::alloc(m).expect("alloc y");
-    assert!(
-        accelerator
-            .ternary_gemv(
-                &d_packed,
-                &d_scales,
-                &d_x,
-                &mut d_y,
-                -1,
-                k as i32,
-                group_size as i32,
-                false
-            )
-            .is_err(),
-        "negative m must be rejected"
-    );
+    (d_y.to_vec().expect("read y"), expected)
 }
 
 #[test]
