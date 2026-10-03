@@ -89,7 +89,10 @@ fn adapter_lif_constants_match_the_published_oracle() {
     assert_eq!(MYELIN_LIF_REFRACT_TICKS, 2);
 }
 
+/// CPU-backend reporting. Gated out of `myelin-cuda` builds: with a usable
+/// GPU, `new()` selects CUDA and there is no fallback to report.
 #[test]
+#[cfg(not(feature = "myelin-cuda"))]
 fn cpu_accelerator_reports_its_fallback_and_fails_closed() {
     let accelerator = GpuAccelerator::new();
     let fallback = accelerator
@@ -114,7 +117,11 @@ fn cpu_accelerator_reports_its_fallback_and_fails_closed() {
     );
 }
 
+/// Launches fail closed without CUDA. Gated out of `myelin-cuda` builds:
+/// with a usable GPU these launches succeed instead of returning
+/// `Unavailable`.
 #[test]
+#[cfg(not(feature = "myelin-cuda"))]
 fn cpu_launches_are_not_cpu_implementations() {
     let accelerator = GpuAccelerator::new();
     let stimuli = GpuBuffer::<f32>::from_slice(&[0.5, 0.5]).expect("host buffer");

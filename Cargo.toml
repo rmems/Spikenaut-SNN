@@ -77,3 +77,8 @@ synaptic-wiring = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
+
+[[example]]
+name = "myelin_timing"
+path = "examples/myelin_timing.rs"
+required-features = ["myelin-cuda"]

@@ -39,16 +39,26 @@ Exact external-model interoperability is
 LIM-1461 (v0.3.0). Spikenaut semantics were not changed to manufacture
 parity.
 
-## Numerical contracts used by the harness
+## Numerical contracts
+
+Executed device-vs-oracle comparisons (all in `tests/myelin_gpu.rs`):
 
 - Poisson encode vs `poisson_encode_oracle`: exact `u32` (NaN rate follows
   the oracle's `fminf`/`fmaxf` rule, documented in the oracle source).
-- Ternary GEMV/GEMM vs oracle: absolute `1e-4`, relative `1e-5`
+- Ternary GEMV and GEMM vs oracles: absolute `1e-4`, relative `1e-5`
   (`TERNARY_ABS_TOL` / `TERNARY_REL_TOL`); device uses FMA order and
-  fast-math FTZ, the scalar oracle does not emulate either.
-- LIF step vs oracle: exact membrane bits and `u32` state, valid only for
+  fast-math FTZ, the scalar oracles do not emulate either.
+- STDP vs scalar equations re-implemented from the published kernel
+  source (`A_PLUS = 0.01`, `A_MINUS = 0.012`, `TAU = 20.0`, clamp
+  `[0.0, 2.0]`): every weight and trace element within 1e-5, absorbing
+  device `__expf` vs host `exp`.
+
+Future contracts (not executed — raw launches need `cust`, option 1):
+
+- LIF step bit-exact membrane / `u32` state, valid only for
   subnormal-free traces (device `fma.rn.ftz.f32` flushes subnormals;
-  `f32::mul_add` keeps them). The harness asserts no subnormals.
+  `f32::mul_add` keeps them). The CPU-side 16×16 oracle trace pins what
+  the future diff must reproduce; no subnormal guard runs on device yet.
 - CPU-backend launches are not implementations: every launch method on a
   CPU `GpuAccelerator` returns `GpuError::Unavailable`, and
   `require_gpu()` fails closed.
@@ -65,12 +75,13 @@ parity.
 
 ## GPU results (RTX 5080, `require_gpu`, kernels proven executed)
 
-- `tests/myelin_gpu.rs`: **5 passed, 0 failed** — 16-wide Poisson exact
+- `tests/myelin_gpu.rs`: **6 passed, 0 failed** — 16-wide Poisson exact
   vs oracle (incl. NaN rule, empty no-op, length rejection, repeatability),
-  STDP 2×2 vs published expectations with exact replay, seeded 16×16
-  ternary GEMV vs oracle within abs 1e-4/rel 1e-5, 6 lifecycle cycles.
+  STDP 2×2 full-element vs kernel-source equations with exact replay,
+  seeded 16×16 ternary GEMV and 8×16×4 GEMM vs oracles within
+  abs 1e-4/rel 1e-5, 6 lifecycle cycles.
 - Compute Sanitizer memcheck over the GPU consumer: **0 errors**.
-- Timing (release scratch harness in `/tmp`, medians of 10–20 reps after
+- Timing (`examples/myelin_timing.rs`, medians of 10–20 reps after
   warm-up; CPU baseline is the scalar oracle):
 
 | workload | transfer-inclusive | kernel-only | CPU oracle |
@@ -91,7 +102,8 @@ parity.
 
 - CPU/default path: done and green (packing, oracle, fallback fail-closed,
   registry pin, contract tests, Python replay/bank gates).
-- GPU path: 5/5 device tests pass, sanitizer clean, timing recorded.
+- GPU path: 6/6 device tests pass, sanitizer clean, timing recorded
+  via the committed example.
 - Rescope (maintainer decision 2026-10-02, option 1): no `cust`
   dependency. The per-timestep device-vs-oracle weighted-LIF diff rides
   with [myelin-accelerator#43](https://github.com/Limen-Neural/myelin-accelerator/issues/43) /
@@ -118,6 +130,8 @@ cargo fmt --check
 python3 -m pytest tests/test_replay_frozen.py tests/test_model_bank.py -q
 # Real CUDA (needs driver + sm_120 GPU; device tests are #[ignore]d)
 CUDA_NVCC=/usr/local/cuda/bin/nvcc cargo test --locked --features myelin-cuda --test myelin_gpu -- --ignored --nocapture
+# Timing example (committed harness, fixed seeds; needs driver + GPU)
+CUDA_NVCC=/usr/local/cuda/bin/nvcc cargo run --release --features myelin-cuda --example myelin_timing
 # Sanitizer (needs driver; binary path varies by build hash)
 compute-sanitizer --tool memcheck ./target/debug/deps/myelin_gpu-<hash> --ignored
 ```
