@@ -11,22 +11,57 @@
 use myelin_accelerator::bitpacking::{pack_ternary_matrix, uniform_group_scales};
 use myelin_accelerator::oracle::{CaseRng, poisson_encode_oracle, ternary_gemv_oracle};
 use myelin_accelerator::{GpuAccelerator, GpuBuffer};
+use std::hint::black_box;
 use std::time::Instant;
+
+const GROUP: usize = 8;
 
 fn median(mut samples: Vec<f64>) -> f64 {
     samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
     samples[samples.len() / 2]
 }
 
-/// One timed closure, repeated `reps` times; returns microseconds per rep.
-fn time_reps(reps: usize, mut work: impl FnMut()) -> Vec<f64> {
-    let mut samples = Vec::with_capacity(reps);
-    for _ in 0..reps {
-        let started = Instant::now();
-        work();
-        samples.push(started.elapsed().as_secs_f64() * 1e6);
+/// Time one closure call in microseconds.
+fn time_once(work: &mut dyn FnMut()) -> f64 {
+    let started = Instant::now();
+    work();
+    started.elapsed().as_secs_f64() * 1e6
+}
+
+/// Run the three workloads per rep in rep-rotated order so clock drift
+/// spreads across all of them instead of biasing one comparison side.
+#[allow(clippy::too_many_arguments)]
+fn time_round(
+    reps: usize,
+    incl: &mut dyn FnMut(),
+    kern: &mut dyn FnMut(),
+    cpu: &mut dyn FnMut(),
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let (mut incl_t, mut kern_t, mut cpu_t) = (
+        Vec::with_capacity(reps),
+        Vec::with_capacity(reps),
+        Vec::with_capacity(reps),
+    );
+    for rep in 0..reps {
+        match rep % 3 {
+            0 => {
+                incl_t.push(time_once(incl));
+                kern_t.push(time_once(kern));
+                cpu_t.push(time_once(cpu));
+            }
+            1 => {
+                kern_t.push(time_once(kern));
+                cpu_t.push(time_once(cpu));
+                incl_t.push(time_once(incl));
+            }
+            _ => {
+                cpu_t.push(time_once(cpu));
+                incl_t.push(time_once(incl));
+                kern_t.push(time_once(kern));
+            }
+        }
     }
-    samples
+    (incl_t, kern_t, cpu_t)
 }
 
 fn report(kind: &str, label: &str, incl: Vec<f64>, kern: Vec<f64>, cpu: Vec<f64>) {
@@ -44,20 +79,26 @@ fn time_poisson(accelerator: &GpuAccelerator, label: &str, n: usize) {
     for _ in 0..5 {
         launch_poisson_once(accelerator, &stimuli);
     }
-    let incl = time_reps(20, || {
-        let _ = launch_poisson_once(accelerator, &stimuli);
-    });
     let resident = GpuBuffer::from_slice(&stimuli).unwrap();
     let mut spikes = GpuBuffer::<u32>::alloc(n).unwrap();
-    let kern = time_reps(20, || {
-        accelerator
-            .poisson_encode_async(&resident, &mut spikes, 1)
-            .unwrap();
-        accelerator.synchronize().unwrap();
-    });
-    let cpu = time_reps(20, || {
-        let _ = poisson_encode_oracle(&stimuli, 1);
-    });
+    // `black_box` on the oracle output: without an observable use, release
+    // optimization could discard the very work being timed. GPU launches
+    // are driver side effects and need no such guard.
+    let (incl, kern, cpu) = time_round(
+        20,
+        &mut || {
+            let _ = launch_poisson_once(accelerator, &stimuli);
+        },
+        &mut || {
+            accelerator
+                .poisson_encode_async(&resident, &mut spikes, 1)
+                .unwrap();
+            accelerator.synchronize().unwrap();
+        },
+        &mut || {
+            black_box(poisson_encode_oracle(&stimuli, 1));
+        },
+    );
     report("poisson", label, incl, kern, cpu);
 }
 
@@ -71,8 +112,6 @@ fn launch_poisson_once(accelerator: &GpuAccelerator, stimuli: &[f32]) -> Vec<u32
     spikes.to_vec().unwrap()
 }
 
-const GROUP: usize = 8;
-
 fn time_gemv(accelerator: &GpuAccelerator, label: &str, m: usize, k: usize) {
     let mut rng = CaseRng::new(20_261_002);
     let trits: Vec<i8> = (0..m * k).map(|_| rng.next_trit()).collect();
@@ -83,27 +122,32 @@ fn time_gemv(accelerator: &GpuAccelerator, label: &str, m: usize, k: usize) {
         launch_gemv_once(accelerator, &packed, &scales, &x, m, k);
     }
     let reps = if m > 16 { 10 } else { 20 };
-    let incl = time_reps(reps, || {
-        launch_gemv_once(accelerator, &packed, &scales, &x, m, k);
-    });
     let resident_packed = GpuBuffer::from_slice(&packed).unwrap();
     let resident_scales = GpuBuffer::from_slice(&scales).unwrap();
     let resident_x = GpuBuffer::from_slice(&x).unwrap();
     let mut y = GpuBuffer::<f32>::alloc(m).unwrap();
-    let kern = time_reps(reps, || {
-        launch_gemv_async(
-            accelerator,
-            &resident_packed,
-            &resident_scales,
-            &resident_x,
-            &mut y,
-            m,
-            k,
-        );
-    });
-    let cpu = time_reps(reps, || {
-        let _ = ternary_gemv_oracle(&packed, &scales, &x, m, k, GROUP, false);
-    });
+    let (incl, kern, cpu) = time_round(
+        reps,
+        &mut || {
+            launch_gemv_once(accelerator, &packed, &scales, &x, m, k);
+        },
+        &mut || {
+            launch_gemv_async(
+                accelerator,
+                &resident_packed,
+                &resident_scales,
+                &resident_x,
+                &mut y,
+                m,
+                k,
+            );
+        },
+        &mut || {
+            black_box(ternary_gemv_oracle(
+                &packed, &scales, &x, m, k, GROUP, false,
+            ));
+        },
+    );
     report("gemv", label, incl, kern, cpu);
 }
 
