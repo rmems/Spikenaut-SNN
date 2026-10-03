@@ -2,8 +2,8 @@
 //! `docs/MYELIN_COMPATIBILITY.md` (issue #73).
 //!
 //! Requires a real CUDA device: run with
-//! `CUDA_NVCC=<nvcc> cargo run --release --example myelin_timing` on a
-//! provisioned sm_120 runner. Reports medians after warm-up for
+//! `CUDA_NVCC=<nvcc> cargo run --release --features myelin-cuda --example myelin_timing`
+//! on a provisioned sm_120 runner. Reports medians after warm-up for
 //! transfer-inclusive vs kernel-only vs CPU-oracle latency on small and
 //! batched Poisson and ternary-GEMV workloads. Fixture seeds are fixed
 //! (`10_731`, `20_261_002`) so a rerun reproduces the same inputs.
