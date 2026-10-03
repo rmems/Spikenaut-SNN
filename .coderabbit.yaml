@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit review config for rmems/Spikenaut-SNN.
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  fail_commit_status: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - '!**/target/**'
+  path_instructions:
+    - path: '{src,tests}/**/*.rs'
+      instructions: 'Rust edition 2024; `rust-version = "1.98.1"`; `rust-toolchain.toml` pins 1.98.1. Do not suggest downgrading the edition or using std/language APIs newer than the pinned toolchain/MSRV. CI gate: `cargo clippy --locked --all-targets --all-features -- -D warnings`, `cargo test --locked [--all-features]`, `cargo check --locked --no-default-features`, `cargo doc --locked --no-deps --all-features`. Flag anything that would fail `cargo fmt --check` or clippy `-D warnings`. The `training` feature is optional: code must build with `--no-default-features`.'
+    - path: '**/Cargo.toml'
+      instructions: Cargo manifest. Call out new dependencies and feature changes, and keep `rust-version` / `edition` consistent with CI.
+    - path: tools/*.py
+      instructions: 'Standard-library verifier tools must remain parseable by Python 3.8; CI runs pinned Python 3.11 for reproducibility. CI gate: `python3 tools/verify_q88.py` and the standard-library verifier and unittest commands in `.github/workflows/ci.yml`. Do not add third-party dependencies.'
+    - path: tools/anticipation/**/*.py
+      instructions: 'Python 3.11. CI installs `tools/anticipation/requirements-test.txt` with `--require-hashes` and runs the anticipation pytest suite. Do not add unpinned dependencies.'
+    - path: tools/anticipation/**/*.jl
+      instructions: Julia package code. `[compat] julia = "1.10"`; CI runs Julia 1.12.7. Do not use Base/stdlib APIs newer than the compat floor without raising it. Review for type stability in hot paths (concrete struct field types, no abstractly typed containers, no non-`const` globals, no `Any`-returning branches), avoidable allocations in inner loops, and changes to exported API.
+    - path: dataset/merged_v2/*.mem
+      instructions: 'Shipped Q8.8 images are verified by `tools/verify_q88.py`. Changes must come with the regenerating code and updated pins.'
+    - path: '{dataset/merged_v2/model_bank.json,dataset/merged_v2/snn_model.json,tools/fixtures/model_bank/*/model_bank.json,tools/fixtures/model_bank/*/checkpoints/**}'
+      instructions: 'Model-bank manifests pin referenced checkpoint files by raw-byte digest (LF only, see `.gitattributes`). Changes must come with the regenerating code and updated pins.'
+    - path: .github/workflows/**
+      instructions: GitHub Actions workflows. Keep `permissions:` least-privilege and job commands in sync with the local gates documented in the repo. Every `uses:` is pinned to a full commit SHA today; new or bumped actions must be too.
+  tools:
+    clippy:
+      enabled: true
+    ruff:
+      enabled: true
+    actionlint:
+      enabled: true
+    yamllint:
+      enabled: true
+    markdownlint:
+      enabled: true
+    biome:
+      enabled: false
