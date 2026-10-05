@@ -13,16 +13,15 @@ FROM python:3.14-slim-bookworm
 # git and curl are required in a fully custom Cloud Agent image; build-essential
 # and pkg-config supply the C toolchain the Rust dependencies link against, and
 # sudo matches the Cloud Agent convention of a passwordless non-root user.
-# Package versions are pinned (Hadolint DL3008 / Codacy BestPractice) to the
-# Debian bookworm amd64 packages published on deb.debian.org as of 2026-09-12.
+# hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        build-essential=12.9 \
-        ca-certificates=20230311+deb12u1 \
-        curl=7.88.1-10+deb12u15 \
-        git=1:2.39.5-0+deb12u3 \
-        pkg-config=1.8.1-1 \
-        sudo=1.9.13p3-1+deb12u4 \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+        pkg-config \
+        sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # Cloud Agent tooling (git checkout, terminals, environment `install`) expects
