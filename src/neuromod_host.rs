@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Host-side experiments over published [`neuromod`](https://crates.io/crates/neuromod) 0.6.x.
+//! Host-side experiments over published [`neuromod`](https://crates.io/crates/neuromod) 0.7.x.
 //!
 //! [`HostLif`] preserves the original single-cell adapter. [`HostNetwork`]
 //! exercises the checked, caller-seeded `SpikingNetwork` and its reward-
@@ -9,7 +9,7 @@
 //! experiment.
 //!
 //! ```text
-//! neuromod 0.6 host experiments  ← this module
+//! neuromod 0.7 host experiments  ← this module
 //!              ✕
 //! exp-025 signed weights         ← not loaded into the non-negative engine
 //! Distill / FPGA / train         ← not touched
@@ -62,7 +62,7 @@ impl HostLif {
     /// Fire if the published threshold is crossed, then hard-reset.
     ///
     /// Returns `Some(peak_potential)` on a spike, `None` otherwise -- the
-    /// `neuromod` 0.6.x `LifNeuron::check_fire` contract.
+    /// `neuromod` 0.7.x `LifNeuron::check_fire` contract.
     pub fn check_fire(&mut self) -> Option<f32> {
         self.neuron.check_fire()
     }
@@ -138,13 +138,6 @@ impl HostNetwork {
         &mut self.network
     }
 
-    /// Borrow the network and its persistent RNG together for crate-owned
-    /// orchestration layers that must preserve the seeded replay stream.
-    #[cfg(feature = "training")]
-    pub(crate) fn training_parts(&mut self) -> (&mut SpikingNetwork, &mut StdRng) {
-        (&mut self.network, &mut self.rng)
-    }
-
     /// Reset dynamic state, learned weights, traces, and the RNG to the seed.
     pub fn reset(&mut self) {
         let config = self.network.stdp_config;
@@ -153,7 +146,7 @@ impl HostNetwork {
     }
 }
 
-/// Sparse 16-input, 16-neuron GIF layer showcase from `neuromod` 0.6.
+/// Sparse 16-input, 16-neuron GIF layer showcase from `neuromod` 0.7.
 ///
 /// This alternative neuron model is not the shipped LIF bank and never reads
 /// or rewrites its model artifacts.
@@ -217,7 +210,7 @@ mod tests {
         let mut cell = HostLif::new();
         let threshold = cell.inner().threshold;
         let decay = cell.inner().decay_rate;
-        // Published 0.6.x step: V += stimulus; V -= V * decay_rate.
+        // Published 0.7.x step: V += stimulus; V -= V * decay_rate.
         // So V' = stimulus * (1 - decay_rate) from rest. Cross that gate.
         let keep = 1.0 - decay;
         assert!(keep > 0.0, "decay_rate must leave some charge");

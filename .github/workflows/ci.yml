@@ -40,7 +40,7 @@ jobs:
 
       # rust-toolchain.toml pins 1.98.1 with rustfmt and clippy -- the MSRV
       # kinetic-signals 0.4.0 and nir-rs 0.4.4 declare (axon-encoder 0.5.0
-      # and neuromod 0.6.0 / plasticity-lab 0.2.1 declare 1.98.1). `rustup show` installs
+      # and neuromod 0.7.0 / plasticity-lab 0.2.1 declare 1.98.1). `rustup show` installs
       # exactly that, so CI cannot drift onto a newer compiler and quietly
       # accept code the pinned toolchain would reject.
       - name: Install the pinned toolchain
@@ -60,7 +60,11 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+        # `--all-features` would activate `myelin-cuda` (cust + nvtx), whose
+        # build needs a CUDA 13.2+ toolkit and driver this runner does not
+        # have. Generic checks cover every other feature; `myelin-cuda` is
+        # reserved for a provisioned sm_120 GPU runner (issue #73).
+        run: cargo clippy --locked --all-targets --features myelin,training -- -D warnings
 
       # --locked so a dependency cannot resolve to something Cargo.lock does
       # not name. Issues #8 and #9 both require crates.io resolution and the
@@ -71,13 +75,15 @@ jobs:
       - name: Check without default features
         run: cargo check --locked --no-default-features
 
-      - name: Test all features
-        run: cargo test --locked --all-features
+      - name: Test all non-CUDA features
+        # Same scoping as Clippy above: `myelin-cuda` needs a real GPU and
+        # stays on the provisioned runner, where its tests run `--ignored`.
+        run: cargo test --locked --features myelin,training
 
       - name: Docs
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --locked --no-deps --all-features
+        run: cargo doc --locked --no-deps --features myelin,training
 
   python:
     name: Python

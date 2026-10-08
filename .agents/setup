@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# Amp orb setup for Spikenaut-SNN.
+#
+# Amp runs this from the repository root when it builds a project orb snapshot
+# (Debian 12, CPU only: orbs have no GPU). It must finish within 20 minutes and
+# be safe to run more than once. See https://ampcode.com/docs/orbs/customizing
+#
+# Installs only what this repo's CI and manifests need:
+#   - apt: build-essential, pkg-config, bubblewrap, libseccomp2, curl, ca-certificates
+#   - Rust 1.98.1 (+rustfmt, clippy) [default]
+#   - uv + Python 3.11 venv with tools/anticipation/requirements-test.txt (hash-pinned)
+#   - juliaup 1.12.7 + Pkg.instantiate() for tools/anticipation
+#   - cargo fetch --locked
+#   - tool directories exposed to later shells (/etc/profile.d + /usr/local/bin links)
+#
+# It ends with a dependency fetch/prebuild, not a test run.
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+SUDO=""
+if [ "$(id -u)" -ne 0 ]; then
+  SUDO="sudo"
+fi
+
+# Install Debian packages that are not already present.
+apt_install() {
+  local missing=() pkg
+  for pkg in "$@"; do
+    if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+      missing+=("$pkg")
+    fi
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    $SUDO apt-get -o Acquire::Retries=5 update -qq
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends "${missing[@]}"
+  fi
+}
+
+# --- System packages (C toolchain; bubblewrap + libseccomp2 for the Hermes tests (ci.yml); curl for the installers) ---
+apt_install build-essential pkg-config bubblewrap libseccomp2 curl ca-certificates
+
+# --- Rust (rustup) ---
+export PATH="$HOME/.cargo/bin:$PATH"
+if ! command -v rustup >/dev/null 2>&1; then
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+    sh -s -- -y --default-toolchain none --profile minimal
+fi
+# rust-toolchain.toml pins 1.98.1 + rustfmt, clippy.
+# A rerun must not sync the channel: `toolchain install` still contacts
+# RUSTUP_DIST_SERVER when the toolchain is already present, and a repair then
+# dies before Python or Julia. Skip that when rustfmt and clippy are installed.
+# --no-self-update covers the path that does install a missing component.
+rust_components="$(rustup component list --toolchain 1.98.1 --installed 2>/dev/null || true)"
+# `component list --installed` prints `rustfmt-<target>` and `clippy-<target>`,
+# for example `rustfmt-x86_64-unknown-linux-gnu`. Preview components are
+# `rustfmt-preview-*` and must not count.
+if printf '%s\n' "$rust_components" | grep -Eq '^rustfmt-[A-Za-z0-9_]+-[A-Za-z0-9_]+-[A-Za-z0-9_]+(-[A-Za-z0-9_]+)?$' \
+  && printf '%s\n' "$rust_components" | grep -Eq '^clippy-[A-Za-z0-9_]+-[A-Za-z0-9_]+-[A-Za-z0-9_]+(-[A-Za-z0-9_]+)?$'; then
+  echo "Rust 1.98.1 with rustfmt and clippy is already installed; skipping channel sync."
+else
+  rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy --no-self-update
+fi
+rustup default 1.98.1
+
+# --- Python (uv) ---
+export PATH="$HOME/.local/bin:$PATH"
+if ! command -v uv >/dev/null 2>&1; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+fi
+# .venv/ is not in .gitignore. Exclude it before creating it so a later
+# installer failure still leaves `git status` clean (Amp continues after a
+# failed or timed-out setup).
+exclude_file="$(git rev-parse --git-path info/exclude)"
+mkdir -p "$(dirname "$exclude_file")"
+grep -qxF '/.venv/' "$exclude_file" 2>/dev/null || echo '/.venv/' >>"$exclude_file"
+# ci.yml Python jobs use 3.11. An executable .venv from another interpreter
+# (the base image ships 3.14) must be recreated, not reused.
+uv python install 3.11
+if ! .venv/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)' 2>/dev/null; then
+  rm -rf .venv
+  uv venv --python 3.11 .venv
+fi
+# sync, not install: install keeps packages the requirements file no longer lists.
+uv pip sync --python .venv/bin/python --require-hashes --only-binary=:all: tools/anticipation/requirements-test.txt
+
+# Persist tool directories for later shells. Amp starts the agent's shell
+# separately, so the PATH exports in this script do not carry over. Login shells
+# get these directories from /etc/profile.d; every other shell finds the entry
+# points through /usr/local/bin (on the default PATH). In login shells the venv's
+# bin comes first, so python3 is the venv's Python. Non-login shells do not read
+# /etc/profile.d. A symlink to .venv/bin/python does not work: CPython looks for
+# pyvenv.cfg next to the executed path, so /usr/local/bin/python would be the base
+# interpreter. Wrappers exec the venv path, which does see pyvenv.cfg. Console
+# scripts are real files and can be linked. Skip pip and the activate helpers;
+# ~/.local/bin still skips uv's sourced env files. A missing directory is skipped,
+# so this can run before juliaup exists and again after it lands.
+expose_tools() {
+repo_root="$(pwd)"
+tool_dirs=("$HOME/.cargo/bin" "$HOME/.juliaup/bin" "$repo_root/.venv/bin" "$HOME/.local/bin")
+# shellcheck disable=SC2016 # $PATH must expand when the profile is sourced, not now.
+printf 'export PATH=%q:$PATH\n' "$(IFS=:; echo "${tool_dirs[*]}")" |
+  $SUDO tee /etc/profile.d/amp-orb-Spikenaut-SNN.sh >/dev/null
+for dir in "${tool_dirs[@]}"; do
+  [ -d "$dir" ] || continue
+  for tool in "$dir"/*; do
+    name="${tool##*/}"
+    case "$name" in
+      # uv's installer also drops env/env.fish (sourced, not run) in ~/.local/bin.
+      # Skip pip and the activate helpers, which are not the documented
+      # `python -m pytest` path.
+      pip* | activate* | deactivate | Activate.ps1 | env | env.fish) continue ;;
+      python*)
+        # Only the venv interpreters need a wrapper. A symlink loses pyvenv.cfg.
+        if [ "$dir" = "$repo_root/.venv/bin" ]; then
+          # tee follows an existing symlink. On a rerun, /usr/local/bin/python
+          # may already point at the base interpreter; writing through it would
+          # replace that binary. Unlink first, then write the wrapper.
+          $SUDO rm -f "/usr/local/bin/$name"
+          $SUDO tee "/usr/local/bin/$name" >/dev/null <<EOF
+#!/bin/sh
+exec $(printf '%q' "$tool") "\$@"
+EOF
+          $SUDO chmod 755 "/usr/local/bin/$name"
+        fi
+        continue
+        ;;
+    esac
+    if [ -f "$tool" ] && [ -x "$tool" ]; then
+      $SUDO ln -sfn "$tool" "/usr/local/bin/$name"
+    fi
+  done
+done
+}
+
+# Rust and Python are done. Persist them before the Julia download so a failed
+# or timed-out juliaup install still leaves cargo and the venv on PATH.
+# ~/.juliaup/bin is in the list; a missing directory is skipped. Called again
+# after juliaup lands so its binaries are linked too.
+expose_tools
+
+# --- Julia (juliaup) ---
+# ci.yml anticipation job pins Julia 1.12.7.
+JULIA_CHANNEL="1.12.7"
+export PATH="$HOME/.juliaup/bin:$PATH"
+if ! command -v juliaup >/dev/null 2>&1; then
+  curl -fsSL https://install.julialang.org | sh -s -- --yes --default-channel "$JULIA_CHANNEL"
+fi
+# `juliaup add` is idempotent: an installed channel prints "already installed"
+# and exits 0. `juliaup list` cannot gate this — it prints every available
+# channel, including ones that were never installed.
+juliaup add "$JULIA_CHANNEL"
+juliaup default "$JULIA_CHANNEL"
+
+# Second pass now that juliaup exists, still before Pkg.instantiate and cargo fetch.
+expose_tools
+
+# --- Prefetch packages (no build, no tests) ---
+# Last on purpose: a registry failure must not skip the PATH exposure above.
+# Project.toml pulls a Git dependency, so instantiate can fail the same way
+# cargo fetch can.
+julia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'
+cargo fetch --locked
+
+echo "Amp orb setup for Spikenaut-SNN finished."
