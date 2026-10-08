@@ -13,13 +13,16 @@ FROM python:3.14-slim-bookworm
 # git and curl are required in a fully custom Cloud Agent image; build-essential
 # and pkg-config supply the C toolchain the Rust dependencies link against, and
 # sudo matches the Cloud Agent convention of a passwordless non-root user.
+# bubblewrap and libseccomp2 are what ci.yml installs for the Hermes tests.
 # hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        bubblewrap \
         build-essential \
         ca-certificates \
         curl \
         git \
+        libseccomp2 \
         pkg-config \
         sudo \
     && rm -rf /var/lib/apt/lists/*
@@ -52,3 +55,11 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         "$RUSTUP_HOME" "$CARGO_HOME" "$CARGO_HOME" > /etc/profile.d/rust.sh
 
 USER ubuntu
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Julia for tools/anticipation, pinned like ci.yml's anticipation-julia job.
+# juliaup installs per user, so the launchers are also linked into /usr/local/bin
+# for shells that don't read the login profile.
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://install.julialang.org \
+        | sh -s -- --yes --default-channel 1.12.7 \
+    && sudo ln -sf /home/ubuntu/.juliaup/bin/julia /home/ubuntu/.juliaup/bin/juliaup /usr/local/bin/
