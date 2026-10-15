@@ -58,8 +58,11 @@ USER ubuntu
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Julia for tools/anticipation, pinned like ci.yml's anticipation-julia job.
-# juliaup installs per user, so the launchers are also linked into /usr/local/bin
-# for shells that don't read the login profile.
+# juliaup installs under the ubuntu user. Agent shells do not read the login
+# profile, so root links the launchers onto /usr/local/bin. Switching user
+# avoids sudo (hadolint DL3004).
 RUN curl --proto '=https' --tlsv1.2 -fsSL https://install.julialang.org \
-        | sh -s -- --yes --default-channel 1.12.7 \
-    && sudo ln -sf /home/ubuntu/.juliaup/bin/julia /home/ubuntu/.juliaup/bin/juliaup /usr/local/bin/
+        | sh -s -- --yes --default-channel 1.12.7
+USER root
+RUN ln -sf /home/ubuntu/.juliaup/bin/julia /home/ubuntu/.juliaup/bin/juliaup /usr/local/bin/
+USER ubuntu

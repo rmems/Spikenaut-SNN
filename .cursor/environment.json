@@ -4,5 +4,5 @@
   "build": {
     "dockerfile": "Dockerfile"
   },
-  "install": "rustup show\ncargo fetch --locked\ncargo build --locked --all-targets\njulia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'"
+  "install": "set -euo pipefail\nrustup show\ncargo fetch --locked\ncargo build --locked --all-targets\nsudo python -m pip install --require-hashes --only-binary=:all: -r tools/anticipation/requirements-test.txt\njulia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'\nbwrap --version\nbwrap --ro-bind / / --unshare-net -- /bin/true"
 }
