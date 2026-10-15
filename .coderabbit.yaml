@@ -1,0 +1,54 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit review config for rmems/Spikenaut-SNN.
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  fail_commit_status: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - '!**/target/**'
+  path_instructions:
+    - path: '{src,tests}/**/*.rs'
+      instructions: 'Rust edition 2024; `rust-version = "1.98.1"`; `rust-toolchain.toml` pins 1.98.1. Do not suggest downgrading the edition or using std/language APIs newer than the pinned toolchain/MSRV. Generic CI gates exclude `myelin-cuda` (it needs a provisioned GPU runner): `cargo fmt --check`, `cargo clippy --locked --all-targets --features myelin,training -- -D warnings`, `cargo test --locked`, `cargo check --locked --no-default-features`, `cargo test --locked --features myelin,training`, `RUSTDOCFLAGS=-D warnings cargo doc --locked --no-deps --features myelin,training`. Do not suggest `--all-features` for those jobs. The `training` feature is optional: code must build with `--no-default-features`.'
+    - path: '**/Cargo.toml'
+      instructions: Cargo manifest. Call out new dependencies and feature changes, and keep `rust-version` / `edition` consistent with CI.
+    - path: tools/*.py
+      instructions: 'Standard-library verifier tools must remain parseable by Python 3.8; CI runs pinned Python 3.11 for reproducibility. CI gate: `python3 tools/verify_q88.py` and the standard-library verifier and unittest commands in `.github/workflows/ci.yml`. Do not add third-party dependencies.'
+    - path: tools/anticipation/**/*.py
+      instructions: 'Python 3.11. CI installs `tools/anticipation/requirements-test.txt` with `--require-hashes` and runs the anticipation pytest suite. Do not add unpinned dependencies.'
+    - path: tools/anticipation/**/*.jl
+      instructions: Julia package code. `[compat] julia = "1.10"`; CI runs Julia 1.12.7. Do not use Base/stdlib APIs newer than the compat floor without raising it. Review for type stability in hot paths (concrete struct field types, no abstractly typed containers, no non-`const` globals, no `Any`-returning branches), avoidable allocations in inner loops, and changes to exported API.
+    - path: dataset/merged_v2/*.mem
+      instructions: 'Shipped Q8.8 images are verified by `tools/verify_q88.py`. Thresholds, decay, and hidden weights are re-derived from `snn_model.json` floats, not from a digest. Only `parameters_output_weights.mem` is hash-pinned, by `OUTPUT_WEIGHTS_CANON_SHA256` and `OUTPUT_WEIGHTS_HEX` in `tools/q88_core.py` (sha256 of the canonical token sequence, not raw file bytes and not a model-bank `checkpoint_digest`). Update those two pins together only when that image is intentionally replaced, and require the regenerating code only then.'
+    - path: dataset/merged_v2/snn_model.json
+      instructions: 'Shipped model JSON. `tools/verify_q88.py` re-derives thresholds, decay, and hidden weights from these floats. `dataset/merged_v2/model_bank.json` also pins this file by raw-byte `checkpoint_digest` (`sha256:` of the file bytes, LF only, see `.gitattributes`). Update that digest only when these bytes intentionally change. This JSON also carries `neurons[].output_weights` (3-wide, neuron-major). `tools/verify_q88.py` does not compare that field to the image: the CI gate remains `OUTPUT_WEIGHTS_CANON_SHA256` and `OUTPUT_WEIGHTS_HEX` on `parameters_output_weights.mem`. Flag a change that lets those JSON values diverge from that image pin.'
+    - path: '{dataset/merged_v2/model_bank.json,tools/fixtures/model_bank/valid/model_bank.json}'
+      instructions: 'Model-bank manifests. Golden serialization is `tools.model_bank.dumps_manifest`, with `tools/fixtures/model_bank/valid/model_bank.json` as the golden document. Each `checkpoint_digest` is `sha256:` of the referenced checkpoint file bytes (LF only, see `.gitattributes`). Update a digest only when those checkpoint bytes intentionally change.'
+    - path: tools/fixtures/model_bank/valid/checkpoints/**
+      instructions: 'Valid fixture checkpoint bytes. `tools/fixtures/model_bank/valid/model_bank.json` pins them by raw-byte `checkpoint_digest` (LF only, see `.gitattributes`). Changing the bytes requires that digest to change with them, and the regenerating code when the bytes are regenerated.'
+    - path: tools/fixtures/model_bank/tampered-checkpoint/**
+      instructions: 'Deliberately stale negative fixture. `tools/model_bank_selftest.py` requires `load_model_bank` to fail on `checkpoint_digest` because `checkpoints/ok.bin` no longer matches the declared digest. Keep that digest stale. Do not update the pin to make this bundle attest.'
+    - path: tools/fixtures/model_bank/unsupported-version/**
+      instructions: 'Deliberately invalid fixture. Attestation must keep failing on `schema_version`. Do not require an updated pin or repair this bundle into a valid bank.'
+    - path: tools/fixtures/live_stim/**
+      instructions: 'Analog stim parity pin. `tools/live_stim_parity.py` and the Rust live-stim tests must agree on `expected_stim.json`. Regenerate with `--write` only when the contract changes, and update both front ends in the same change.'
+    - path: tools/fixtures/decision/expected.json
+      instructions: 'Output-row decision golden pin. `tools/decision_parity.py` and the Rust decision tests must agree on this file. Regenerate with `--write` only when the contract changes, and update both front ends in the same change.'
+    - path: .github/workflows/**
+      instructions: GitHub Actions workflows. Keep `permissions:` least-privilege and job commands in sync with the local gates documented in the repo. Every `uses:` is pinned to a full commit SHA today; new or bumped actions must be too.
+  tools:
+    clippy:
+      enabled: true
+    ruff:
+      enabled: true
+    actionlint:
+      enabled: true
+    yamllint:
+      enabled: true
+    markdownlint:
+      enabled: true
+    biome:
+      enabled: false
