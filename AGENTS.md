@@ -27,7 +27,10 @@ write docs or code comments that claim otherwise.
 
 - Rust **1.98.1** with rustfmt and clippy (`rust-toolchain.toml`, `rust-version`). It's pinned to the
   highest MSRV among the crates.io dependencies, so don't loosen it.
-- Feature `training` (off by default) pulls `plasticity-lab`.
+- Features are off by default. `training` pulls `plasticity-lab` and the neuromod 0.6 pin that
+  trainer needs. `myelin` pulls the CPU-safe `myelin-accelerator` stub. Do not pass
+  `--all-features`: that also enables `myelin-cuda`, which needs a CUDA 13.2+ toolkit. CI uses
+  `--features myelin,training`.
 - Python **3.11** in CI. The top-level `tools/*.py` scripts use the standard library only;
   `tools/anticipation/` does not, and its tests use the hash-pinned
   `tools/anticipation/requirements-test.txt`.
@@ -42,22 +45,41 @@ write docs or code comments that claim otherwise.
 
 ```bash
 cargo fmt --check
-cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo clippy --locked --all-targets --features myelin,training -- -D warnings
 cargo test --locked
 cargo check --locked --no-default-features
-cargo test --locked --all-features
-RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps --all-features
+cargo test --locked --features myelin,training
+RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps --features myelin,training
 
-# Python tools. CI also runs each one except replay_frozen.py with --self-test, and runs
-# most of them in the `python3 -m tools.<name>` form too.
+# Python tools. Script and `python3 -m tools.<name>` forms where CI runs both
+# (they have broken independently). check_model_card.py is script-only.
+# replay_frozen.py has no --self-test; CI covers it with unittest.
 python3 tools/verify_q88.py
+python3 -m tools.verify_q88
+python3 tools/verify_q88.py --self-test
+python3 -m tools.verify_q88 --self-test
 python3 tools/measure_hamming.py
+python3 -m tools.measure_hamming
+python3 tools/measure_hamming.py --self-test
+python3 -m tools.measure_hamming --self-test
 python3 tools/live_stim_parity.py
+python3 -m tools.live_stim_parity
+python3 tools/live_stim_parity.py --self-test
+python3 -m tools.live_stim_parity --self-test
 python3 tools/decision_parity.py
+python3 -m tools.decision_parity
+python3 tools/decision_parity.py --self-test
+python3 -m tools.decision_parity --self-test
 python3 tools/check_model_card.py
+python3 tools/check_model_card.py --self-test
 python3 tools/verify_model_bank.py --select merged_v2
+python3 -m tools.verify_model_bank --select merged_v2
+python3 tools/verify_model_bank.py --self-test
+python3 -m tools.verify_model_bank --self-test
+python3 -m unittest tests.test_model_bank -v
 python3 tools/replay_frozen.py
-python3 -m unittest tests.test_model_bank tests.test_replay_frozen -v
+python3 -m tools.replay_frozen
+python3 -m unittest tests.test_replay_frozen -v
 
 # Anticipation (Julia + pytest)
 julia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'
@@ -73,5 +95,7 @@ python -m pytest -q tests/test_anticipation_campaign.py tests/test_collector_lif
   the parity tools when changing encoding.
 - GitHub Actions are pinned to commit SHAs with exact version comments, and Dependabot bumps
   them. Keep new actions pinned the same way.
-- Commit subjects follow Conventional Commits, usually with a scope (`feat(nir):`, `feat(deps):`),
-  and end with the PR number. Some also carry a Linear or GitHub issue ID (`RM-1713`, `GH#60`).
+- Commit subjects follow Conventional Commits. A scope is common (`feat(nir):`, `feat(deps):`)
+  and so is an unscoped subject (`feat:`, `docs:`). Squash-merge adds the `(#NN)` suffix; don't
+  invent a PR number locally. Some subjects also name a Linear or GitHub issue (`RM-1713`,
+  `GH#60`) when the change tracks one.
