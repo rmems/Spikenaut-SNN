@@ -33,7 +33,7 @@ not a validated supervisor**, and FPGA parity is unproven. Don't claim otherwise
 - Python **3.11** in CI. Top-level `tools/*.py` are stdlib only. `requirements-test.txt` pins
   NumPy and pytest for anticipation tests; it does not install PyTorch or Matplotlib.
 - Julia **1.12.7** for `tools/anticipation` (CI).
-- Hermes tests need the `bwrap` preflight in the command block (`bubblewrap`, `libseccomp2`, AppArmor).
+- Hermes tests need the `bwrap` preflight in the command block (`bubblewrap`, `libseccomp2`, AppArmor). The `sysctl` changes `kernel.apparmor_restrict_unprivileged_userns` for the whole host and is not restored automatically.
 - No GPU for CI or the tests. Real acquisition (`tools/anticipation/campaign.py`) needs a CUDA GPU
   and CUDA-enabled PyTorch. FPGA loading is out of scope for CI.
 
