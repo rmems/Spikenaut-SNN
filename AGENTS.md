@@ -4,12 +4,11 @@ Guidance for coding agents (Amp, Codex, Cursor, Claude Code, and others) working
 
 ## Purpose
 
-Spikenaut-SNN-v2 is a 16-neuron Leaky-Integrate-and-Fire (LIF) spiking neural network intended to
-learn a compact temporal representation of machine state from live hardware and node telemetry,
-targeting a Xilinx Artix-7 FPGA (see `README.md`). It is the small-supervisor layer of the
-Artificial Interoception / Neuromorphic Supervisor program. Per the README's "Status — read this
-first", it is a **research artifact, not a validated supervisor**, and FPGA parity is unproven. Don't
-write docs or code comments that claim otherwise.
+Spikenaut-SNN-v2 is a 16-neuron LIF network that learns a compact temporal representation of
+machine state from live hardware and node telemetry, targeting a Xilinx Artix-7 FPGA (see
+`README.md`). It is the small-supervisor layer of the Artificial Interoception / Neuromorphic
+Supervisor program. Per the README's "Status — read this first", it is a **research artifact,
+not a validated supervisor**, and FPGA parity is unproven. Don't claim otherwise in docs or comments.
 
 ## Layout
 
@@ -19,7 +18,7 @@ write docs or code comments that claim otherwise.
 | `dataset/merged_v2/` | Shipped model bank: Q8.8 `.mem` parameter files, `snn_model.json`, `model_bank.json` |
 | `config.json` | Machine-readable model header |
 | `tools/*.py` | Python verification tools (stdlib only): Q8.8 verifier, model-bank attestation, parity and replay tools |
-| `tools/anticipation/` | Anticipation campaign (Python + Julia project). Needs third-party packages (NumPy, Matplotlib, and PyTorch for acquisition); see `requirements-test.txt` |
+| `tools/anticipation/` | Anticipation campaign (Python + Julia). `requirements-test.txt` pins CI tests (NumPy, pytest; not PyTorch or Matplotlib). Acquisition needs CUDA PyTorch; plots need Matplotlib |
 | `tests/` | Rust integration tests (`*.rs`, run by `cargo test`) and Python tests (pytest/unittest, `test_*.py`) |
 | `docs/anticipation/` | Anticipation docs |
 
@@ -31,15 +30,12 @@ write docs or code comments that claim otherwise.
   trainer needs. `myelin` pulls the CPU-safe `myelin-accelerator` stub. Do not pass
   `--all-features`: that also enables `myelin-cuda`, which needs a CUDA 13.2+ toolkit. CI uses
   `--features myelin,training`.
-- Python **3.11** in CI. The top-level `tools/*.py` scripts use the standard library only;
-  `tools/anticipation/` does not, and its tests use the hash-pinned
-  `tools/anticipation/requirements-test.txt`.
+- Python **3.11** in CI. Top-level `tools/*.py` are stdlib only. `requirements-test.txt` pins
+  NumPy and pytest for anticipation tests; it does not install PyTorch or Matplotlib.
 - Julia **1.12.7** for `tools/anticipation` (CI).
-- The Hermes tests need `bubblewrap` and `libseccomp2`. CI also sets
-  `kernel.apparmor_restrict_unprivileged_userns=0` (Ubuntu).
-- No GPU needed for CI or the tests. Real acquisition in the anticipation campaign
-  (`tools/anticipation/campaign.py`) needs a CUDA GPU and CUDA-enabled PyTorch
-  (`docs/anticipation/README.md`). FPGA loading is out of scope for CI.
+- Hermes tests need the `bwrap` preflight in the command block (`bubblewrap`, `libseccomp2`, AppArmor).
+- No GPU for CI or the tests. Real acquisition (`tools/anticipation/campaign.py`) needs a CUDA GPU
+  and CUDA-enabled PyTorch. FPGA loading is out of scope for CI.
 
 ## Commands (from `.github/workflows/ci.yml`)
 
@@ -51,9 +47,7 @@ cargo check --locked --no-default-features
 cargo test --locked --features myelin,training
 RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps --features myelin,training
 
-# Python tools. Script and `python3 -m tools.<name>` forms where CI runs both
-# (they have broken independently). check_model_card.py is script-only.
-# replay_frozen.py has no --self-test; CI covers it with unittest.
+# Python: script and `python3 -m` where CI runs both. check_model_card.py is script-only; replay_frozen.py has no --self-test.
 python3 tools/verify_q88.py
 python3 -m tools.verify_q88
 python3 tools/verify_q88.py --self-test
@@ -81,10 +75,15 @@ python3 tools/replay_frozen.py
 python3 -m tools.replay_frozen
 python3 -m unittest tests.test_replay_frozen -v
 
-# Anticipation (Julia + pytest)
 julia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'
 julia --startup-file=no --project=tools/anticipation tools/anticipation/test_train.jl
+sudo apt-get update
+sudo apt-get install --yes bubblewrap libseccomp2
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+bwrap --version
+bwrap --ro-bind / / --unshare-net -- /bin/true
 python -m pip install --require-hashes --only-binary=:all: -r tools/anticipation/requirements-test.txt
+command -v bwrap
 python -m pytest -q tests/test_anticipation_campaign.py tests/test_collector_lifecycle.py \
   tests/test_evaluation_deadline.py tests/test_hermes_*.py tests/test_path_confinement.py
 ```
@@ -95,7 +94,6 @@ python -m pytest -q tests/test_anticipation_campaign.py tests/test_collector_lif
   the parity tools when changing encoding.
 - GitHub Actions are pinned to commit SHAs with exact version comments, and Dependabot bumps
   them. Keep new actions pinned the same way.
-- Commit subjects follow Conventional Commits. A scope is common (`feat(nir):`, `feat(deps):`)
-  and so is an unscoped subject (`feat:`, `docs:`). Squash-merge adds the `(#NN)` suffix; don't
-  invent a PR number locally. Some subjects also name a Linear or GitHub issue (`RM-1713`,
-  `GH#60`) when the change tracks one.
+- Commit subjects follow Conventional Commits. Scopes are common (`feat(nir):`) and so are
+  unscoped subjects (`feat:`, `docs:`). Squash-merge adds `(#NN)`; don't invent a PR number.
+  Some subjects also name an issue (`RM-1713`, `GH#60`) when the change tracks one.
