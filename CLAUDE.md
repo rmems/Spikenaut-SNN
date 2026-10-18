@@ -20,7 +20,7 @@ Run from the repo root. "Verified" means it ran successfully in a fresh checkout
 | `RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps --features myelin,training` | verified |
 | `python3 tools/verify_q88.py` (+ `--self-test`) | verified |
 | `python3 tools/measure_hamming.py --self-test` | verified |
-| `python3 tools/live_stim_parity.py`, `decision_parity.py`, `check_model_card.py` | verified |
+| `python3 tools/live_stim_parity.py`, `python3 tools/decision_parity.py`, `python3 tools/check_model_card.py` | verified |
 | `python3 tools/verify_model_bank.py --select merged_v2` | verified |
 | `python3 tools/replay_frozen.py` | verified (output dir `/replay_out/` is gitignored) |
 | `python3 -m unittest tests.test_model_bank tests.test_replay_frozen` | verified (65 tests, 2 skipped) |
