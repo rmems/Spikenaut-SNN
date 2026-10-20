@@ -782,3 +782,80 @@ fn the_streaming_drain_ceiling_is_1024_spikes_per_step() {
         );
     }
 }
+
+/// The historical coin map's contents are pinned, not just its length.
+///
+/// `CHANNEL_MAP` is deprecated and must never be mistaken for the live map, but
+/// it is still `pub`. A silent edit that moved a source, or gave one the name of
+/// a live sensor, would change what a caller thinks it is looking at. The order
+/// is two channels per source, in `TelemetrySource::ALL` order.
+#[test]
+fn the_historical_channel_map_contents_are_pinned() {
+    assert_eq!(
+        CHANNEL_MAP,
+        [
+            TelemetrySource::Dnx,
+            TelemetrySource::Dnx,
+            TelemetrySource::Quai,
+            TelemetrySource::Quai,
+            TelemetrySource::Qubic,
+            TelemetrySource::Qubic,
+            TelemetrySource::Kaspa,
+            TelemetrySource::Kaspa,
+            TelemetrySource::Monero,
+            TelemetrySource::Monero,
+            TelemetrySource::Ocean,
+            TelemetrySource::Ocean,
+            TelemetrySource::Verus,
+            TelemetrySource::Verus,
+            TelemetrySource::Thermal,
+            TelemetrySource::Thermal,
+        ],
+    );
+    for source in CHANNEL_MAP {
+        assert!(
+            !LIVE_COLUMNS.contains(&source.label()),
+            "coin source {} shares a name with a live column",
+            source.label(),
+        );
+    }
+}
+
+/// Of the three `for_shipped_merged_v2` constructors, exactly one is `Ok`.
+///
+/// The coin encoder has the wrong columns and the live rate encoder has the
+/// wrong modality; only the analog `LiveStimAdapter` is the shipped bank's
+/// front end. If a fourth constructor appears, or a refusal is relaxed, this is
+/// the test that has to be edited on purpose.
+#[test]
+fn only_the_analog_live_adapter_accepts_the_shipped_bank() {
+    let coin = TelemetryEncoder::for_shipped_merged_v2().is_ok();
+    let live_spikes = LiveTelemetryEncoder::for_shipped_merged_v2().is_ok();
+    let live_analog = spikenaut_snn::LiveStimAdapter::for_shipped_merged_v2().is_ok();
+    assert_eq!([coin, live_spikes, live_analog], [false, false, true]);
+}
+
+/// The hazard the coin refusal exists for: it writes to axons 5-15.
+///
+/// Training held axons 5-15 at zero, but the coin encoder maps unrelated
+/// sources across all 16 channels and still emits its nonzero base rate on the
+/// unused ones. This pins that behaviour so the reason for the refusal stays
+/// measurable. If the encoder is ever made to leave those axons silent, update
+/// this test together with the README's "must not be paired" warning.
+#[test]
+fn the_coin_encoder_fires_on_axons_five_to_fifteen_at_idle() {
+    let mut encoder = TelemetryEncoder::new().expect("the coin configuration is valid");
+    let idle = [INPUT_RANGE.0; CHANNEL_COUNT];
+
+    let mut totals = [0_usize; CHANNEL_COUNT];
+    for _ in 0..TICKS_PER_SECOND {
+        for spike in &encoder.encode_step(&idle).expect("finite").spikes {
+            totals[usize::from(spike.channel)] += 1;
+        }
+    }
+
+    assert!(
+        totals[LIVE_LEGAL_COLUMNS..].iter().all(|&count| count > 0),
+        "the coin encoder is expected to leak its base rate onto axons 5-15, got {totals:?}",
+    );
+}
