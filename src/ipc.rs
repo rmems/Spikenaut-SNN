@@ -85,6 +85,12 @@ impl From<EnvelopeError> for IpcBridgeError {
 /// A `None` mask means every value is valid, including architecturally unused
 /// axons whose valid stimulus is zero. Numeric zero is never interpreted as
 /// missingness.
+///
+/// # Errors
+///
+/// [`IpcBridgeError::Validation`] if `corpus-ipc` rejects the batch: a
+/// non-finite value, a mask that is not one flag per value, or an oversized
+/// session id.
 pub fn stimulus_message(
     context: &IpcBatchContext,
     values: [f32; CHANNEL_COUNT],
@@ -103,6 +109,14 @@ pub fn stimulus_message(
 }
 
 /// Build a validated unit-strength spike message for one engine tick.
+///
+/// Events keep the order of `fired`.
+///
+/// # Errors
+///
+/// [`IpcBridgeError::ChannelOutOfRange`] for the first index outside the
+/// 16-neuron host network, or [`IpcBridgeError::Validation`] if `corpus-ipc`
+/// rejects the batch.
 pub fn spike_message(
     context: &IpcBatchContext,
     time: u32,
@@ -138,6 +152,11 @@ pub fn spike_message(
 ///
 /// Callers must supply cortisol and tempo under their `corpus-ipc` meanings;
 /// this function intentionally accepts no `neuromod::NeuroModulators` value.
+///
+/// # Errors
+///
+/// [`IpcBridgeError::Validation`] if a level is outside its `corpus-ipc`
+/// range.
 pub fn neuromodulator_message(
     snapshot: NeuromodulatorSnapshot,
 ) -> Result<IpcMessage, IpcBridgeError> {
@@ -146,6 +165,12 @@ pub fn neuromodulator_message(
 }
 
 /// Validate and encode one message in the current versioned JSON wire envelope.
+///
+/// # Errors
+///
+/// [`IpcBridgeError::Validation`] if the message fails `corpus-ipc`
+/// validation (it is re-checked even if a builder above produced it), or
+/// [`IpcBridgeError::Envelope`] if it cannot be encoded.
 pub fn encode_ipc_message(message: &IpcMessage) -> Result<Vec<u8>, IpcBridgeError> {
     message.validate()?;
     Ok(encode_ipc_message_json(message)?)
@@ -155,6 +180,16 @@ pub fn encode_ipc_message(message: &IpcMessage) -> Result<Vec<u8>, IpcBridgeErro
 ///
 /// Legacy unversioned payloads accepted by `corpus-ipc`'s compatibility
 /// decoder are deliberately rejected at this boundary.
+///
+/// Validation here is `corpus-ipc`'s generic contract only: a decoded spike
+/// batch is not checked against the 16-neuron host range, and a decoded
+/// stimulus batch is not checked to be [`CHANNEL_COUNT`] wide. Callers that
+/// feed a decoded message into the host network must check its shape.
+///
+/// # Errors
+///
+/// [`IpcBridgeError::Envelope`] for malformed, legacy or unsupported-version
+/// bytes, or [`IpcBridgeError::Validation`] if the payload fails validation.
 pub fn decode_ipc_message(bytes: &[u8]) -> Result<IpcMessage, IpcBridgeError> {
     let message = WireEnvelope::<IpcMessage>::decode_json(bytes)?.into_payload();
     message.validate()?;

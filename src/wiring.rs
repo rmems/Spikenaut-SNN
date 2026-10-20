@@ -45,6 +45,12 @@ pub struct ExperimentalDaleMesh {
 impl ExperimentalDaleMesh {
     /// Build a deterministic small-world topology with neurons 12–15
     /// inhibitory under Dale's outgoing-polarity rule.
+    ///
+    /// # Errors
+    ///
+    /// [`MeshError`] if `synaptic-wiring` rejects the configuration: an odd
+    /// `neighbors` or one outside `[2, 15]`, or a `rewire_probability` that
+    /// is NaN or outside `[0, 1]`.
     pub fn new(config: DaleMeshConfig) -> Result<Self, MeshError> {
         // Generate targets, delays, and magnitudes without assigning an
         // inhibitory prefix; Spikenaut's documented inhibitory bank is the
@@ -84,11 +90,23 @@ impl ExperimentalDaleMesh {
     }
 
     /// Propagate a 16-neuron binary spike frame through one mesh tick.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`SynapticMesh::propagate`] reports; the fixed-size frame
+    /// already rules out its length mismatch.
     pub fn propagate(&mut self, spikes: &[bool; NEURON_COUNT]) -> Result<Vec<f32>, MeshError> {
         self.mesh.propagate(spikes)
     }
 
     /// Allocation-free propagation into a caller-owned 16-neuron buffer.
+    ///
+    /// Same deliveries as [`Self::propagate`]; `output` is overwritten, not
+    /// accumulated into.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`SynapticMesh::propagate_into`] reports.
     pub fn propagate_into(
         &mut self,
         spikes: &[bool; NEURON_COUNT],

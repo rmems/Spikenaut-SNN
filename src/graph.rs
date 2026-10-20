@@ -135,7 +135,9 @@ pub struct MemBankGraph {
 ///
 /// # Errors
 ///
-/// Returns [`LoadMemGraphError::Bank`] for file/layout errors and
+/// Returns [`LoadMemGraphError::NonUtf8Source`] if `directory` is not valid
+/// UTF-8 (it is stamped into the graph's `source` metadata, so it must
+/// round-trip), [`LoadMemGraphError::Bank`] for file/layout errors, and
 /// [`LoadMemGraphError::Graph`] if validated values cannot form a NIR graph.
 pub fn load_lif_graph_from_mem_dir(
     directory: impl AsRef<Path>,
@@ -371,15 +373,6 @@ pub fn build_lif_graph_with_provenance(
     Ok(graph)
 }
 
-/// Build the LIF node's four parameter tensors from the model.
-///
-/// Every value is checked against the Q8.8 grid on the way through: the
-/// shipped artifact is a Q8.8 export, so a parameter that cannot be
-/// represented in Q8.8 did not come from it.
-/// Check every value in a per-neuron column against the Q8.8 grid.
-///
-/// The shipped artifact is a Q8.8 export, so a parameter that cannot be
-/// represented in Q8.8 did not come from it. Errors name the offending neuron.
 /// Insert the four nodes of the population, in graph order.
 fn insert_population_nodes(
     graph: &mut NirGraph,
@@ -427,6 +420,9 @@ fn resistance_tensor(decay_rates: Vec<f64>, shape: &[usize]) -> Result<Tensor, M
 }
 
 /// Every value in one per-unit column must sit exactly on the Q8.8 grid.
+///
+/// The shipped artifact is a Q8.8 export, so a parameter that cannot be
+/// represented in Q8.8 did not come from it. Errors name the offending neuron.
 fn check_q8_8_column(field: &str, values: &[f64]) -> Result<(), ModelError> {
     for (index, &value) in values.iter().enumerate() {
         check_q8_8(&format!("neuron {index} {field}"), value)?;
@@ -434,6 +430,11 @@ fn check_q8_8_column(field: &str, values: &[f64]) -> Result<(), ModelError> {
     Ok(())
 }
 
+/// Build the LIF node's four parameter tensors from the model.
+///
+/// Thresholds and decay rates are checked against the Q8.8 grid on the way
+/// through (see [`check_q8_8_column`]); `tau` and `r` are derived from the
+/// decay rates, and `v_leak` is the zero resting potential.
 fn lif_parameters(
     model: &SnnModel,
     timestep_seconds: f64,
@@ -839,10 +840,10 @@ mod tests {
     /// satisfy both sides. That is deliberate division of labour --
     /// `resistance_inverts_the_discrete_input_attenuation` pins the formula
     /// against literals (`0.5` to `2.0`, `0.75` to `4.0`) and its rejection
-    /// cases, and `lif_parameters_come_from_the_model` checks one NIR step
-    /// against the model's own step. What is left, and what this covers, is
-    /// that unit *i* is given unit *i*'s decay rather than a neighbour's or a
-    /// shared constant.
+    /// cases, and `one_step_from_rest_reproduces_the_weighted_input` checks
+    /// one NIR step against the model's own step. What is left, and what this
+    /// covers, is that unit *i* is given unit *i*'s decay rather than a
+    /// neighbour's or a shared constant.
     #[test]
     fn resistance_is_per_unit() {
         let model = SnnModel::load_default().unwrap();
@@ -866,8 +867,8 @@ mod tests {
     /// This is the evidence for that replacement rather than an argument for
     /// it. `resistance_from_decay` is `1 / (1 - decay)`, which is increasing
     /// in `decay`, so a decay vector that rises and falls produces
-    /// resistances that rise and fall with it. The shipped placeholder decays
-    /// ascend and hide this; a fitted set almost certainly would not.
+    /// resistances that rise and fall with it. The shipped exp-025 decays are
+    /// uniform `00DA` and hide this; a fitted set almost certainly would not.
     #[test]
     fn a_non_monotonic_decay_vector_still_maps_per_unit() {
         // On the Q8.8 grid, because the builder rejects a decay rate that is

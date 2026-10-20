@@ -54,8 +54,8 @@
 //!   denominator overflows, and a readout whose accumulated channel
 //!   sums overflow all return [`DecisionError`]. Nothing is
 //!   substituted, and no action is proposed. Same for an invalid config
-//!   (empty or duplicate vocabulary, empty label, non-finite floor
-//!   outside `[0, 1]`).
+//!   (empty vocabulary, empty or duplicate label, or a floor that is
+//!   non-finite or outside `[0, 1]`).
 //!
 //! Diagnostics copy the finite scores and the winning index/label. They do
 //! not borrow membrane, weights, or any other mutable model state.
@@ -310,7 +310,8 @@ impl DecisionConfig {
 /// Failures that refuse to produce a [`Decision`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum DecisionError {
-    /// The score row had length 0.
+    /// The score row (or, from [`score_readout`], the weight image) had
+    /// length 0.
     EmptyRow,
     /// Row or spike/weight vector length did not match the contract.
     WidthMismatch {

@@ -22,9 +22,14 @@
 //! time.
 
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::fmt;
 
 /// Maximum object/array nesting accepted before parsing fails.
+///
+/// A document may open at most this many containers inside one another;
+/// `MAX_DEPTH` nested arrays parse, `MAX_DEPTH + 1` do not, whatever the
+/// innermost one holds. Scalars are not a nesting level.
 ///
 /// The parser is recursive, so this bounds stack usage on hostile input.
 pub const MAX_DEPTH: usize = 64;
@@ -199,12 +204,10 @@ impl Parser<'_> {
 
     /// Dispatch on the first byte to the parser for that value type.
     ///
-    /// `depth` guards against a document nested deeply enough to overflow
-    /// the stack, since this parser recurses.
+    /// `depth` is the number of containers already open around this value;
+    /// the container parsers check it against [`MAX_DEPTH`] so a document
+    /// nested deeply enough to overflow the stack is refused.
     fn parse_value(&mut self, depth: usize) -> Result<Json, JsonError> {
-        if depth > MAX_DEPTH {
-            return Err(self.error(format!("nesting deeper than {MAX_DEPTH} levels")));
-        }
         match self.peek() {
             Some(b'n') => self.literal("null", Json::Null),
             Some(b't') => self.literal("true", Json::Bool(true)),
@@ -218,8 +221,23 @@ impl Parser<'_> {
         }
     }
 
+    /// Refuse to open a container that would exceed [`MAX_DEPTH`].
+    ///
+    /// `depth` counts the containers already open, so the one about to open
+    /// is nesting level `depth + 1`. The check used to sit on every value
+    /// with `depth > MAX_DEPTH`, which let a 65th level through when it was
+    /// empty (`[]` at depth 64) but refused it once it held a scalar --
+    /// whether a document parsed depended on its innermost contents.
+    fn enter_container(&self, depth: usize) -> Result<(), JsonError> {
+        if depth >= MAX_DEPTH {
+            return Err(self.error(format!("nesting deeper than {MAX_DEPTH} levels")));
+        }
+        Ok(())
+    }
+
     /// `[` value `,` value `]`, rejecting a trailing comma.
     fn parse_array(&mut self, depth: usize) -> Result<Json, JsonError> {
+        self.enter_container(depth)?;
         self.expect(b'[')?;
         let mut items = Vec::new();
         self.skip_whitespace();
@@ -244,6 +262,7 @@ impl Parser<'_> {
 
     /// `{` member `,` member `}`, rejecting a trailing comma.
     fn parse_object(&mut self, depth: usize) -> Result<Json, JsonError> {
+        self.enter_container(depth)?;
         self.expect(b'{')?;
         let mut map = BTreeMap::new();
         self.skip_whitespace();
@@ -281,13 +300,16 @@ impl Parser<'_> {
         self.expect(b':')?;
         self.skip_whitespace();
         let value = self.parse_value(depth + 1)?;
-        if map.insert(key.clone(), value).is_some() {
-            return Err(JsonError {
-                message: format!("duplicate object key {key:?}"),
+        match map.entry(key) {
+            Entry::Vacant(slot) => {
+                slot.insert(value);
+                Ok(())
+            }
+            Entry::Occupied(slot) => Err(JsonError {
+                message: format!("duplicate object key {:?}", slot.key()),
                 offset: key_offset,
-            });
+            }),
         }
-        Ok(())
     }
 
     /// Sign, integer, optional fraction, optional exponent, then `f64`.
@@ -402,6 +424,7 @@ impl Parser<'_> {
 
     /// One escape sequence, the cursor already past the backslash.
     fn parse_escape(&mut self, out: &mut String) -> Result<(), JsonError> {
+        let escape_offset = self.pos;
         let escape = self
             .peek()
             .ok_or_else(|| self.error("unterminated escape"))?;
@@ -416,12 +439,29 @@ impl Parser<'_> {
             b'r' => '\r',
             b't' => '\t',
             b'u' => return self.parse_unicode_escape(out),
-            other => {
-                return Err(self.error(format!("unknown escape `\\{}`", other as char)));
-            }
+            _ => return Err(self.unknown_escape(escape_offset)),
         };
         out.push(unescaped);
         Ok(())
+    }
+
+    /// The error for a backslash followed by anything but a JSON escape.
+    ///
+    /// Located on the offending character, like [`Self::parse_hex4`]'s bad
+    /// digits, and naming the whole character: the byte at `offset` may be
+    /// only the lead byte of a multi-byte one, so printing it `as char` would
+    /// show `\é` as its Latin-1 misreading `\Ã`. `offset` follows an ASCII
+    /// backslash in a `&str`, so it is a character boundary and the suffix is
+    /// valid UTF-8.
+    fn unknown_escape(&self, offset: usize) -> JsonError {
+        let shown = std::str::from_utf8(&self.bytes[offset..])
+            .ok()
+            .and_then(|rest| rest.chars().next())
+            .unwrap_or(char::REPLACEMENT_CHARACTER);
+        JsonError {
+            message: format!("unknown escape `\\{shown}`"),
+            offset,
+        }
     }
 
     fn parse_unicode_escape(&mut self, out: &mut String) -> Result<(), JsonError> {
