@@ -12,45 +12,51 @@ import signal
 import subprocess
 import time
 
-from tools.anticipation.campaign import capture
-
+from .campaign import capture
 from .hermes_cleanup import finish_task_cleanup
-from .ollama_runtime import OllamaRuntime as OllamaRuntime, _local_endpoint
 
-from .hermes_protocol import build_hermes_campaign as build_hermes_campaign, _prompt
-from .task_verification import (
-    write_fixture,
+# Protocol, runtime, and verifier limits are re-exported from their owning
+# modules (tests and callers import them from here). They used to be
+# duplicated literals that could silently drift from the enforced values.
+from .hermes_protocol import (  # noqa: F401
+    EXCLUDED_MODELS,
+    MODEL_PLAN,
+    PRELOAD_COMPLETION_TIMEOUT_SECONDS,
+    PRELOAD_KEEP_ALIVE_SECONDS,
+    PROTOCOL_ID,
+    SIGTERM_GRACE_SECONDS,
+    _prompt,
+    build_hermes_campaign as build_hermes_campaign,
+)
+from .ollama_runtime import (  # noqa: F401
+    CONTROL_PLANE_TIMEOUT_SECONDS,
+    DEFAULT_ENDPOINT,
+    DEFAULT_MODEL,
+    DURABLE_CLEANUP_INITIAL_BACKOFF_SECONDS,
+    DURABLE_CLEANUP_MAX_BACKOFF_SECONDS,
+    DURABLE_CLEANUP_TIMEOUT_SECONDS,
+    OllamaRuntime as OllamaRuntime,
+    _local_endpoint,
+)
+from .task_verification import (  # noqa: F401
+    VERIFIER_AS_LIMIT_BYTES,
+    VERIFIER_CPU_LIMIT_SECONDS,
+    VERIFIER_FSIZE_LIMIT_BYTES,
+    VERIFIER_NPROC_LIMIT,
     verify_fixture,
+    write_fixture,
 )
 
-PROTOCOL_ID = "hermes-ollama-inference-v4"
-DEFAULT_MODEL = "gemma4:12b"
-DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
 HARD_TIMEOUT_SECONDS = 100.0
-SIGTERM_GRACE_SECONDS = 5.0
-PRELOAD_KEEP_ALIVE_SECONDS = 180
-PRELOAD_COMPLETION_TIMEOUT_SECONDS = 180
-DURABLE_CLEANUP_TIMEOUT_SECONDS = 30
-DURABLE_CLEANUP_INITIAL_BACKOFF_SECONDS = 0.05
-DURABLE_CLEANUP_MAX_BACKOFF_SECONDS = 1.0
-CONTROL_PLANE_TIMEOUT_SECONDS = 30
-VERIFIER_AS_LIMIT_BYTES = 512 * 1024 * 1024
-VERIFIER_NPROC_LIMIT = 8192
-VERIFIER_FSIZE_LIMIT_BYTES = 1024 * 1024
-VERIFIER_CPU_LIMIT_SECONDS = 4
-MODEL_PLAN = (
-    ("gemma4:12b", 262144),
-    ("granite4.2:8b", 131072),
-    ("Ornith-1.5-9B:latest", 262144),
-)
-EXCLUDED_MODELS = {"muse-glimmer:30b", "nemotron-3.5-lightning:30b"}
+# Bound on draining Hermes output after SIGKILL of its process group. Only a
+# descendant that escaped the group can hold the pipes open past this.
+SIGKILL_REAP_TIMEOUT_SECONDS = 5.0
 ALLOWED_TOOLS = {
     "read_file",
     "write_file",
     "patch",
     "search_files",
 }
-_DEFAULT_REQUEST_TIMEOUT = object()
 
 
 def _signal_process_group(process, signal_number):
@@ -179,7 +185,8 @@ class HermesStimulus:
             raise RuntimeError("planned Hermes prompt digest mismatch")
         prompt_path = Path(session["prompt_path"])
         prompt_path.parent.mkdir(parents=True, exist_ok=True)
-        prompt_path.write_text(prompt + "\n")
+        # The digest above is over UTF-8; write the same bytes on any locale.
+        prompt_path.write_text(prompt + "\n", encoding="utf-8")
         self._session = session
 
     def command(self, session):
@@ -247,8 +254,10 @@ class HermesStimulus:
 
     @staticmethod
     def _positive_usage(usage):
+        # bool is an int subclass; `true` is not a token count.
         return isinstance(usage, dict) and any(
-            isinstance(value, (int, float)) and value > 0 for value in usage.values()
+            isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+            for value in usage.values()
         )
 
     @staticmethod
@@ -301,7 +310,8 @@ class HermesStimulus:
                 self.command(session),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                # stream-json is UTF-8 regardless of the parent's locale.
+                encoding="utf-8",
                 env=self.environment(session),
                 cwd=session["scratch_path"],
                 start_new_session=True,
@@ -340,8 +350,8 @@ class HermesStimulus:
         output_dir = Path(session["path"])
         stdout_path = output_dir / "hermes-stream.jsonl"
         stderr_path = output_dir / "hermes-stderr.log"
-        stdout_path.write_text(stdout or "")
-        stderr_path.write_text(stderr or "")
+        stdout_path.write_text(stdout or "", encoding="utf-8")
+        stderr_path.write_text(stderr or "", encoding="utf-8")
         record["stdout_jsonl_path"] = str(stdout_path)
         record["stderr_path"] = str(stderr_path)
 
@@ -371,7 +381,18 @@ class HermesStimulus:
             except subprocess.TimeoutExpired:
                 forced_kill = True
                 _signal_process_group(process, signal.SIGKILL)
-                stdout, stderr = process.communicate()
+                try:
+                    # Previously unbounded: a descendant that left the process
+                    # group and kept stdout open hung the session past its
+                    # cleanup deadline and never stopped the collector.
+                    stdout, stderr = process.communicate(
+                        timeout=SIGKILL_REAP_TIMEOUT_SECONDS
+                    )
+                except subprocess.TimeoutExpired as error:
+                    raise RuntimeError(
+                        "Hermes output stayed open after SIGKILL; a descendant "
+                        "escaped the process group"
+                    ) from error
 
         return stdout, stderr, timeboxed, forced_kill
 
@@ -464,10 +485,22 @@ class HermesStimulus:
 
 
 def _resolve_tool_path(value, scratch):
-    resolved = Path(value)
-    if not resolved.is_absolute():
-        resolved = scratch / resolved
-    resolved = resolved.resolve()
+    """Resolve a tool-call path for the scope audit, failing closed.
+
+    `~` forms are expanded because file tools commonly do so; auditing them as
+    `scratch/~/...` reported a home-directory access as in scope. A path that
+    cannot be resolved (embedded NUL, symlink loop, unknown user) is recorded
+    as out of scope rather than aborting the whole session record.
+    """
+    if "\x00" in value:
+        return Path(value), False
+    try:
+        resolved = Path(value).expanduser()
+        if not resolved.is_absolute():
+            resolved = scratch / resolved
+        resolved = resolved.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return Path(value), False
     in_scope = resolved == scratch or scratch in resolved.parents
     return resolved, in_scope
 

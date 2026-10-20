@@ -62,10 +62,18 @@ def validate_function(function):
         *function.args.args,
         *function.args.kwonlyargs,
     ]
-    assert not function.decorator_list and not function.args.defaults
-    assert all(default is None for default in function.args.kw_defaults)
-    assert function.returns is None
-    assert all(argument.annotation is None for argument in arguments)
+    # Explicit checks, not `assert`: these are security validation and must
+    # not depend on the interpreter's optimization flags.
+    if (
+        function.decorator_list
+        or function.args.defaults
+        or any(default is not None for default in function.args.kw_defaults)
+        or function.returns is not None
+        or any(argument.annotation is not None for argument in arguments)
+    ):
+        raise ValueError(
+            "candidate normalize may not use decorators, defaults, or annotations"
+        )
 
 
 SAFE_BUILTINS = {
@@ -148,7 +156,10 @@ def _normalize_function_code(module_code):
 
 
 def load_candidate(candidate):
-    source = candidate.read_bytes()
+    # Read at most one byte past the limit; the candidate path is
+    # agent-controlled and may name a huge or endless file.
+    with candidate.open("rb") as stream:
+        source = stream.read(65537)
     if len(source) > 65536:
         raise ValueError("candidate source exceeds 64 KiB")
     tree = ast.parse(source, filename=str(candidate))

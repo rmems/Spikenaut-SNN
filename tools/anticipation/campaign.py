@@ -12,7 +12,6 @@ import re
 import random
 import signal
 import subprocess
-import sys
 import time
 import tempfile
 
@@ -189,6 +188,10 @@ def capture(root, collector, *, campaign=None, stimulus_factory=None):
     active_session = None
     stimulus = None
     completed_all_sessions = False
+    # Track the propagating error explicitly. sys.exc_info() inside `finally`
+    # also reports an exception the *caller* is merely handling, which made a
+    # capture started from an `except` block swallow its own cleanup errors.
+    capture_error = None
     try:
         stimulus = (stimulus_factory or Stimulus)()
         if hasattr(stimulus, "prepare"):
@@ -206,15 +209,15 @@ def capture(root, collector, *, campaign=None, stimulus_factory=None):
         completed_all_sessions = True
         status["status"] = "finalizing"
     except BaseException as error:
+        capture_error = error
         status["status"] = "incomplete"
         status["reason"] = f"{type(error).__name__}: {error}"
         status["failed_session_id"] = active_session
         _record_unattempted(status, campaign, active_session)
         raise
     finally:
-        had_active_error = sys.exc_info()[0] is not None
         _finish_capture(
-            root, stimulus, status, completed_all_sessions, had_active_error
+            root, stimulus, status, completed_all_sessions, capture_error is not None
         )
 
 
@@ -238,13 +241,16 @@ def _capture_session(session, stimulus, collector, campaign):
             collector, campaign["collector_sha256"], env, log
         )
         session_error = None
+        stimuli_error = None
         try:
             _record_stimuli(directory, process, stimulus, session, state)
         except BaseException as error:
-            session_error = error
+            session_error = stimuli_error = error
             raise
         finally:
-            had_active_error = sys.exc_info()[0] is not None
+            # Not sys.exc_info(): see capture(). A caller's handled exception
+            # must not suppress this session's audit or shutdown error.
+            had_active_error = stimuli_error is not None
             record = {
                 "session_id": session["session_id"],
                 "started_at_utc": state["started"],
@@ -314,13 +320,16 @@ def _open_verified_collector(collector, expected_digest):
 
 def _finish_capture(root, stimulus, status, completed_all_sessions, had_active_error):
     cleanup_error = None
+    close_raised = True
     try:
         cleanup_error = _close_stimulus_if_supported(stimulus, status)
         if completed_all_sessions and cleanup_error is None:
             status["status"] = "complete"
+        close_raised = False
     finally:
-        preserve_active_error = had_active_error or sys.exc_info()[0] is not None
-        _persist_capture_status(root, status, preserve_active_error)
+        # A status-write failure must not mask an error that is already
+        # propagating from capture() or from stimulus.close() itself.
+        _persist_capture_status(root, status, had_active_error or close_raised)
     if cleanup_error is not None and not had_active_error:
         raise cleanup_error
 
@@ -405,12 +414,14 @@ def _publish_session_audit(stimulus, directory, record, audit_key, session_error
 def _stop_collector(process, directory, record, session_error):
     exit_code = None
     # Collector cleanup is mandatory even if diagnostics or disk writes fail.
-    if process.poll() is None:
-        try:
-            process.send_signal(signal.SIGINT)
-        except ProcessLookupError:
-            pass
+    # The SIGINT is inside the guarded block so an interrupt or OS error while
+    # signalling still kills and reaps the collector instead of orphaning it.
     try:
+        if process.poll() is None:
+            try:
+                process.send_signal(signal.SIGINT)
+            except ProcessLookupError:
+                pass
         exit_code = process.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         exit_code = _kill_and_reap_collector(process)
@@ -469,12 +480,15 @@ def _record_unattempted(status, campaign, active_session):
 
 
 def _confirm_collector_shutdown(directory, record, exit_code):
-    manifest = json.loads((directory / "session_manifest.json").read_text())
+    # Persist the reaped exit code before parsing the collector-owned manifest,
+    # so a missing or malformed manifest still leaves an audit of the shutdown.
     record["collector_exit_code"] = exit_code
     record["status"] = "collector_stopped"
     write_json(directory / STIMULUS_AUDIT_NAME, record)
+    manifest = json.loads((directory / "session_manifest.json").read_text())
     if (
         exit_code
+        or not isinstance(manifest, dict)
         or not manifest.get("ended_at_utc")
         or manifest.get("parquet_write_failures") != 0
     ):

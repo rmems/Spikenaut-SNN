@@ -406,3 +406,45 @@ def test_runtime_retains_model_identity_for_other_post_load_failures(
             cleanup = runtime.close()
             assert cleanup == {"model": "granite4.2:8b", "unloaded": True}
         assert state["loaded"] is False
+
+
+def test_model_status_rejects_non_object_entries(monkeypatch):
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    runtime = OllamaRuntime()
+    monkeypatch.setattr(
+        runtime, "_request", lambda *_args, **_kwargs: {"models": ["gemma4:12b"]}
+    )
+
+    # A bare-string entry used to raise AttributeError from entry.get(), which
+    # escaped the handled error set and killed the durable cleanup worker.
+    with pytest.raises(RuntimeError, match="non-object model"):
+        runtime._models()
+
+
+def test_selection_metadata_tolerates_non_object_details():
+    from tools.anticipation.hermes_campaign import OllamaRuntime
+
+    metadata = OllamaRuntime()._selection_metadata(
+        "gemma4:12b", "gemma4", 262144, {"size": 3, "size_vram": 1}, {"details": ["Q6_K"]}
+    )
+
+    assert metadata["quantization"] is None
+    assert metadata["residency"]["size_cpu"] == 2
+
+
+def test_unbounded_socket_timeout_is_capped_by_end_to_end_deadline():
+    from tools.anticipation.ollama_http import (
+        DeadlineHTTPClient,
+        _DEFAULT_REQUEST_TIMEOUT,
+    )
+
+    client = DeadlineHTTPClient("http://127.0.0.1:11434", None)
+
+    # min(None, deadline) used to raise TypeError.
+    assert client._request_timeout("/api/ps", _DEFAULT_REQUEST_TIMEOUT, 2.5) == 2.5
+    assert client._request_timeout("/api/ps", None, 2.5) == 2.5
+    assert client._request_timeout("/api/ps", 1.0, 2.5) == 1.0
+    assert client._request_timeout("/api/ps", None, None) is None
+    with pytest.raises(TimeoutError):
+        client._request_timeout("/api/ps", 1.0, 0)

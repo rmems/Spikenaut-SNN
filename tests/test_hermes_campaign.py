@@ -204,8 +204,7 @@ def test_fake_cli_stream_records_diagnostics_real_schema_cwd_and_verified_task(
     stimulus = HermesStimulus(tmp_path, hermes_executable=fake, runtime=FakeRuntime())
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
-    record = stimulus.run(session["task"], __import__("time").monotonic() - 20)
-    assert record["workload_status"] == "valid"
+    record = stimulus.run(session["task"], time.monotonic() - 20)
     assert record["workload_status"] == "valid"
     assert record["verifier"]["status"] == "passed"
     assert record["tool_call_count"] == 1
@@ -382,6 +381,74 @@ def test_malformed_object_like_stream_line_fails_but_diagnostic_does_not():
         HermesStimulus._events("plain warning\n{broken\n")
 
 
+def test_scope_audit_fails_closed_for_home_and_unresolvable_paths(tmp_path):
+    from tools.anticipation.hermes_campaign import HermesStimulus
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    calls = [
+        {"name": "read_file", "tool_call_id": "in", "input": {"path": "input.csv"}},
+        {"name": "read_file", "tool_call_id": "home", "input": {"path": "~/secret"}},
+        {"name": "read_file", "tool_call_id": "nul", "input": {"path": "a\x00b"}},
+    ]
+
+    outside = HermesStimulus._scope_tool_calls(calls, scratch)
+
+    # "~/secret" used to be audited as scratch/~/secret; a NUL byte aborted
+    # the whole session record with ValueError instead of being audited.
+    assert [item["tool_call_id"] for item in outside] == ["home", "nul"]
+    assert calls[0]["explicit_paths"][0]["in_scratch"] is True
+    assert all(not item["in_scratch"] for item in outside)
+
+
+def test_positive_usage_requires_a_real_positive_count():
+    from tools.anticipation.hermes_campaign import HermesStimulus
+
+    assert HermesStimulus._positive_usage({"input": 0, "output": 3}) is True
+    assert HermesStimulus._positive_usage({"input": True}) is False
+    assert HermesStimulus._positive_usage({"input": float("nan")}) is False
+    assert HermesStimulus._positive_usage([5]) is False
+
+
+def test_sigkill_drain_is_bounded_when_a_descendant_holds_output_open(
+    tmp_path, monkeypatch
+):
+    import signal
+    import subprocess  # nosec B404
+
+    from tools.anticipation import hermes_campaign
+
+    timeouts = []
+    signals = []
+
+    class HeldPipes:
+        pid = 12345
+
+        @staticmethod
+        def communicate(timeout=None):
+            timeouts.append(timeout)
+            raise subprocess.TimeoutExpired("hermes", timeout)
+
+    # SIGKILL is POSIX-only; the value is only recorded here.
+    monkeypatch.setattr(hermes_campaign.signal, "SIGKILL", 9, raising=False)
+    monkeypatch.setattr(
+        hermes_campaign,
+        "_signal_process_group",
+        lambda _process, number: signals.append(number),
+    )
+    stimulus = hermes_campaign.HermesStimulus(
+        tmp_path, hermes_executable=tmp_path / "hermes", runtime=FakeRuntime()
+    )
+    event = {"hard_deadline_s": 120.0, "termination_grace_s": 0.01}
+
+    with pytest.raises(RuntimeError, match="escaped the process group"):
+        stimulus._communicate_task(HeldPipes(), event, time.monotonic() - 20, {})
+
+    assert signals == [signal.SIGTERM, 9]
+    assert None not in timeouts, "every communicate() must be bounded"
+    assert timeouts[-1] == hermes_campaign.SIGKILL_REAP_TIMEOUT_SECONDS
+
+
 def test_no_tool_call_or_cli_error_marks_task_incomplete(tmp_path):
     from tools.anticipation.hermes_campaign import HermesStimulus, build_hermes_campaign
 
@@ -393,7 +460,7 @@ def test_no_tool_call_or_cli_error_marks_task_incomplete(tmp_path):
     stimulus = HermesStimulus(tmp_path, hermes_executable=fake, runtime=FakeRuntime())
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
-    origin = __import__("time").monotonic() - 20
+    origin = time.monotonic() - 20
     with pytest.raises(RuntimeError, match="tool call"):
         stimulus.run(session["task"], origin)
     assert stimulus.session_records()[0]["status"] == "invalid"
@@ -426,7 +493,7 @@ def test_tool_call_without_terminal_result_is_incomplete(tmp_path):
     stimulus = HermesStimulus(tmp_path, hermes_executable=fake, runtime=FakeRuntime())
     stimulus.seed(session["seed"])
     stimulus.prepare_session(session)
-    origin = __import__("time").monotonic() - 20
+    origin = time.monotonic() - 20
     with pytest.raises(RuntimeError, match="terminal result"):
         stimulus.run(session["task"], origin)
     assert stimulus.session_records()[0]["status"] == "invalid"
