@@ -527,13 +527,14 @@ mod tests {
         assert_eq!(INPUT_RANGE, (NO_STIMULUS, 1.0));
     }
 
+    /// The shipped sidecar, from the copy the crate already embeds.
+    fn shipped_sidecar() -> crate::json::Json {
+        crate::json::parse(crate::model::SHIPPED_MODEL_JSON).expect("shipped snn_model.json")
+    }
+
     #[test]
     fn the_sidecar_unused_axon_contract_matches_this_range() {
-        let parsed = crate::json::parse(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/dataset/merged_v2/snn_model.json"
-        )))
-        .expect("shipped snn_model.json");
+        let parsed = shipped_sidecar();
         let recorded = parsed
             .get("unused_axons")
             .and_then(crate::json::Json::as_str)
@@ -550,11 +551,7 @@ mod tests {
 
     #[test]
     fn the_legal_columns_are_the_sidecar_columns() {
-        let parsed = crate::json::parse(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/dataset/merged_v2/snn_model.json"
-        )))
-        .expect("shipped snn_model.json");
+        let parsed = shipped_sidecar();
         let recorded = parsed
             .get("legal_columns")
             .and_then(crate::json::Json::as_array)
@@ -563,6 +560,74 @@ mod tests {
         assert_eq!(recorded.len(), LIVE_LEGAL_COLUMNS);
         for (axon, column) in recorded.iter().enumerate() {
             assert_eq!(column.as_str(), Some(LIVE_COLUMNS[axon]), "axon {axon}");
+        }
+    }
+
+    #[test]
+    fn an_all_absent_reading_is_no_stimulus_everywhere() {
+        let stim = adapter()
+            .stim_optional([None; LIVE_LEGAL_COLUMNS])
+            .expect("absent is not invalid");
+        assert_eq!(stim, [NO_STIMULUS; CHANNEL_COUNT]);
+        assert!(stim.iter().all(|v| v.to_bits() == NO_STIMULUS.to_bits()));
+    }
+
+    /// An absent sensor is never named as an offender, even beside one that is.
+    #[test]
+    fn an_absent_sensor_is_not_an_offender_beside_a_bad_one() {
+        let mut reading = READING.map(Some);
+        reading[0] = None;
+        reading[1] = Some(f64::NAN);
+        reading[2] = None;
+        let rejected = adapter().stim_optional(reading).unwrap_err();
+        assert_eq!(rejected.channels().collect::<Vec<_>>(), [1]);
+        assert_eq!(rejected.sensors().collect::<Vec<_>>(), ["power_w"]);
+    }
+
+    /// Readings that are finite but at the edges of binary32 are readings, not
+    /// faults: negative zero encodes as a positive zero, and an `f64` subnormal
+    /// (which snaps to zero in binary32) sits at the bottom of a zero-based span.
+    #[test]
+    fn signed_zero_and_subnormals_are_ordinary_readings() {
+        // mem_util_pct and gpu_temp_c both have a frozen minimum of 0.
+        assert_eq!(LIVE_RAW_RANGES[0].0, 0.0);
+        assert_eq!(LIVE_RAW_RANGES[2].0, 0.0);
+        let stim = adapter()
+            .stim([-0.0, 180.0, 1e-310, 1_900.0, 9_500.0])
+            .expect("finite");
+        assert_eq!(
+            stim[0].to_bits(),
+            0.0_f32.to_bits(),
+            "-0.0 is a positive zero"
+        );
+        assert_eq!(stim[2].to_bits(), 0.0_f32.to_bits());
+    }
+
+    /// Normalisation is monotone in the raw reading and never leaves the unit
+    /// interval, across and well beyond every frozen span.
+    #[test]
+    fn every_axon_is_monotone_and_bounded() {
+        let adapter = adapter();
+        for (axon, &(min, max)) in LIVE_RAW_RANGES.iter().enumerate() {
+            let width = max - min;
+            let mut previous = f32::NEG_INFINITY;
+            for step in -20..=120 {
+                let mut reading = READING;
+                reading[axon] = min + width * f64::from(step) / 100.0;
+                let value = adapter.stim(reading).expect("finite")[axon];
+                assert!(
+                    (0.0..=1.0).contains(&value),
+                    "{}: {value} outside [0, 1]",
+                    LIVE_COLUMNS[axon],
+                );
+                assert!(
+                    value >= previous,
+                    "{}: not monotone at step {step}",
+                    LIVE_COLUMNS[axon],
+                );
+                previous = value;
+            }
+            assert_eq!(previous, 1.0, "{} saturates", LIVE_COLUMNS[axon]);
         }
     }
 }

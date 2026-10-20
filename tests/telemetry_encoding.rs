@@ -556,14 +556,16 @@ fn a_rejected_frame_leaves_the_channel_working() {
     }
 }
 
-/// A per-step spike demand that overflows to infinity is refused.
+/// A per-step spike demand that overflows `f32` is refused.
 ///
 /// Both factors can be finite while `max_rate_hz * dt_seconds` is not, and
-/// `RateEncoder` validates each factor rather than the product. Left
-/// unchecked, one saturated frame adds infinity to the streaming accumulator
-/// and draining cannot reduce it: every later step emits at the drain cap even
-/// at minimum input, until `reset()`. That is unrecoverable in a way the
-/// documented finite backlog is not, so the constructor refuses it.
+/// `RateEncoder` validates each factor rather than the product. `axon-encoder`
+/// 0.5 forms the demand in `f64` and saturates its queue at `u64::MAX` rather
+/// than going infinite, but left unchecked one saturated frame still queues
+/// more spikes than the 1024-per-step drain will ever clear: every later step
+/// emits at the drain cap even at minimum input, until `reset()`.
+/// `an_unguarded_overflowing_demand_pins_the_drain_cap` shows that on a bare
+/// `RateEncoder`; this pins the refusal on both wrappers.
 #[test]
 fn an_overflowing_per_step_demand_is_rejected() {
     let err = TelemetryEncoder::try_new(0.0, f32::MAX, INPUT_RANGE, 2.0)
@@ -586,6 +588,123 @@ fn an_overflowing_per_step_demand_is_rejected() {
     // guard rejects the arithmetic rather than large rates in general.
     TelemetryEncoder::try_new(0.0, f32::MAX, INPUT_RANGE, 1.0)
         .expect("a finite product, however large, is still accepted");
+
+    // The live wrapper shares the guard, error for error.
+    assert_eq!(
+        LiveTelemetryEncoder::try_new(0.0, f32::MAX, INPUT_RANGE, 2.0).unwrap_err(),
+        err,
+    );
+    LiveTelemetryEncoder::try_new(0.0, f32::MAX, INPUT_RANGE, 1.0)
+        .expect("a finite product, however large, is still accepted");
+}
+
+/// What the guard above prevents, observed on a bare `RateEncoder`, which has
+/// no product check: one saturated frame, and every later *idle* step still
+/// emits the full 1024-spike drain cap.
+#[test]
+fn an_unguarded_overflowing_demand_pins_the_drain_cap() {
+    let mut bare = RateEncoder::try_new(0.0, f32::MAX, INPUT_RANGE, 2.0)
+        .expect("the bare encoder checks each factor, not the product");
+    assert!((f32::MAX * 2.0).is_infinite());
+
+    let saturated = bare.encode_step(&[INPUT_RANGE.1]);
+    assert_eq!(saturated.spikes.len(), 1024);
+    for step in 0..8 {
+        assert_eq!(
+            bare.encode_step(&[INPUT_RANGE.0]).spikes.len(),
+            1024,
+            "idle step {step} after one saturated frame",
+        );
+    }
+
+    // `reset` is the only way out.
+    bare.reset();
+    assert!(bare.encode_step(&[INPUT_RANGE.0]).spikes.is_empty());
+}
+
+/// The live encoder refuses every bad configuration the coin encoder does,
+/// with the same error, so neither wrapper is the lax one.
+#[test]
+fn the_live_encoder_validates_its_configuration_like_the_coin_encoder() {
+    let cases: [(f32, f32, (f32, f32), f32); 9] = [
+        (BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, 0.0),
+        (BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, -0.001),
+        (BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, f32::NAN),
+        (BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, f32::INFINITY),
+        (MAX_RATE_HZ, BASE_RATE_HZ, INPUT_RANGE, DT_SECONDS),
+        (-1.0, MAX_RATE_HZ, INPUT_RANGE, DT_SECONDS),
+        (BASE_RATE_HZ, f32::NAN, INPUT_RANGE, DT_SECONDS),
+        (BASE_RATE_HZ, MAX_RATE_HZ, (1.0, 1.0), DT_SECONDS),
+        (BASE_RATE_HZ, MAX_RATE_HZ, (1.0, 0.0), DT_SECONDS),
+    ];
+    for (base, max, range, dt) in cases {
+        let live = LiveTelemetryEncoder::try_new(base, max, range, dt)
+            .expect_err("an invalid configuration must not construct");
+        let coin = TelemetryEncoder::try_new(base, max, range, dt)
+            .expect_err("an invalid configuration must not construct");
+        assert_eq!(live, coin, "({base}, {max}, {range:?}, {dt})");
+    }
+}
+
+/// The live wrapper is a wrapper too: tick for tick, it is a bare
+/// `RateEncoder` driven with the same five-wide frame.
+#[test]
+fn the_live_wrapper_matches_a_bare_rate_encoder() {
+    let mut wrapped = LiveTelemetryEncoder::new().expect("the live configuration is valid");
+    let mut bare = RateEncoder::try_new(BASE_RATE_HZ, MAX_RATE_HZ, INPUT_RANGE, DT_SECONDS)
+        .expect("shipped configuration");
+    let frame = [0.0, 0.25, 0.5, 0.75, 1.0];
+
+    for tick in 0..64 {
+        assert_eq!(
+            wrapped.encode_step(&frame).expect("a finite frame encodes"),
+            bare.encode_step(&frame),
+            "tick {tick}",
+        );
+    }
+    assert_eq!(wrapped.as_rate_encoder(), &bare, "state must stay in step");
+}
+
+/// Finite values outside [`INPUT_RANGE`] clamp to its ends -- including the
+/// extremes of `f32` -- rather than being rejected like a non-finite sample.
+#[test]
+fn the_live_encoder_clamps_out_of_range_finite_values() {
+    for (wild, tame) in [
+        (f32::MAX, INPUT_RANGE.1),
+        (1e30, INPUT_RANGE.1),
+        (f32::MIN, INPUT_RANGE.0),
+        (-1e-30, INPUT_RANGE.0),
+        (-0.0, INPUT_RANGE.0),
+    ] {
+        let mut clamped = LiveTelemetryEncoder::new().expect("the live configuration is valid");
+        let mut control = LiveTelemetryEncoder::new().expect("the live configuration is valid");
+        for tick in 0..(TICKS_PER_SPIKE * 4) {
+            assert_eq!(
+                clamped
+                    .encode_step(&[wild; LIVE_LEGAL_COLUMNS])
+                    .expect("a finite value is not a rejection"),
+                control
+                    .encode_step(&[tame; LIVE_LEGAL_COLUMNS])
+                    .expect("finite"),
+                "{wild} vs {tame}: tick {tick}",
+            );
+        }
+    }
+}
+
+/// Every historical source has a distinct label, and `ALL` is in channel order.
+#[test]
+fn historical_sources_are_labelled_distinctly_and_in_channel_order() {
+    let labels: Vec<&str> = TelemetrySource::ALL.iter().map(|s| s.label()).collect();
+    let mut unique = labels.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), labels.len(), "duplicate label in {labels:?}");
+
+    for (index, source) in TelemetrySource::ALL.into_iter().enumerate() {
+        assert_eq!(source.channels(), [2 * index, 2 * index + 1]);
+        assert_eq!(CHANNEL_MAP[2 * index], source);
+    }
 }
 
 /// Rejection is atomic, not per-channel.

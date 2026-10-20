@@ -508,3 +508,257 @@ fn reports_json_and_io_failures() {
     assert!(matches!(err, ModelError::Io { .. }));
     assert!(err.to_string().contains("does-not-exist.json"));
 }
+
+/// `std::error::Error::source` chains to the underlying failure where there is
+/// one, and a schema error is its own root cause.
+#[test]
+fn model_errors_expose_their_source() {
+    use std::error::Error as _;
+
+    let json = SnnModel::from_json_str("not json").unwrap_err();
+    assert!(json.source().is_some(), "{json}");
+
+    let io = SnnModel::from_path(default_model_path().with_file_name("does-not-exist.json"))
+        .unwrap_err();
+    assert!(io.source().is_some(), "{io}");
+
+    let schema = SnnModel::from_json_str(r#"{"neurons": []}"#).unwrap_err();
+    assert!(matches!(schema, ModelError::Schema(_)));
+    assert!(schema.source().is_none(), "{schema}");
+    assert!(schema.to_string().starts_with("invalid SNN model: "));
+}
+
+/// Ties round half away from zero, symmetric about zero: the rule
+/// `tools/q88_core.py::encode_q88` uses (`floor(x + 0.5)` / `ceil(x - 0.5)`).
+/// A banker's or floor rounder agrees with it everywhere except exactly here,
+/// and a floor rounder would bias every negative weight.
+#[test]
+fn quantize_q8_8_rounds_ties_away_from_zero() {
+    let lsb = 1.0 / Q8_8_SCALE;
+    assert_eq!(quantize_q8_8(0.5 * lsb), lsb);
+    assert_eq!(quantize_q8_8(-0.5 * lsb), -lsb);
+    // 2.5 LSB: round-half-to-even would give 2, away-from-zero gives 3.
+    assert_eq!(quantize_q8_8(2.5 * lsb), 3.0 * lsb);
+    assert_eq!(quantize_q8_8(-2.5 * lsb), -3.0 * lsb);
+
+    // Symmetric about zero on the whole half-LSB lattice, ties included.
+    for k in -2000..=2000 {
+        let value = f64::from(k) / 512.0;
+        assert_eq!(quantize_q8_8(-value), -quantize_q8_8(value), "{value}");
+    }
+
+    // Negative zero is code 0 and keeps its sign through the snap.
+    assert!(quantize_q8_8(-0.0).is_sign_negative());
+    assert!(is_q8_8(-0.0));
+}
+
+/// `is_q8_8` is true for every code and nothing else: off-grid, out of range
+/// and non-finite values are all refused.
+#[test]
+fn is_q8_8_accepts_exactly_the_representable_codes() {
+    for code in [
+        i16::MIN,
+        i16::MIN + 1,
+        -1,
+        0,
+        1,
+        193,
+        i16::MAX - 1,
+        i16::MAX,
+    ] {
+        let value = f64::from(code) / Q8_8_SCALE;
+        assert!(is_q8_8(value), "code {code} ({value})");
+    }
+    assert_eq!(f64::from(i16::MAX) / Q8_8_SCALE, Q8_8_MAX);
+    assert_eq!(f64::from(i16::MIN) / Q8_8_SCALE, Q8_8_MIN);
+
+    for value in [
+        0.1,
+        0.5 / Q8_8_SCALE,
+        Q8_8_MAX + 1.0 / Q8_8_SCALE,
+        Q8_8_MIN - 1.0 / Q8_8_SCALE,
+        f64::MIN_POSITIVE,
+        5e-324,
+        f64::MAX,
+        f64::MIN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NAN,
+    ] {
+        assert!(!is_q8_8(value), "{value}");
+    }
+}
+
+/// The public-API check never rounds, and says which way the value missed.
+#[test]
+fn check_q8_8_reports_each_failure_without_rounding() {
+    // 0.1 * 256 = 25.6, between codes 25 and 26.
+    let message = check_q8_8("w", 0.1).unwrap_err().to_string();
+    assert!(message.contains("not Q8.8-representable"), "{message}");
+    assert!(
+        message.contains("nearest codes 25/256 and 26/256"),
+        "{message}"
+    );
+
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let message = check_q8_8("w", bad).unwrap_err().to_string();
+        assert!(message.contains("expected a finite number"), "{message}");
+    }
+    for out in [128.0, Q8_8_MIN - 1.0 / Q8_8_SCALE] {
+        let message = check_q8_8("w", out).unwrap_err().to_string();
+        assert!(message.contains("outside the Q8.8 range"), "{message}");
+    }
+
+    for code in [Q8_8_MIN, -0.0, 0.0, Q8_8_MAX] {
+        check_q8_8("w", code).unwrap_or_else(|e| panic!("{code} is a code: {e}"));
+    }
+}
+
+/// `weight_tensor` re-checks hand-built weights rather than trusting them,
+/// and never rounds one on the caller's behalf.
+#[test]
+fn weight_tensor_refuses_a_hand_built_weight_off_the_q8_8_grid() {
+    let unit = |weight: f64| Neuron {
+        decay_rate: 0.5,
+        membrane_potential: 0.0,
+        threshold: 1.0,
+        last_spike: false,
+        weights: vec![weight],
+    };
+
+    for (weight, expected) in [
+        (0.1, "not Q8.8-representable"),
+        (f64::NAN, "expected a finite number"),
+        (f64::INFINITY, "expected a finite number"),
+        (200.0, "outside the Q8.8 range"),
+    ] {
+        let model = SnnModel {
+            neurons: vec![unit(weight)],
+        };
+        let err = model.weight_tensor().unwrap_err();
+        assert!(matches!(err, ModelError::Schema(_)), "{err}");
+        let message = err.to_string();
+        assert!(message.contains("neuron 0 weight 0"), "{message}");
+        assert!(message.contains(expected), "{weight}: {message}");
+    }
+
+    let on_grid = SnnModel {
+        neurons: vec![unit(193.0 / 256.0)],
+    };
+    assert_eq!(
+        on_grid.weight_tensor().unwrap().data(),
+        &TensorData::F64(vec![193.0 / 256.0]),
+    );
+}
+
+/// Every type error names the unit and the field it came from, and a neuron
+/// with several faults reports them in the documented precedence: weights,
+/// then `last_spike`, then the scalars.
+#[test]
+fn decoding_names_the_unit_and_field_of_every_fault() {
+    let ok = r#"{"decay_rate": 0.5, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0, 2.0], "last_spike": false}"#;
+    let cases = [
+        (
+            r#"{"decay_rate": 0.5, "membrane_potential": 0.0, "threshold": 1.0, "weights": ["x", 2.0], "last_spike": false}"#,
+            "neuron 1 weight 0 is a string, expected a number",
+        ),
+        (
+            r#"{"decay_rate": 0.5, "threshold": 1.0, "weights": [1.0, 2.0], "last_spike": false}"#,
+            "neuron 1 is missing `membrane_potential`",
+        ),
+        (
+            r#"{"decay_rate": 0.5, "membrane_potential": 0.0, "weights": [1.0, 2.0], "last_spike": false}"#,
+            "neuron 1 is missing `threshold`",
+        ),
+        (
+            r#"{"decay_rate": 0.5, "membrane_potential": 0.0, "threshold": 1.0, "last_spike": false}"#,
+            "neuron 1 is missing `weights`",
+        ),
+        (
+            r#"{"decay_rate": 0.5, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0, 2.0]}"#,
+            "neuron 1 is missing `last_spike`",
+        ),
+        (
+            r#"{"decay_rate": 0.5, "membrane_potential": 0.0, "threshold": null, "weights": [1.0, 2.0], "last_spike": false}"#,
+            "neuron 1 field `threshold` is a null, expected a number",
+        ),
+        (
+            r#"{"decay_rate": 0.5, "membrane_potential": 300.0, "threshold": 1.0, "weights": [1.0, 2.0], "last_spike": false}"#,
+            "neuron 1 field `membrane_potential` is 300, outside the Q8.8 range",
+        ),
+        // Precedence: a bad weight wins over a bad decay and a bad flag.
+        (
+            r#"{"decay_rate": 5.0, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0, 999.0], "last_spike": 1}"#,
+            "neuron 1 weight 1 is 999, outside the Q8.8 range",
+        ),
+        // Then `last_spike` wins over a bad scalar.
+        (
+            r#"{"decay_rate": 5.0, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0, 2.0], "last_spike": 1}"#,
+            "neuron 1 field `last_spike` is a number, expected a boolean",
+        ),
+    ];
+    for (second, expected) in cases {
+        let text = format!(r#"{{"neurons": [{ok}, {second}]}}"#);
+        let err = SnnModel::from_json_str(&text).unwrap_err();
+        assert!(matches!(err, ModelError::Schema(_)), "{err}");
+        let message = err.to_string();
+        assert!(
+            message.contains(expected),
+            "expected {message:?} to contain {expected:?}"
+        );
+    }
+
+    // And the healthy pair decodes, so the cases above fail on their fault.
+    let pair = SnnModel::from_json_str(&format!(r#"{{"neurons": [{ok}, {ok}]}}"#)).unwrap();
+    assert_eq!(pair.len(), 2);
+}
+
+/// The decay rate is snapped onto the Q8.8 grid like every other number, and
+/// the `(0, 1)` check runs on the snapped value: the smallest positive code
+/// loads, and anything that snaps to zero does not.
+#[test]
+fn decay_rate_is_snapped_before_its_open_interval_check() {
+    let model_with_decay = |decay: f64| {
+        SnnModel::from_json_str(&format!(
+            r#"{{"neurons": [{{"decay_rate": {decay}, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0], "last_spike": false}}]}}"#
+        ))
+    };
+
+    let smallest = model_with_decay(0.003_906_25).unwrap();
+    assert_eq!(smallest.neurons[0].decay_rate, 1.0 / Q8_8_SCALE);
+    let largest = model_with_decay(0.996_093_8).unwrap();
+    assert_eq!(largest.neurons[0].decay_rate, 255.0 / Q8_8_SCALE);
+
+    // 0.001 snaps to code 0, which is not a decay multiplier.
+    let message = model_with_decay(0.001).unwrap_err().to_string();
+    assert!(message.contains("decay multiplier in (0, 1)"), "{message}");
+}
+
+#[test]
+fn time_base_constants_agree() {
+    assert_eq!(TIMESTEP_SECONDS, 0.001);
+    assert_eq!(TIMESTEP_SECONDS * CLOCK_HZ, 1.0);
+    assert!(default_model_path().ends_with(MODEL_RELATIVE_PATH));
+}
+
+/// A hand-built neuron is re-checked by `tau_seconds` rather than trusted.
+#[test]
+fn tau_seconds_rechecks_a_hand_built_decay() {
+    let unit = |decay_rate: f64| Neuron {
+        decay_rate,
+        membrane_potential: 0.0,
+        threshold: 1.0,
+        last_spike: false,
+        weights: vec![0.0],
+    };
+    for decay in [0.0, 1.0, -0.25, f64::NAN] {
+        assert!(
+            unit(decay).tau_seconds(TIMESTEP_SECONDS).is_err(),
+            "{decay}"
+        );
+    }
+    assert_eq!(
+        unit(0.5).tau_seconds(TIMESTEP_SECONDS).unwrap(),
+        tau_from_decay(0.5, TIMESTEP_SECONDS).unwrap(),
+    );
+}
