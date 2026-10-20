@@ -13,20 +13,11 @@ from pathlib import Path
 try:  # package import: `python3 -m tools.measure_hamming`
     from .hamming_core import EXP024_CLAIMED, FROZEN_LINEAGE, Measurement
     from .q88_core import REPO_ROOT
+    from .q88_report import _stream_safe
 except ImportError:  # direct script: `python3 tools/measure_hamming.py`
     from hamming_core import EXP024_CLAIMED, FROZEN_LINEAGE, Measurement
     from q88_core import REPO_ROOT
-
-
-def _stream_safe(text: str, stream) -> str:
-    encoding = getattr(stream, "encoding", None) or "utf-8"
-    try:
-        text.encode(encoding)
-    except LookupError:
-        return text.encode("utf-8", "backslashreplace").decode("utf-8")
-    except UnicodeEncodeError:
-        return text.encode(encoding, "backslashreplace").decode(encoding)
-    return text
+    from q88_report import _stream_safe
 
 
 def _rel(path: Path) -> str:
@@ -48,7 +39,8 @@ def _protocol_lines(measurement: Measurement) -> list[str]:
     proto = measurement.protocol
     return [
         "float-vs-Q8.8 Hamming holdout  (issue #39)",
-        f"repo root: {_rel(REPO_ROOT)}",
+        # The checkout itself, not _rel(REPO_ROOT): that is always ".".
+        f"repo root: {REPO_ROOT}",
         "",
         "PROTOCOL",
         f"  condition : {proto.condition}",
@@ -159,7 +151,7 @@ def _exp024_delta_lines(measurement: Measurement) -> list[str]:
     ]
 
 
-def render(measurement: Measurement, stream=sys.stdout) -> list[str]:
+def render(measurement: Measurement) -> list[str]:
     """Format the protocol + numbers. Does not decide a Hamming gate."""
     lines = _protocol_lines(measurement)
     lines.append("")

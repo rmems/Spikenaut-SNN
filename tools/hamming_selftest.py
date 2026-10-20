@@ -38,6 +38,7 @@ try:  # package import
         encode_record,
         keep_lif_step,
         load_expected,
+        load_jsonl,
         measure,
         measure_method_fixture,
         method_fixture_paths,
@@ -61,6 +62,7 @@ except ImportError:
         encode_record,
         keep_lif_step,
         load_expected,
+        load_jsonl,
         measure,
         measure_method_fixture,
         method_fixture_paths,
@@ -80,8 +82,8 @@ def _require(condition: bool, message: str) -> None:
 _require.calls = 0
 
 SELF_TEST_SECTIONS = 16
-EXPECTED_REQUIRE_CALLS = 34
-EXPECTED_GUARD_CHECKS = 10
+EXPECTED_REQUIRE_CALLS = 35
+EXPECTED_GUARD_CHECKS = 12
 
 
 def _v3_row(episode: str, mem_util: float = 75.0, temp: float = 0.0) -> dict:
@@ -157,7 +159,23 @@ def malformed_jsonl_is_parse_error(tmp: Path, stream) -> int:
         _require("not a JSON object" in str(exc), f"wrong error: {exc}")
     else:
         raise SelfTestFailure("malformed JSONL did not raise ParseError")
-    return 2
+    # An integer literal past sys.get_int_max_str_digits() is a bare
+    # ValueError from json.loads, not JSONDecodeError; it used to escape as
+    # a traceback (exit 1) instead of ParseError (exit 2).
+    huge = tmp / "huge_int.jsonl"
+    huge.write_text(
+        '{"episode_id": "gpu-000170", "mem_util_pct": 1' + "0" * 5000 + "}\n",
+        encoding="utf-8",
+    )
+    try:
+        select_samples(load_jsonl(huge), "all")
+    except ParseError as exc:
+        _require("huge_int.jsonl:1" in str(exc), f"wrong error: {exc}")
+    except ValueError as exc:
+        raise SelfTestFailure("oversized JSONL integer leaked ValueError") from exc
+    else:
+        raise SelfTestFailure("oversized JSONL integer was accepted")
+    return 4
 
 
 def missing_episode_id_is_parse_error(stream) -> int:
@@ -358,7 +376,17 @@ def malformed_expect_json_is_parse_error(tmp: Path, stream) -> int:
         _require("k_none_pct" in str(exc), f"wrong error: {exc}")
     else:
         raise SelfTestFailure("nonnumeric expect-json did not raise ParseError")
-    return 4
+    huge = tmp / "huge_int.json"
+    huge.write_text('{"k_none_pct": 1' + "0" * 5000 + "}", encoding="utf-8")
+    try:
+        load_expected(huge)
+    except ParseError:
+        pass
+    except ValueError as exc:
+        raise SelfTestFailure("oversized pin integer leaked ValueError") from exc
+    else:
+        raise SelfTestFailure("oversized pin integer did not raise ParseError")
+    return 5
 
 
 def custom_method_fixture_without_pin_refused(stream) -> int:

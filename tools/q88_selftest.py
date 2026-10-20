@@ -31,6 +31,7 @@ Run via the CLI::
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 from collections.abc import Callable
@@ -68,10 +69,39 @@ def _write_mem(path: Path, words: list[int]) -> None:
     """Write raw 16-bit words as a .mem image, one 4-digit hex line each.
 
     Self-test scratch files only -- callers pass a temp path. Nothing here
-    ever writes into ``dataset/``.
+    ever writes into ``dataset/``. ``newline=""`` keeps the LF endings the
+    Rust exporter writes; text mode would turn them into CRLF on Windows.
     """
-    path.write_text("".join(f"{w:04X}\n" for w in words), encoding="utf-8")
+    path.write_text(
+        "".join(f"{w:04X}\n" for w in words), encoding="utf-8", newline=""
+    )
 
+
+def json_text_that_raises_recursion_error() -> str:
+    """A JSON document ``json.loads`` refuses with RecursionError.
+
+    CPython's decoder limit is not ``sys.getrecursionlimit()``. On 3.12 the
+    C scanner accepts about 10k nested arrays; on 3.11 the documented case
+    is about 1k. Search rather than hard-coding a depth that would parse
+    (and then fail for some other, unrelated reason).
+
+    Shared by the Q8.8 and decision self-tests, which both prove deep
+    nesting exits through ``ParseError`` (``q88_core.loads_json``).
+    """
+    depth = 512
+    last = 0
+    while depth <= 1_000_000:
+        text = "[" * depth + "0" + "]" * depth
+        try:
+            json.loads(text)
+        except RecursionError:
+            return text
+        last = depth
+        depth *= 2
+    raise SelfTestFailure(
+        f"json.loads accepted nested arrays through depth {last}; "
+        "could not construct a RecursionError payload"
+    )
 
 
 # Numbered scenarios self_test() must run. Counted and asserted at the end so
@@ -82,8 +112,8 @@ SELF_TEST_SECTIONS = 11
 # The two halves of the assertion total the scenarios report between them:
 # _require calls, and assertions made by a try/except/else proving a call
 # raised. Asserted by _suite_is_fully_accounted_for().
-EXPECTED_REQUIRE_CALLS = 67
-EXPECTED_GUARD_CHECKS = 31
+EXPECTED_REQUIRE_CALLS = 78
+EXPECTED_GUARD_CHECKS = 32
 
 
 def _scenarios() -> tuple[tuple[Callable[..., int], ...], tuple[Callable[..., int], ...]]:

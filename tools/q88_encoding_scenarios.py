@@ -37,7 +37,7 @@ try:  # package import: `python3 -m tools.verify_q88`
         read_utf8_text,
         verify_shipped,
     )
-    from .q88_report import report
+    from .q88_report import _stream_safe, report
 except ImportError:  # direct script: `python3 tools/verify_q88.py`
     from q88_core import (
         EXPECTED_ARTIFACTS,
@@ -56,7 +56,7 @@ except ImportError:  # direct script: `python3 tools/verify_q88.py`
         read_utf8_text,
         verify_shipped,
     )
-    from q88_report import report
+    from q88_report import _stream_safe, report
 
 
 # Modules the ASCII scan must find in this package: the four originals plus the
@@ -71,8 +71,12 @@ def _canonicalisation_ignores_case_and_padding(tmp, real) -> int:
     # Same idea one step further: lower-case words with padding around
     # them are the same artifact, and canonicalization must say so.
     noisy_path = tmp / "parameters_output_weights_noisy.mem"
+    # newline="": written verbatim. Text mode would turn the "\r\n" into
+    # "\r\r\n" on Windows, so the bytes would not be the ones described.
     noisy_path.write_text(
-        "".join(f"  {e.text.lower()}  \r\n" for e in real), encoding="utf-8"
+        "".join(f"  {e.text.lower()}  \r\n" for e in real),
+        encoding="utf-8",
+        newline="",
     )
     _require(
         canonical_mem_digest(parse_mem(noisy_path)) == OUTPUT_WEIGHTS_CANON_SHA256,
@@ -291,7 +295,35 @@ def _output_survives_cp1252(shipped) -> int:
             f"report() output is not encodable as cp1252: {exc}"
         ) from exc
     checks += 3
+    checks += _unknown_codec_stream_is_escaped()
     return checks
+
+
+class _UnknownCodecStream:
+    """A stream advertising a codec Python has no implementation for."""
+
+    encoding = "x-no-such-codec"
+
+
+def _unknown_codec_stream_is_escaped() -> int:
+    """``_stream_safe`` must not raise on a stream whose codec is unknown.
+
+    Its LookupError branch used to re-encode with that same unknown codec,
+    which raises LookupError again -- the crash the helper exists to stop.
+    """
+    stream = _UnknownCodecStream()
+    path = "C:/caf\u00e9/repo"
+    try:
+        safe = _stream_safe(path, stream)
+    except LookupError as exc:
+        raise SelfTestFailure(
+            f"_stream_safe leaked LookupError on an unknown codec: {exc}"
+        ) from exc
+    _require(
+        safe == "C:/caf\\xe9/repo",
+        f"unknown-codec fallback must escape to ASCII, got {safe!r}",
+    )
+    return 1
 
 
 def _invalid_utf8_raises_parse_error(tmp) -> int:
@@ -382,7 +414,7 @@ def _reject_non_ascii_mem_syntax(tmp: Path) -> int:
         ("NBSP padding", "\n".join("\u00a0" + w + "\u00a0" for w in words) + "\n"),
     ):
         path = tmp / f"mem_{label.split()[0].strip('+U')}.mem"
-        path.write_text(text, encoding="utf-8")
+        path.write_text(text, encoding="utf-8", newline="")
         try:
             parse_mem(path)
         except ParseError:
@@ -400,7 +432,9 @@ def _reject_non_ascii_mem_syntax(tmp: Path) -> int:
         ("space and tab padding", "\n".join(" \t" + w + "\t " for w in words) + "\n"),
     ):
         path = tmp / f"mem_ok_{label.split()[0]}.mem"
-        path.write_text(text, encoding="utf-8")
+        # newline="": otherwise on Windows the "LF" control is really CRLF
+        # and the "CRLF" control is "\r\r\n" -- neither the case it names.
+        path.write_text(text, encoding="utf-8", newline="")
         _require(
             len(parse_mem(path)) == N_OUTPUT_WEIGHTS,
             f"parse_mem REJECTED a valid {label} image",
