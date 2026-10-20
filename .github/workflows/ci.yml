@@ -25,13 +25,10 @@ jobs:
     name: Rust
     runs-on: ubuntu-latest
     steps:
-      # Pinned to a commit SHA, not to `@v4`, for the same reason #28 pinned
-      # qodana-action: a major-version ref in `actions/*` is force-moved onto
-      # every patch release: `v4` and v4.4.0 name the same commit today, while
-      # v4.2.2, v4.3.0 and v4.3.1 are three earlier commits that same ref used
-      # to name. So a floating ref lets the step that checks this repository
-      # out change without a commit here saying so. These SHAs are what the
-      # major refs pointed at on 2026-09-07; bump them deliberately.
+      # Pinned to a commit SHA, not to a major ref like `@v7`, for the same
+      # reason #28 pinned qodana-action: a major-version ref in `actions/*` is
+      # force-moved onto every patch release, so a floating ref lets the step
+      # that checks this repository out change without a commit here saying so.
       #
       # The trade is silent drift for silent staleness, so `.github/dependabot.yml`
       # keeps them moving -- Dependabot rewrites both the SHA and the version
@@ -184,6 +181,7 @@ jobs:
           python3 tools/verify_model_bank.py --self-test
           python3 -m tools.verify_model_bank --self-test
           python3 -m unittest tests.test_model_bank -v
+          python3 -m unittest tests.model_bank_review_cases -v
 
       # Frozen model-bank replay (RM-1692 / GH #60). Composes attested
       # selection -> analog encode -> keep-LIF -> readout on the committed
@@ -233,4 +231,4 @@ jobs:
       - name: Check capture failure paths and scientific reporting
         run: |
           command -v bwrap
-          python -m pytest -q tests/test_anticipation_campaign.py tests/test_collector_lifecycle.py tests/test_evaluation_deadline.py tests/test_hermes_*.py tests/test_path_confinement.py
+          python -m pytest -q tests/test_anticipation_campaign.py tests/test_collector_lifecycle.py tests/test_evaluation_deadline.py tests/test_hermes_*.py tests/test_path_confinement.py tests/test_pytest_config.py

@@ -17,10 +17,11 @@ not a validated supervisor**, and FPGA parity is unproven. Don't claim otherwise
 | `src/` | Rust crate: model, encoding/stim, decision contract, NIR graph, IPC, Q8.8 memory, kinetic/silicon/neuromod glue, `training` |
 | `dataset/merged_v2/` | Shipped model bank: Q8.8 `.mem` parameter files, `snn_model.json`, `model_bank.json` |
 | `config.json` | Machine-readable model header |
-| `tools/*.py` | Python verification tools (stdlib only): Q8.8 verifier, model-bank attestation, parity and replay tools |
+| `tools/*.py` | Python verification tools (stdlib only): Q8.8 verifier, Hamming measurement, model-bank attestation, model-card check, parity and replay tools |
 | `tools/anticipation/` | Anticipation campaign (Python + Julia). `requirements-test.txt` pins CI tests (NumPy, pytest; not PyTorch or Matplotlib). Acquisition needs CUDA PyTorch; plots need Matplotlib |
-| `tests/` | Rust integration tests (`*.rs`, run by `cargo test`) and Python tests (pytest/unittest, `test_*.py`) |
-| `docs/anticipation/` | Anticipation docs |
+| `tests/` | Rust integration tests (`*.rs`, run by `cargo test`) and Python tests (pytest/unittest, `test_*.py` plus `model_bank_review_cases.py`, see `pytest.ini`) |
+| `examples/` | `myelin_timing.rs`; needs the `myelin-cuda` feature (GPU only, not built in CI) |
+| `docs/` | `anticipation/` campaign docs, `MYELIN_COMPATIBILITY.md`, `superpowers/plans/` |
 
 ## Toolchain
 
@@ -71,6 +72,7 @@ python3 -m tools.verify_model_bank --select merged_v2
 python3 tools/verify_model_bank.py --self-test
 python3 -m tools.verify_model_bank --self-test
 python3 -m unittest tests.test_model_bank -v
+python3 -m unittest tests.model_bank_review_cases -v
 python3 tools/replay_frozen.py
 python3 -m tools.replay_frozen
 python3 -m unittest tests.test_replay_frozen -v
@@ -85,7 +87,8 @@ bwrap --ro-bind / / --unshare-net -- /bin/true
 python -m pip install --require-hashes --only-binary=:all: -r tools/anticipation/requirements-test.txt
 command -v bwrap
 python -m pytest -q tests/test_anticipation_campaign.py tests/test_collector_lifecycle.py \
-  tests/test_evaluation_deadline.py tests/test_hermes_*.py tests/test_path_confinement.py
+  tests/test_evaluation_deadline.py tests/test_hermes_*.py tests/test_path_confinement.py \
+  tests/test_pytest_config.py
 ```
 
 ## Conventions visible in the repo
