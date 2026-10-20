@@ -5,7 +5,8 @@
 #![cfg(feature = "training")]
 
 use spikenaut_snn::{
-    HOST_NETWORK_INITIAL_WEIGHT, HostTrainingSession, TrainerError, TrainingConfig, TrainingExample,
+    HOST_NETWORK_INITIAL_WEIGHT, HostNetwork, HostTrainingSession, TrainerError, TrainingConfig,
+    TrainingExample,
 };
 
 fn rewarded_batch() -> Vec<TrainingExample> {
@@ -136,6 +137,45 @@ fn reset_preserves_a_non_default_training_configuration() {
 
     assert_eq!(replay_summary, first_summary);
     assert_eq!(weights(&session), first_weights);
+}
+
+/// The 0.6 trainer bank mirrors the 0.7 [`HostNetwork`] shape exactly.
+#[test]
+fn the_trainer_bank_mirrors_the_host_network_shape() {
+    let session = HostTrainingSession::new(1, TrainingConfig::default());
+    let host = HostNetwork::new(1);
+    let (trainer, host) = (session.network(), host.inner());
+
+    assert_eq!(trainer.neurons.len(), host.neurons.len());
+    assert_eq!(trainer.iz_neurons.len(), host.iz_neurons.len());
+    assert!(trainer.iz_neurons.is_empty());
+    assert_eq!(trainer.num_channels, host.num_channels);
+    assert_eq!(trainer.global_step, 0);
+    for (trainer_neuron, host_neuron) in trainer.neurons.iter().zip(&host.neurons) {
+        assert_eq!(trainer_neuron.weights, host_neuron.weights);
+    }
+}
+
+#[test]
+fn an_empty_batch_is_rejected_without_advancing_anything() {
+    let seed = 0xe1;
+    let mut rejected = HostTrainingSession::new(seed, TrainingConfig::default());
+    let initial_weights = weights(&rejected);
+
+    assert!(matches!(
+        rejected.run_session(&[]),
+        Err(TrainerError::EmptyBatch)
+    ));
+    assert_eq!(rejected.network().global_step, 0);
+    assert_eq!(weights(&rejected), initial_weights);
+
+    // The RNG did not move either: the next real batch matches a fresh run.
+    let mut fresh = HostTrainingSession::new(seed, TrainingConfig::default());
+    assert_eq!(
+        rejected.run_session(&rewarded_batch()).unwrap(),
+        fresh.run_session(&rewarded_batch()).unwrap()
+    );
+    assert_eq!(weights(&rejected), weights(&fresh));
 }
 
 #[test]

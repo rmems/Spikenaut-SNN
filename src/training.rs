@@ -43,6 +43,12 @@ impl HostTrainingSession {
     }
 
     /// Run a validated batch through one persistent caller-seeded RNG stream.
+    ///
+    /// # Errors
+    ///
+    /// Any [`TrainerError`] from `plasticity-lab`: an empty batch, a sample
+    /// that fails preflight admission (neither leaves the network or the RNG
+    /// advanced), or a network step failure.
     pub fn run_session(
         &mut self,
         examples: &[TrainingExample],

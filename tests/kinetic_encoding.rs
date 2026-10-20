@@ -15,9 +15,137 @@ use spikenaut_snn::encode::{
     CHANNEL_COUNT, INPUT_RANGE, LIVE_COLUMNS, LIVE_LEGAL_COLUMNS, LiveTelemetryEncoder,
 };
 use spikenaut_snn::kinetic::{
-    FEATURE_COUNT, FEATURE_NAMES, HISTORY_WINDOW, KINETIC_SIGNALS_CRATE_VERSION, KineticPipeline,
-    LiveKineticFrontEnd,
+    FEATURE_COUNT, FEATURE_NAMES, HISTORY_WINDOW, KINETIC_SIGNALS_CRATE_VERSION, KineticFeatures,
+    KineticPipeline, LIVE_RAW_RANGES, LiveKineticFrontEnd, SMA_WINDOW, VOL_WINDOW,
 };
+
+/// `FEATURE_NAMES[i]` names the field `as_array()[i]` reads, not just a slot.
+///
+/// The derived `Debug` prints fields in declaration order, so a distinct value
+/// per field ties each name to its own field rather than only checking that
+/// the two arrays have the same length.
+#[test]
+fn feature_names_label_their_own_fields() {
+    let features = KineticFeatures {
+        raw: 0.0,
+        ema: 1.0,
+        sma: 2.0,
+        z_score: 3.0,
+        volatility: 4.0,
+        surprise: 5.0,
+        hurst: 6.0,
+        entropy_relative: 7.0,
+        hawkes_intensity: 8.0,
+        skewness: 9.0,
+        kurtosis: 10.0,
+    };
+    let debug = format!("{features:?}");
+    for (index, (name, value)) in FEATURE_NAMES.iter().zip(features.as_array()).enumerate() {
+        assert_eq!(value, index as f64, "{name} is out of order in as_array");
+        assert!(
+            debug.contains(&format!("{name}: {value:?}")),
+            "FEATURE_NAMES[{index}] = {name} does not label field value {value}: {debug}",
+        );
+    }
+}
+
+/// `Default` is `new`: an empty clock and the same first feature vector.
+#[test]
+fn defaults_are_fresh_pipelines() {
+    let mut pipeline = KineticPipeline::default();
+    assert_eq!(pipeline.ticks(), 0);
+    assert_eq!(
+        pipeline.step(180.0).expect("finite"),
+        KineticPipeline::new().step(180.0).expect("finite"),
+    );
+
+    let mut front_end = LiveKineticFrontEnd::default();
+    assert_eq!(front_end.ticks(), 0);
+    let reading = [42.0, 180.0, 61.0, 1_900.0, 9_500.0];
+    assert_eq!(
+        front_end.step(reading).expect("finite"),
+        LiveKineticFrontEnd::new().step(reading).expect("finite"),
+    );
+}
+
+/// Hurst stays at its uninformative `0.5` until kinetic-signals has 32 samples.
+#[test]
+fn hurst_holds_its_default_until_thirty_two_samples() {
+    let mut pipeline = KineticPipeline::new();
+    for (tick, &raw) in power_fixture().iter().take(31).enumerate() {
+        let features = pipeline.step(raw).expect("finite");
+        assert_eq!(features.hurst, 0.5, "tick {tick}");
+    }
+}
+
+/// Hawkes intensity is the baseline `mu` until a transition is anomalous.
+#[test]
+fn hawkes_intensity_starts_at_the_baseline() {
+    let baseline = kinetic_signals::HawkesParams::default().mu;
+    let mut pipeline = KineticPipeline::new();
+    assert_eq!(
+        pipeline.step(180.0).expect("finite").hawkes_intensity,
+        baseline
+    );
+    // A flat series has no surprise, so it never records an event.
+    for _ in 0..8 {
+        assert_eq!(
+            pipeline.step(180.0).expect("finite").hawkes_intensity,
+            baseline
+        );
+    }
+}
+
+/// Volatility is over the last `VOL_WINDOW` log-returns, not every one seen.
+#[test]
+fn volatility_forgets_returns_older_than_its_window() {
+    let mut pipeline = KineticPipeline::new();
+    assert_eq!(pipeline.step(100.0).expect("finite").volatility, 0.0);
+    // One `ln 2` return, then flat returns that push it toward eviction.
+    assert!(pipeline.step(200.0).expect("finite").volatility > 0.0);
+    for tick in 1..VOL_WINDOW {
+        let volatility = pipeline.step(200.0).expect("finite").volatility;
+        assert!(volatility > 0.0, "the jump is still in the ring at {tick}");
+    }
+    assert_eq!(
+        pipeline.step(200.0).expect("finite").volatility,
+        0.0,
+        "the jump must have been evicted after {VOL_WINDOW} newer returns",
+    );
+}
+
+/// The SMA averages exactly the last `SMA_WINDOW` samples.
+#[test]
+fn sma_averages_the_last_window_of_samples() {
+    let mut pipeline = KineticPipeline::new();
+    let mut last = None;
+    for sample in 1..=(SMA_WINDOW + 3) {
+        last = Some(pipeline.step(sample as f64).expect("finite"));
+    }
+    let newest = (SMA_WINDOW + 3) as f64;
+    let expected = (0..SMA_WINDOW)
+        .map(|back| newest - back as f64)
+        .sum::<f64>()
+        / SMA_WINDOW as f64;
+    assert_eq!(last.expect("non-empty").sma, expected);
+}
+
+/// The projection is affine inside each span, not just clamped at the edges.
+#[test]
+fn span_midpoints_project_to_the_middle_of_the_input_range() {
+    let mut front_end = LiveKineticFrontEnd::new();
+    let midpoints = LIVE_RAW_RANGES.map(|(min, max)| min + (max - min) / 2.0);
+    let frame = LiveKineticFrontEnd::to_live_frame(&front_end.step(midpoints).expect("finite"));
+    let (lo, hi) = INPUT_RANGE;
+    let middle = lo + (hi - lo) / 2.0;
+    for (axon, &value) in frame.iter().enumerate() {
+        assert!(
+            (value - middle).abs() <= f32::EPSILON,
+            "axon {axon} ({}) = {value}, expected {middle}",
+            LIVE_COLUMNS[axon],
+        );
+    }
+}
 
 /// A 64-sample power-like fixture: slow climb, one jump, then a settle.
 ///

@@ -53,15 +53,18 @@ Executed device-vs-oracle comparisons (all in `tests/myelin_gpu.rs`):
   `[0.0, 2.0]`): every weight and trace element within 1e-5, absorbing
   device `__expf` vs host `exp`.
 
+Executed on every CPU build (`tests/myelin_cpu.rs`, no GPU needed):
+
+- CPU-backend launches are not implementations: every launch method on a
+  CPU `GpuAccelerator` returns `GpuError::Unavailable`, and
+  `require_gpu()` fails closed.
+
 Future contracts (not executed — raw launches need `cust`, option 1):
 
 - LIF step bit-exact membrane / `u32` state, valid only for
   subnormal-free traces (device `fma.rn.ftz.f32` flushes subnormals;
   `f32::mul_add` keeps them). The CPU-side 16×16 oracle trace pins what
   the future diff must reproduce; no subnormal guard runs on device yet.
-- CPU-backend launches are not implementations: every launch method on a
-  CPU `GpuAccelerator` returns `GpuError::Unavailable`, and
-  `require_gpu()` fails closed.
 
 ## Environment evidence
 

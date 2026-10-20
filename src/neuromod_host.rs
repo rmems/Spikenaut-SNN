@@ -113,6 +113,15 @@ impl HostNetwork {
     }
 
     /// Advance one checked stochastic step using the persistent seeded RNG.
+    ///
+    /// Returns the indices of the LIF neurons that fired.
+    ///
+    /// # Errors
+    ///
+    /// Any [`StepError`] from `SpikingNetwork::step_with_rng` (non-finite
+    /// stimulus, modulator or predictive state, a malformed checkpoint
+    /// shape, or an exhausted step counter). A rejected step leaves both the
+    /// network and the RNG position unchanged.
     pub fn step(
         &mut self,
         stimuli: &[f32; CHANNEL_COUNT],
@@ -139,6 +148,11 @@ impl HostNetwork {
     }
 
     /// Reset dynamic state, learned weights, traces, and the RNG to the seed.
+    ///
+    /// The R-STDP configuration survives (re-applied through
+    /// `set_rm_stdp_config`, so it is normalised on the way back in). Every
+    /// other edit made through [`inner_mut`](Self::inner_mut) — thresholds,
+    /// decays, weights — is discarded with the rest of the network.
     pub fn reset(&mut self) {
         let config = self.network.stdp_config;
         *self = Self::new(self.seed);
@@ -156,6 +170,11 @@ pub struct HostGifLayer {
 
 impl HostGifLayer {
     /// Build the deterministic sparse layer for `seed`.
+    ///
+    /// # Errors
+    ///
+    /// Any [`GifLayerError`] from `SparseGifHiddenLayer::new`. With this
+    /// module's fixed 16×16, fan-in-4 shape that is not expected in practice.
     pub fn new(seed: u64) -> Result<Self, GifLayerError> {
         let layer = SparseGifHiddenLayer::new(&SparseGifLayerConfig {
             num_inputs: CHANNEL_COUNT,
@@ -168,6 +187,12 @@ impl HostGifLayer {
     }
 
     /// Advance one GIF step and return the indices that fired.
+    ///
+    /// # Errors
+    ///
+    /// Any [`GifLayerError`] from the published layer's step (wrong input
+    /// width, non-finite input / weight / parameter, counter exhaustion).
+    /// Every rejection leaves the layer unchanged.
     pub fn step(&mut self, stimuli: &[f32]) -> Result<Vec<usize>, GifLayerError> {
         self.layer.step(stimuli)
     }
@@ -206,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn a_supthreshold_pulse_fires_and_resets() {
+    fn a_suprathreshold_pulse_fires_and_resets() {
         let mut cell = HostLif::new();
         let threshold = cell.inner().threshold;
         let decay = cell.inner().decay_rate;
