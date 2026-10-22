@@ -26,7 +26,7 @@ Run from the repo root. "Verified" means it ran successfully in a fresh checkout
 | `python3 -m unittest tests.test_model_bank tests.test_replay_frozen` | verified (65 tests, 2 skipped) |
 | Julia anticipation tests (`tools/anticipation`) | not run (Julia not installed) |
 | Hermes/anticipation `pytest` block | not run (needs `bwrap`, a host `sysctl` change, and hash-pinned NumPy/pytest) |
-| Remaining `python3 -m tools.*` variants and `--self-test` flags in `AGENTS.md` | not run individually; CI runs both script and `-m` forms |
+| Remaining `python3 -m tools.*` variants and `--self-test` flags in `AGENTS.md` | not run individually; CI runs both forms where `AGENTS.md` lists both; `check_model_card.py` is script-only |
 
 Run fmt and clippy before committing. Never pass `--all-features` (enables `myelin-cuda`, needs CUDA 13.2+).
 
