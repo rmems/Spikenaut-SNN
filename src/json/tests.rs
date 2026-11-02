@@ -286,8 +286,10 @@ fn a_duplicate_key_reports_the_second_key_offset() {
     assert_eq!(err.offset, 9, "{err}");
     assert_eq!(&src[err.offset..=err.offset + 2], r#""a""#);
     assert_eq!(err.message, r#"duplicate object key "a""#);
-    // Keys that differ only after escape decoding are still duplicates.
-    assert!(parse(r#"{"a": 1, "a": 2}"#).is_err());
+    // Keys that differ only before escape decoding are still duplicates:
+    // `a` decodes to `a`.
+    let escaped = parse(r#"{"a": 1, "a": 2}"#).unwrap_err();
+    assert_eq!(escaped.message, r#"duplicate object key "a""#);
 }
 
 #[test]

@@ -84,6 +84,29 @@ def test_capture_cleanup_error_is_raised_even_inside_caller_except_block(tmp_pat
     assert status["cleanup_error"] == "RuntimeError: model unload failed"
 
 
+def test_status_write_failure_does_not_mask_returned_cleanup_error(
+    tmp_path, monkeypatch
+):
+    class FailingClose:
+        @staticmethod
+        def close():
+            raise RuntimeError("model unload failed")
+
+    def failing_write(path, payload):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(campaign, "write_json", failing_write)
+    status = {"status": "finalizing", "sessions": []}
+
+    # _close_stimulus returns the operational error instead of raising it, so
+    # the status write must not be allowed to replace it with its own error.
+    with pytest.raises(RuntimeError, match="model unload failed"):
+        campaign._finish_capture(tmp_path, FailingClose(), status, True, False)
+
+    assert status["status"] == "incomplete"
+    assert status["cleanup_error"] == "RuntimeError: model unload failed"
+
+
 def test_session_audit_error_is_raised_even_inside_caller_except_block(
     tmp_path, monkeypatch
 ):

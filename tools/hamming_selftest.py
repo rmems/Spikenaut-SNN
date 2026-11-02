@@ -81,8 +81,8 @@ def _require(condition: bool, message: str) -> None:
 
 _require.calls = 0
 
-SELF_TEST_SECTIONS = 16
-EXPECTED_REQUIRE_CALLS = 35
+SELF_TEST_SECTIONS = 17
+EXPECTED_REQUIRE_CALLS = 38
 EXPECTED_GUARD_CHECKS = 12
 
 
@@ -465,6 +465,61 @@ def exp024_delta_suppressed_for_wrong_split(stream) -> int:
     return 2
 
 
+def exp024_delta_suppressed_for_partial_holdout(stream) -> int:
+    """17 -- sharing the holdout's endpoints is not being the holdout."""
+    print("17. exp-024 deltas are N/A when a middle episode is missing", file=stream)
+    try:
+        from .hamming_core import (
+            EXP024_TEST_EPISODE_IDS,
+            EXP024_TEST_N_TICKS,
+            episode_span_of_ids,
+        )
+        from .hamming_report import _exp024_comparable, render
+    except ImportError:
+        from hamming_core import (
+            EXP024_TEST_EPISODE_IDS,
+            EXP024_TEST_N_TICKS,
+            episode_span_of_ids,
+        )
+        from hamming_report import _exp024_comparable, render
+
+    def holdout(episodes: str) -> Measurement:
+        n = EXP024_TEST_N_TICKS
+        proto = Protocol(
+            condition="exp-024",
+            weights_label="synthetic",
+            float_json=FIXTURE_DIR / "snn_model.json",
+            mem_dir=FIXTURE_DIR,
+            encoder="synthetic",
+            split="test",
+            episodes=episodes,
+            seed="123",
+            n_ticks=n,
+            i_drive=0.05,
+            stepper="synthetic",
+            compared="synthetic",
+        )
+        return Measurement(
+            protocol=proto,
+            k_none=KResult(k=None, n_ticks=n, disagree_ticks=1, mean_bits=1.0, pct=10.0),
+            k_4=KResult(k=4, n_ticks=n, disagree_ticks=1, mean_bits=1.0, pct=20.0),
+            hidden_json_mem_mismatches=0,
+            hidden_compared=256,
+        )
+
+    # Positive control: the exact recorded span is comparable.
+    _require(
+        _exp024_comparable(holdout(episode_span_of_ids(EXP024_TEST_EPISODE_IDS))),
+        "the exact recorded holdout span was not treated as comparable",
+    )
+    # Same endpoints and tick count, one middle episode dropped: not the holdout.
+    partial = [e for e in EXP024_TEST_EPISODE_IDS if e != "gpu-000185"]
+    text = "\n".join(render(holdout(episode_span_of_ids(partial))))
+    _require("N/A" in text or "not comparable" in text, f"deltas not marked N/A: {text}")
+    _require("delta_pct=" not in text, "subtracted exp-024 deltas on a partial holdout")
+    return 3
+
+
 def _scenarios() -> tuple[tuple[Callable[..., int], ...], tuple[Callable[..., int], ...]]:
     standalone = (
         method_fixture_matches_pin,
@@ -479,6 +534,7 @@ def _scenarios() -> tuple[tuple[Callable[..., int], ...], tuple[Callable[..., in
         overflowing_live_number_is_parse_error,
         mixed_live_forbidden_refused,
         exp024_delta_suppressed_for_wrong_split,
+        exp024_delta_suppressed_for_partial_holdout,
     )
     tempdir = (
         empty_holdout_is_parse_error,

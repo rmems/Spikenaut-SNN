@@ -33,6 +33,7 @@ Standard library only.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -145,6 +146,13 @@ __all__ = (
 # reproducing them needs the scratch weights + v3 JSONL, which this
 # repository does not ship. The harness must not pretend merged_v2 is
 # that bank.
+# The recorded exp-024 holdout is every test episode gpu-000170..198, in
+# order. A run that shares only the endpoints (a missing or substituted
+# middle episode) is a different holdout and must not be compared.
+EXP024_TEST_EPISODE_IDS: tuple[str, ...] = tuple(
+    f"gpu-{index:06d}" for index in range(170, 199)
+)
+
 EXP024_CLAIMED = {
     "k_none_pct": 13.187,
     "k_none_bits": 0.1608,
@@ -254,6 +262,15 @@ def _episode_span(samples: list[Sample]) -> str:
         if sample.episode_id not in seen:
             seen.add(sample.episode_id)
             ids.append(sample.episode_id)
+    return episode_span_of_ids(ids)
+
+
+def episode_span_of_ids(ids: Sequence[str]) -> str:
+    """The protocol's episode label: first, last and count, in file order.
+
+    Shared with the exp-024 comparability check so the recorded holdout is
+    spelled exactly the way a measurement spells its own span.
+    """
     if not ids:
         return "(none)"
     if len(ids) == 1:

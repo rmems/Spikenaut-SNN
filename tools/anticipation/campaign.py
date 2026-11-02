@@ -328,8 +328,13 @@ def _finish_capture(root, stimulus, status, completed_all_sessions, had_active_e
         close_raised = False
     finally:
         # A status-write failure must not mask an error that is already
-        # propagating from capture() or from stimulus.close() itself.
-        _persist_capture_status(root, status, had_active_error or close_raised)
+        # propagating from capture() or from stimulus.close() itself, nor a
+        # cleanup error that _close_stimulus returned for raising below.
+        _persist_capture_status(
+            root,
+            status,
+            had_active_error or close_raised or cleanup_error is not None,
+        )
     if cleanup_error is not None and not had_active_error:
         raise cleanup_error
 

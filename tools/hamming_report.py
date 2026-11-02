@@ -11,11 +11,23 @@ import sys
 from pathlib import Path
 
 try:  # package import: `python3 -m tools.measure_hamming`
-    from .hamming_core import EXP024_CLAIMED, FROZEN_LINEAGE, Measurement
+    from .hamming_core import (
+        EXP024_CLAIMED,
+        EXP024_TEST_EPISODE_IDS,
+        FROZEN_LINEAGE,
+        Measurement,
+        episode_span_of_ids,
+    )
     from .q88_core import REPO_ROOT
     from .q88_report import _stream_safe
 except ImportError:  # direct script: `python3 tools/measure_hamming.py`
-    from hamming_core import EXP024_CLAIMED, FROZEN_LINEAGE, Measurement
+    from hamming_core import (
+        EXP024_CLAIMED,
+        EXP024_TEST_EPISODE_IDS,
+        FROZEN_LINEAGE,
+        Measurement,
+        episode_span_of_ids,
+    )
     from q88_core import REPO_ROOT
     from q88_report import _stream_safe
 
@@ -125,8 +137,9 @@ def _exp024_comparable(measurement: Measurement) -> bool:
         return False
     if measurement.k_none.n_ticks != claimed["n_ticks"]:
         return False
-    episodes = proto.episodes
-    return "gpu-000170" in episodes and "gpu-000198" in episodes
+    # Exact span, not endpoint membership: a run missing or substituting a
+    # middle episode shares both endpoints but is not the recorded holdout.
+    return proto.episodes == episode_span_of_ids(EXP024_TEST_EPISODE_IDS)
 
 
 def _exp024_delta_lines(measurement: Measurement) -> list[str]:
