@@ -174,6 +174,15 @@ def parse_jsonl_text(text: str, name: str) -> list[tuple[int, dict]]:
             raise ParseError(
                 f"{name}:{lineno}: not a JSON object ({exc})"
             ) from exc
+        except (RecursionError, ValueError) as exc:
+            # Not JSONDecodeError: an integer literal past
+            # sys.get_int_max_str_digits() is a bare ValueError and deep
+            # nesting is RecursionError. Both used to escape measure_hamming
+            # and replay_frozen as tracebacks instead of exit 2.
+            raise ParseError(
+                f"{name}:{lineno}: undecodable JSON "
+                f"({type(exc).__name__}: {exc})"
+            ) from exc
         if not isinstance(parsed, dict):
             raise ParseError(
                 f"{name}:{lineno}: expected a JSON object, got "

@@ -325,23 +325,57 @@ pub struct NonFiniteFrame {
     offenders: [bool; CHANNEL_COUNT],
 }
 
+/// Which slots of `frame` are not finite, or `None` if every one is.
+///
+/// Scans the whole frame up front, which is what makes rejection atomic:
+/// [`RateEncoder`] walks channels in order and mutates each accumulator as it
+/// goes, so bailing out part-way through a delegated call would leave the
+/// earlier channels advanced by a frame that was never accepted. Shared by
+/// [`NonFiniteFrame`] and [`NonFiniteLiveFrame`], which differ only in width.
+fn non_finite_offenders<const N: usize>(frame: &[f32; N]) -> Option<[bool; N]> {
+    let offenders = frame.map(|value| !value.is_finite());
+    offenders.contains(&true).then_some(offenders)
+}
+
+/// [`RateEncoder::try_new`], plus the per-step demand check both wrappers add.
+///
+/// `max_rate_hz * dt_seconds` is the spikes-per-step demand, and it is this
+/// crate's own arithmetic rather than anything the dependency owns. Both
+/// factors can be finite while their `f32` product is not -- `f32::MAX` with a
+/// 2 s step overflows to infinity -- and `RateEncoder` checks each factor, not
+/// the product. `axon-encoder` 0.5 forms the demand in `f64` and saturates its
+/// spike queue at `u64::MAX` rather than going infinite, but drained at most
+/// 1024 per step that queue never empties in practice: one saturated frame
+/// leaves every later step emitting at the drain cap even at minimum input,
+/// until `reset()`. No useful configuration asks for that, so the `f32`
+/// overflow is refused. (A finite demand above the cap is the documented
+/// streaming-ceiling backlog, and is accepted.)
+///
+/// Checked *after* `RateEncoder`, so a bad factor still gets named precisely:
+/// a NaN `dt_seconds` should report `dt_seconds`, not the product it happens to
+/// poison. Only a finite-factor, infinite-product combination reaches the
+/// product check.
+fn checked_rate_encoder(
+    base_rate_hz: f32,
+    max_rate_hz: f32,
+    range: (f32, f32),
+    dt_seconds: f32,
+) -> Result<RateEncoder, EncoderError> {
+    let inner = RateEncoder::try_new(base_rate_hz, max_rate_hz, range, dt_seconds)?;
+    if !(max_rate_hz * dt_seconds).is_finite() {
+        return Err(EncoderError::NonFiniteRate {
+            parameter: "max_rate_hz * dt_seconds",
+        });
+    }
+    Ok(inner)
+}
+
 impl NonFiniteFrame {
     /// The rejection for `frame`, or `None` if every channel is finite.
     ///
-    /// Scans the whole frame up front, which is what makes rejection atomic:
-    /// [`RateEncoder`] walks channels in order and mutates each accumulator as
-    /// it goes, so bailing out part-way through a delegated call would leave
-    /// the earlier channels advanced by a frame that was never accepted.
+    /// See [`non_finite_offenders`] for why the scan is whole-frame.
     fn from_frame(frame: &[f32; CHANNEL_COUNT]) -> Option<Self> {
-        let mut offenders = [false; CHANNEL_COUNT];
-        let mut rejected = false;
-        for (channel, &value) in frame.iter().enumerate() {
-            if !value.is_finite() {
-                offenders[channel] = true;
-                rejected = true;
-            }
-        }
-        rejected.then_some(Self { offenders })
+        non_finite_offenders(frame).map(|offenders| Self { offenders })
     }
 
     /// The offending channel indices, ascending. Never empty.
@@ -526,24 +560,13 @@ pub struct NonFiniteLiveFrame {
 impl NonFiniteLiveFrame {
     /// The rejection for `frame`, or `None` if every legal column is finite.
     ///
-    /// Scans the whole frame up front, which is what makes rejection atomic:
-    /// [`RateEncoder`] walks channels in order and mutates each accumulator as
-    /// it goes, so bailing out part-way through a delegated call would leave
-    /// the earlier axons advanced by a frame that was never accepted.
+    /// See [`non_finite_offenders`] for why the scan is whole-frame.
     ///
     /// `pub(crate)` because [`crate::stim`] performs the same all-or-nothing
     /// scan for the same reason, on a reading it has already snapped onto the
     /// binary32 grid.
     pub(crate) fn from_frame(frame: &[f32; LIVE_LEGAL_COLUMNS]) -> Option<Self> {
-        let mut offenders = [false; LIVE_LEGAL_COLUMNS];
-        let mut rejected = false;
-        for (axon, &value) in frame.iter().enumerate() {
-            if !value.is_finite() {
-                offenders[axon] = true;
-                rejected = true;
-            }
-        }
-        rejected.then_some(Self { offenders })
+        non_finite_offenders(frame).map(|offenders| Self { offenders })
     }
 
     /// The offending axon indices, ascending. Never empty, always `< 5`.
@@ -736,9 +759,9 @@ impl LiveTelemetryEncoder {
     ///
     /// Same parameter shape and same finite checks as
     /// [`TelemetryEncoder::try_new`], including the product check on
-    /// `max_rate_hz * dt_seconds`: both factors can be finite while the
-    /// product is not, and an infinite per-step demand poisons the streaming
-    /// accumulator permanently.
+    /// `max_rate_hz * dt_seconds`: both factors can be finite while the `f32`
+    /// product is not, and such a demand saturates the streaming queue so it
+    /// never drains.
     ///
     /// `dt_seconds` is always explicit here: [`RateEncoder::new`] would
     /// silently substitute its 100 ms compatibility step, which is a hundred
@@ -761,13 +784,8 @@ impl LiveTelemetryEncoder {
         range: (f32, f32),
         dt_seconds: f32,
     ) -> Result<Self, EncoderError> {
-        let inner = RateEncoder::try_new(base_rate_hz, max_rate_hz, range, dt_seconds)?;
-        if !(max_rate_hz * dt_seconds).is_finite() {
-            return Err(EncoderError::NonFiniteRate {
-                parameter: "max_rate_hz * dt_seconds",
-            });
-        }
-        Ok(Self { inner })
+        checked_rate_encoder(base_rate_hz, max_rate_hz, range, dt_seconds)
+            .map(|inner| Self { inner })
     }
 
     /// The configured step duration, in seconds.
@@ -965,7 +983,11 @@ impl TelemetryEncoder {
     ///
     /// Returns [`EncoderError`] if the rates are not finite and non-negative
     /// with `base_rate_hz <= max_rate_hz`, if `range` is not a finite increasing
-    /// span, or if `dt_seconds` is not finite and strictly positive.
+    /// span, if `dt_seconds` is not finite and strictly positive, or if
+    /// `max_rate_hz * dt_seconds` overflows `f32`. Both factors can be finite
+    /// while the product is not; such a per-step demand would saturate the
+    /// streaming queue so that it never drains, so it is refused rather than
+    /// left to pin every later step at the drain cap.
     ///
     /// [`encode_step`]: TelemetryEncoder::encode_step
     pub fn try_new(
@@ -974,30 +996,8 @@ impl TelemetryEncoder {
         range: (f32, f32),
         dt_seconds: f32,
     ) -> Result<Self, EncoderError> {
-        // `max_rate_hz * dt_seconds` is the spikes-per-step demand, and it is
-        // this crate's own arithmetic rather than anything the dependency
-        // owns. Both factors can be finite while their product is not --
-        // f32::MAX with a 2 s step overflows to infinity -- and RateEncoder
-        // checks each factor, not the product. An infinite demand poisons the
-        // streaming accumulator permanently: draining spikes cannot reduce
-        // infinity, so a single saturated frame leaves every later step
-        // emitting at the drain cap even at minimum input, until `reset()`.
-        //
-        // That is a different failure from the finite backlog documented
-        // below, which does drain in principle. Refusing it here costs
-        // nothing: no useful configuration has an infinite per-step demand.
-        //
-        // Checked *after* RateEncoder, so a bad factor still gets named
-        // precisely: a NaN dt_seconds should report dt_seconds, not the
-        // product it happens to poison. Only a finite-factor, infinite-product
-        // combination reaches this line.
-        let inner = RateEncoder::try_new(base_rate_hz, max_rate_hz, range, dt_seconds)?;
-        if !(max_rate_hz * dt_seconds).is_finite() {
-            return Err(EncoderError::NonFiniteRate {
-                parameter: "max_rate_hz * dt_seconds",
-            });
-        }
-        Ok(Self { inner })
+        checked_rate_encoder(base_rate_hz, max_rate_hz, range, dt_seconds)
+            .map(|inner| Self { inner })
     }
 
     /// The configured step duration, in seconds.
@@ -1136,11 +1136,8 @@ mod tests {
 
     #[test]
     fn shipped_bank_legal_columns_match_live_columns() {
-        let parsed = crate::json::parse(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/dataset/merged_v2/snn_model.json"
-        )))
-        .expect("shipped snn_model.json");
+        let parsed =
+            crate::json::parse(crate::model::SHIPPED_MODEL_JSON).expect("shipped snn_model.json");
         let legal = parsed
             .get("legal_columns")
             .and_then(crate::json::Json::as_array)

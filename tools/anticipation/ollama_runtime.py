@@ -8,18 +8,19 @@ import threading
 import time
 from urllib.parse import urlsplit
 from .campaign import write_json
-
+from .hermes_protocol import (
+    EXCLUDED_MODELS,
+    PRELOAD_COMPLETION_TIMEOUT_SECONDS,
+    PRELOAD_KEEP_ALIVE_SECONDS,
+)
 from .ollama_http import DeadlineHTTPClient, _DEFAULT_REQUEST_TIMEOUT
 
 DEFAULT_MODEL = "gemma4:12b"
 DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
-PRELOAD_KEEP_ALIVE_SECONDS = 180
-PRELOAD_COMPLETION_TIMEOUT_SECONDS = 180
 DURABLE_CLEANUP_TIMEOUT_SECONDS = 30
 DURABLE_CLEANUP_INITIAL_BACKOFF_SECONDS = 0.05
 DURABLE_CLEANUP_MAX_BACKOFF_SECONDS = 1.0
 CONTROL_PLANE_TIMEOUT_SECONDS = 30
-EXCLUDED_MODELS = {"muse-glimmer:30b", "nemotron-3.5-lightning:30b"}
 OLLAMA_OPERATION_ERRORS = (
     HTTPException,
     OSError,
@@ -56,15 +57,16 @@ def _validate_port(parsed):
 
 @dataclass
 class RuntimeTimeouts:
+    # Only these two accept None: an unbounded logical preload wait, and
+    # "derive reconciliation from the preload and request limits". Every
+    # other limit takes part in deadline arithmetic and must be a number.
     preload_timeout_seconds: float | None = 120
-    request_timeout_seconds: float | None = 15
-    preload_completion_timeout_seconds: float | None = (
-        PRELOAD_COMPLETION_TIMEOUT_SECONDS
-    )
-    preload_keep_alive_seconds: float | None = PRELOAD_KEEP_ALIVE_SECONDS
-    control_plane_timeout_seconds: float | None = CONTROL_PLANE_TIMEOUT_SECONDS
+    request_timeout_seconds: float = 15
+    preload_completion_timeout_seconds: float = PRELOAD_COMPLETION_TIMEOUT_SECONDS
+    preload_keep_alive_seconds: float = PRELOAD_KEEP_ALIVE_SECONDS
+    control_plane_timeout_seconds: float = CONTROL_PLANE_TIMEOUT_SECONDS
     cleanup_reconciliation_timeout_seconds: float | None = None
-    durable_cleanup_timeout_seconds: float | None = DURABLE_CLEANUP_TIMEOUT_SECONDS
+    durable_cleanup_timeout_seconds: float = DURABLE_CLEANUP_TIMEOUT_SECONDS
 
 
 class OllamaRuntime:
@@ -166,6 +168,11 @@ class OllamaRuntime:
         ).get("models")
         if not isinstance(models, list):
             raise RuntimeError("Ollama /api/ps response omitted models")
+        # Callers use entry.get(); a non-object entry raised AttributeError,
+        # which escaped OLLAMA_OPERATION_ERRORS and killed the durable cleanup
+        # worker with its report stuck at "retrying".
+        if not all(isinstance(entry, dict) for entry in models):
+            raise RuntimeError("Ollama /api/ps response contained a non-object model")
         return models
 
     @staticmethod
@@ -411,6 +418,7 @@ class OllamaRuntime:
     def _selection_metadata(self, model, architecture, context_length, resident, show):
         size = resident.get("size")
         size_vram = resident.get("size_vram")
+        details = show.get("details")
         size_cpu = (
             max(0, size - size_vram)
             if isinstance(size, int) and isinstance(size_vram, int)
@@ -421,7 +429,9 @@ class OllamaRuntime:
             "architecture": architecture,
             "advertised_context_length": context_length,
             "digest": resident.get("digest"),
-            "quantization": (show.get("details") or {}).get("quantization_level"),
+            "quantization": (
+                details.get("quantization_level") if isinstance(details, dict) else None
+            ),
             "preload": {
                 "logical_timeout_seconds": self.preload_timeout_seconds,
                 "completion_timeout_seconds": self.preload_completion_timeout_seconds,

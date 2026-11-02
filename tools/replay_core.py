@@ -45,7 +45,6 @@ Standard library only.
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -144,16 +143,10 @@ def readout_from_model(model: dict) -> list[float]:
 
 
 def _readout_weight(i: int, j: int, value: Any) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ParseError(
-            f"neurons[{i}].output_weights[{j}]: expected a finite "
-            f"number, got {type(value).__name__} {value!r}"
-        )
-    if not math.isfinite(value):
-        raise ParseError(
-            f"neurons[{i}].output_weights[{j}]: non-finite {value!r}"
-        )
-    return float(value)
+    # as_finite_float, not a bare math.isfinite: an int too large for a
+    # float makes isfinite raise OverflowError, a traceback past every
+    # caller's ParseError handler.
+    return as_finite_float(value, f"neurons[{i}].output_weights[{j}]")
 
 
 @dataclass(frozen=True)
@@ -515,6 +508,11 @@ def default_k(model: dict) -> int | None:
         return None
     if isinstance(raw, bool) or not isinstance(raw, int):
         raise ParseError(f"checkpoint 'k_wta' is not an integer: {raw!r}")
+    if raw < 0:
+        # Same range `--k` accepts. A negative width used to reach
+        # apply_kwta, whose k <= 0 branch silences every spike -- a replay
+        # with no output rather than a refusal.
+        raise ParseError(f"checkpoint 'k_wta' is negative: {raw!r}")
     return raw
 
 
@@ -527,11 +525,10 @@ def default_i_drive(model: dict) -> float:
     raw = knobs.get("I_DRIVE")
     if raw is None:
         return I_DRIVE_EXP024
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        raise ParseError(f"checkpoint 'exp023_knobs.I_DRIVE': {raw!r}")
-    if not math.isfinite(raw):
-        raise ParseError(f"checkpoint 'exp023_knobs.I_DRIVE': {raw!r}")
-    return float(raw)
+    # Refuses bools, non-numbers, non-finite values and -- unlike the bare
+    # math.isfinite this replaced -- an int too large for a float, which
+    # raised OverflowError past replay_frozen's handlers.
+    return as_finite_float(raw, "checkpoint 'exp023_knobs.I_DRIVE'")
 
 
 def shipped_manifest_path() -> Path:

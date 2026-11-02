@@ -288,8 +288,11 @@ dataset/merged_v2/
 ├── parameters_output_weights.mem  # Output layer weights (signed Q8.8)
 └── snn_model.json                 # Full model definition (float values)
 
-tools/                             # Python package, standard library only
+tools/                             # Python package; top-level *.py are
+                                   # standard library only
 ├── verify_q88.py                  # Q8.8 encoding verifier (#4)
+├── check_model_card.py            # Model-card corrections check (CI)
+├── HAMMING_PROTOCOL.md            # Hamming measurement protocol
 ├── verify_model_bank.py           # Manifest-backed model-bank attestation (RM-1327)
 ├── measure_hamming.py             # float-vs-Q8.8 Hamming holdout (#39):
                                    # CLI; keep-LIF stepper is hamming_core.py;
@@ -315,8 +318,12 @@ tools/                             # Python package, standard library only
 ├── fixtures/model_bank/           # Golden valid + negative bank fixtures (RM-1327)
 ├── fixtures/decision/             # expected.json golden pin for
                                    # replay_output_row (RM-1328)
-└── fixtures/replay_frozen/        # Synthetic method fixture for
+├── fixtures/replay_frozen/        # Synthetic method fixture for
                                    # replay_frozen.py (RM-1692)
+├── fixtures/hamming_method/       # Method fixture for measure_hamming.py
+└── anticipation/                  # Anticipation campaign (Python + Julia);
+                                   # not standard library only -- see
+                                   # docs/anticipation/
 
 src/                               # Rust, `spikenaut-snn`
 ├── lib.rs                         # Crate root: what the library exposes
@@ -336,6 +343,9 @@ src/                               # Rust, `spikenaut-snn`
                                    # (RM-1328): replay_output_row, lowest-
                                    # index ties, fail-closed NaN/width
                                    # and overflowing derived confidence
+├── decision_helpers.rs            # Private decision error/shape helpers
+├── mem.rs                         # Strict four-file signed Q8.8 .mem
+                                   # bank decoder (no snn_model.json)
 ├── kinetic.rs                     # Host-side kinetic-signals front end
                                    # upstream of encode.rs; encodes against
                                    # the live 5-col contract (axons 0-4,

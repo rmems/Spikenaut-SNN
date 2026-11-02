@@ -110,6 +110,68 @@ fn multiple_non_finite_fields_report_the_first_observation_channel() {
 }
 
 #[test]
+fn alpha_bounds_are_half_open() {
+    assert!(HostCritic::new(1.0).is_ok());
+    assert!(HostCritic::new(f32::MIN_POSITIVE).is_ok());
+    for alpha in [-0.0, -1.0, f32::INFINITY, f32::NEG_INFINITY] {
+        assert!(HostCritic::new(alpha).is_err(), "alpha {alpha}");
+    }
+}
+
+/// `surprise` is the one channel `TDCritic::try_assess` never reads, so the
+/// bridge's own preflight is all that stops it. A refusal there must leave
+/// the TD history exactly where it was.
+#[test]
+fn a_non_finite_surprise_is_refused_without_advancing_history() {
+    let mut victim = HostCritic::new(0.5).unwrap();
+    let mut control = HostCritic::new(0.5).unwrap();
+    let first = observation(0.4, 0.0, 0.0, 0.0);
+    victim.assess(&first).unwrap();
+    control.assess(&first).unwrap();
+
+    let err = victim
+        .assess(&observation(0.9, 0.0, f32::NAN, 0.0))
+        .unwrap_err();
+    assert_eq!(err.field(), CriticField::Surprise);
+
+    let next = observation(-0.3, 0.1, 0.0, 0.2);
+    assert_eq!(
+        victim.assess(&next).unwrap(),
+        control.assess(&next).unwrap()
+    );
+}
+
+/// Finite surprise is validated but ignored: acetylcholine is the absolute
+/// TD error, and the auxiliary channels are clamped into `[0, 1]`.
+#[test]
+fn surprise_is_ignored_and_auxiliary_channels_are_clamped() {
+    let mut quiet = HostCritic::new(1.0).unwrap();
+    let mut loud = HostCritic::new(1.0).unwrap();
+    let a = quiet.assess(&observation(0.25, 2.0, 0.0, -3.0)).unwrap();
+    let b = loud.assess(&observation(0.25, 2.0, 1e30, -3.0)).unwrap();
+    assert_eq!(a, b);
+    assert_eq!(a.acetylcholine, 0.25_f32.tanh());
+    assert_eq!(a.serotonin, 1.0);
+    assert_eq!(a.norepinephrine, 0.0);
+}
+
+/// Extreme finite objectives saturate rather than fail: the overflowing TD
+/// delta is clamped to `±f32::MAX`, so dopamine pins at its `[-1, 1]` ends.
+#[test]
+fn extreme_finite_objectives_saturate() {
+    let mut critic = HostCritic::new(1.0).unwrap();
+    let up = critic
+        .assess(&observation(f32::MAX, 0.0, 0.0, 0.0))
+        .unwrap();
+    assert_eq!(up.dopamine, 1.0);
+    let down = critic
+        .assess(&observation(-f32::MAX, 0.0, 0.0, 0.0))
+        .unwrap();
+    assert_eq!(down.dopamine, -1.0);
+    assert_eq!(down.acetylcholine, 1.0);
+}
+
+#[test]
 fn limbic_critic_resolves_from_the_registry_at_zero_three() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let lock = std::fs::read_to_string(root.join("Cargo.lock")).expect("read Cargo.lock");

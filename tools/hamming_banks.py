@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 try:
@@ -17,6 +16,7 @@ try:
         decode_q88,
         encode_q88_hex,
         load_model,
+        loads_json,
         parse_mem,
     )
 except ImportError:
@@ -31,6 +31,7 @@ except ImportError:
         decode_q88,
         encode_q88_hex,
         load_model,
+        loads_json,
         parse_mem,
     )
 
@@ -108,14 +109,11 @@ def model_from_bytes(payload: bytes, source: str) -> dict:
         text = payload.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ParseError(f"{label.name}: checkpoint is not UTF-8 ({exc})") from exc
-    try:
-        model = json.loads(text)
-    except ValueError as exc:
-        # JSONDecodeError included: a digest-valid but malformed checkpoint
-        # is an unconsumable artifact (ParseError -> CLI exit 2), not a crash.
-        raise ParseError(
-            f"{label.name}: unreadable JSON number: {exc}"
-        ) from exc
+    # A digest-valid but undecodable checkpoint (syntax error, oversized
+    # integer, deep nesting) is an unconsumable artifact (ParseError -> CLI
+    # exit 2), not a crash. This used to label every syntax error as an
+    # "unreadable JSON number" and let RecursionError through.
+    model = loads_json(text, label.name)
     neurons = _model_neurons(label, model)
     for i, neuron in enumerate(neurons):
         _validate_neuron(label, i, neuron)

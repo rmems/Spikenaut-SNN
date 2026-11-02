@@ -522,6 +522,91 @@ class TestKnobDefaults(unittest.TestCase):
         self.assertEqual(manifest["stepper"]["i_drive"], 0.0)
 
 
+class TestCheckpointKnobValidation(unittest.TestCase):
+    """Checkpoint-recorded knobs are refused, never crash or silently mislead."""
+
+    def test_negative_k_wta_refused(self):
+        # apply_kwta's k <= 0 branch silences every spike, so a negative
+        # recorded width used to replay as "no output" instead of failing.
+        from tools.replay_core import default_k
+
+        with self.assertRaises(ParseError) as ctx:
+            default_k({"k_wta": -1})
+        self.assertIn("k_wta", str(ctx.exception))
+        for bad in (True, 4.0, "4"):
+            with self.subTest(k_wta=bad), self.assertRaises(ParseError):
+                default_k({"k_wta": bad})
+        self.assertEqual(default_k({"k_wta": 0}), 0)
+        self.assertIsNone(default_k({}))
+
+    def test_oversized_i_drive_is_parse_error(self):
+        # math.isfinite(10**400) raises OverflowError, which used to escape
+        # replay_frozen's handlers as a traceback.
+        from tools.replay_core import default_i_drive
+
+        for bad in (10**400, float("inf"), float("nan"), True, "0.05"):
+            with self.subTest(I_DRIVE=bad), self.assertRaises(ParseError):
+                default_i_drive({"exp023_knobs": {"I_DRIVE": bad}})
+        self.assertEqual(default_i_drive({"exp023_knobs": {"I_DRIVE": 0}}), 0.0)
+        self.assertEqual(default_i_drive({}), 0.05)
+
+    def test_oversized_readout_weight_is_parse_error(self):
+        from tools.replay_core import readout_from_model
+
+        neurons = [{"output_weights": [0.0, 0.0, 0.0]} for _ in range(16)]
+        neurons[3]["output_weights"][1] = 10**400
+        with self.assertRaises(ParseError) as ctx:
+            readout_from_model({"neurons": neurons})
+        self.assertIn("neurons[3].output_weights[1]", str(ctx.exception))
+
+
+class TestUndecodableJson(unittest.TestCase):
+    """json.loads failures other than JSONDecodeError still exit 2."""
+
+    def test_oversized_integer_in_jsonl_exits_2(self):
+        # A literal past sys.get_int_max_str_digits() is a bare ValueError
+        # from json.loads; it used to escape main() as a traceback.
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as out:
+            path = Path(tmp) / "huge.jsonl"
+            path.write_text(
+                '{"episode_id": "gpu-000001", "mem_util_pct": 1'
+                + "0" * 5000
+                + "}\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(ParseError) as ctx:
+                _fixture_inputs(jsonl=path)
+            self.assertIn("huge.jsonl:1", str(ctx.exception))
+            with unittest.mock.patch("sys.stderr"):
+                code = cli_main(["--jsonl", str(path), "--out-dir", out])
+            self.assertEqual(code, 2)
+
+    def test_checkpoint_bytes_json_failures_are_parse_errors(self):
+        from tools.hamming_banks import model_from_bytes
+        from tools.q88_selftest import json_text_that_raises_recursion_error
+
+        # (payload, text the refusal must carry). The digest-valid checkpoint
+        # is parsed only here, so each must be ParseError -> exit 2; deep
+        # nesting used to leak RecursionError, and every syntax error was
+        # mislabelled "unreadable JSON number".
+        cases = {
+            "syntax": (b"{not json\n", "snn_model.json: Expecting"),
+            "oversized integer": (
+                b'{"neurons": [1' + b"0" * 5000 + b"]}",
+                "unreadable JSON number",
+            ),
+            "deep nesting": (
+                json_text_that_raises_recursion_error().encode("ascii"),
+                "nesting exceeds decoder limit",
+            ),
+        }
+        for label, (payload, needle) in cases.items():
+            with self.subTest(case=label):
+                with self.assertRaises(ParseError) as ctx:
+                    model_from_bytes(payload, "snn_model.json")
+                self.assertIn(needle, str(ctx.exception))
+
+
 class TestAtomicPublish(unittest.TestCase):
     def test_failed_publish_leaves_no_mixed_pair(self):
         from tools.replay_frozen import _write_artifacts

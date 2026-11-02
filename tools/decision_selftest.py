@@ -9,6 +9,8 @@ Standard library only.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import itertools
 import json
 import tempfile
@@ -52,6 +54,7 @@ try:
         encode_q88_hex,
         parse_mem,
     )
+    from .q88_selftest import json_text_that_raises_recursion_error
 except ImportError:
     from decision_core import (
         ERROR_EMPTY_ROW,
@@ -89,6 +92,7 @@ except ImportError:
         encode_q88_hex,
         parse_mem,
     )
+    from q88_selftest import json_text_that_raises_recursion_error
 
 
 def _require(condition: bool, message: str) -> None:
@@ -199,7 +203,7 @@ def _self_test_model_parse_error() -> None:
             what="load_pin oversized JSON integer",
         )
         deep = tmp_path / "deep.json"
-        deep.write_text(_json_text_that_raises_recursion_error(), encoding="utf-8")
+        deep.write_text(json_text_that_raises_recursion_error(), encoding="utf-8")
         _require_parse_error(
             lambda: load_shipped_model(deep),
             what="deeply nested JSON",
@@ -210,28 +214,25 @@ def _self_test_model_parse_error() -> None:
         )
 
 
-def _json_text_that_raises_recursion_error() -> str:
-    """A JSON document ``json.loads`` refuses with RecursionError.
+def _self_test_cli_modes_exclusive() -> None:
+    """``--write --self-test`` must be refused, not silently half-run.
 
-    CPython's decoder limit is not ``sys.getrecursionlimit()``. On 3.12 the
-    C scanner accepts about 10k nested arrays; on 3.11 the documented case
-    is about 1k. Search rather than hard-coding a depth that would parse
-    (and then fail only as "expected an object").
+    It used to run only the self-test and exit 0, so a caller asking to
+    regenerate the pin was told it succeeded while nothing was written.
     """
-    depth = 512
-    last = 0
-    while depth <= 1_000_000:
-        text = "[" * depth + "0" + "]" * depth
-        try:
-            json.loads(text)
-        except RecursionError:
-            return text
-        last = depth
-        depth *= 2
-    raise SelfTestFailure(
-        f"json.loads accepted nested arrays through depth {last}; "
-        "could not construct a RecursionError payload"
-    )
+    try:
+        from .decision_parity import main
+    except ImportError:
+        from decision_parity import main
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            main(["--write", "--self-test"])
+    except SystemExit as exc:  # NOSONAR(S5754) the exit status is the assertion
+        # argparse reports the usage error by exiting; this self-test checks
+        # that status and must not let it stop the self-test run.
+        _require(exc.code == 2, f"--write --self-test exited {exc.code}, expected 2")
+        return
+    raise SelfTestFailure("--write --self-test was accepted")
 
 
 def _expect_invalid_score(action: Callable[[], object], *, what: str) -> None:
@@ -522,6 +523,7 @@ def run_self_test() -> int:
         _self_test_overflow_readout()
         _self_test_replay_tick_shipped_only()
         _self_test_json_mem_parity()
+        _self_test_cli_modes_exclusive()
     except SelfTestFailure as exc:
         print(f"FAIL self-test: {exc}")
         return 1

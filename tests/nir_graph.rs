@@ -333,6 +333,54 @@ fn direct_loader_accepts_bare_carriage_return_line_endings() {
     load_lif_graph_from_mem_dir(directory.path()).expect("bare CR is a valid line ending");
 }
 
+/// Each stage's error displays as its cause and chains it as the source, so
+/// a caller can tell a bad bank from a bad graph without string matching.
+#[test]
+fn load_mem_graph_errors_wrap_their_stage() {
+    use std::error::Error;
+
+    let missing = tempfile::tempdir().unwrap();
+    let bank = load_lif_graph_from_mem_dir(missing.path()).unwrap_err();
+    let LoadMemGraphError::Bank(inner) = &bank else {
+        panic!("an empty directory is a bank error, got {bank:?}");
+    };
+    assert_eq!(bank.to_string(), inner.to_string());
+    assert!(bank.source().is_some());
+
+    let graph = LoadMemGraphError::from(
+        spikenaut_snn::build_lif_graph(&SnnModel { neurons: vec![] }).unwrap_err(),
+    );
+    assert!(matches!(graph, LoadMemGraphError::Graph(_)));
+    assert!(graph.to_string().contains("no neurons"), "{graph}");
+    assert!(graph.source().is_some());
+
+    let path = LoadMemGraphError::NonUtf8Source {
+        path: PathBuf::from("bank"),
+    };
+    assert!(path.to_string().contains("not valid UTF-8"));
+    assert!(path.source().is_none());
+}
+
+/// The builder refuses a timestep that is not finite and positive instead of
+/// stamping it into the metadata alongside meaningless time constants.
+#[test]
+fn invalid_timesteps_are_refused_and_valid_ones_recorded() {
+    let model = SnnModel::load_default().expect("load merged_v2");
+    for bad in [0.0, -0.0, -TIMESTEP_SECONDS, f64::NAN, f64::INFINITY] {
+        let err = spikenaut_snn::graph::build_lif_graph_with_timestep(&model, bad)
+            .expect_err("a non-positive or non-finite timestep must fail");
+        assert!(err.to_string().contains("timestep"), "{bad}: {err}");
+    }
+
+    let slow = TIMESTEP_SECONDS * 4.0;
+    let graph = spikenaut_snn::graph::build_lif_graph_with_timestep(&model, slow).unwrap();
+    assert_eq!(
+        graph.metadata.get("timestep_seconds"),
+        Some(&MetadataValue::F64(slow))
+    );
+    assert_eq!(graph.metadata.get("provenance"), None);
+}
+
 #[cfg(unix)]
 #[test]
 fn direct_loader_rejects_a_non_utf8_provenance_path() {

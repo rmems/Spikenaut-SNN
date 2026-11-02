@@ -384,3 +384,48 @@ def _verify_candidate_source(tmp_path, source):
     stimulus.prepare_session(session)
     Path(session["scratch_path"], "transform.py").write_text(source)
     return stimulus._verify_fixture(session)
+
+
+def test_candidate_loader_rejects_oversized_source(tmp_path):
+    from tools.anticipation import verifier_runner
+
+    candidate = tmp_path / "transform.py"
+    candidate.write_text("#" * 70000 + "\n")
+
+    with pytest.raises(ValueError, match="exceeds 64 KiB"):
+        verifier_runner.load_candidate(candidate)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def normalize(words=[]):\n    return words\n",
+        "def normalize(words: list):\n    return words\n",
+        "def normalize(words) -> list:\n    return words\n",
+        "def normalize(*, words=None):\n    return words\n",
+        "@sorted\ndef normalize(words):\n    return words\n",
+    ],
+)
+def test_candidate_loader_rejects_signature_extras(tmp_path, source):
+    from tools.anticipation import verifier_runner
+
+    candidate = tmp_path / "transform.py"
+    candidate.write_text(source)
+
+    # Explicit ValueError, not `assert`, so `python -O` cannot disable it.
+    with pytest.raises(ValueError):
+        verifier_runner.load_candidate(candidate)
+
+
+def test_candidate_loader_accepts_pure_normalization(tmp_path):
+    from tools.anticipation import verifier_runner
+
+    candidate = tmp_path / "transform.py"
+    candidate.write_text(
+        "def normalize(words):\n"
+        "    return [w.strip().lower() for w in words if w.strip()]\n"
+    )
+
+    normalize = verifier_runner.load_candidate(candidate)
+
+    assert normalize([" Beta ", "", "ALPHA"]) == ["beta", "alpha"]

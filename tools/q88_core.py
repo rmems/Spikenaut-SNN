@@ -119,6 +119,24 @@ class Q88RangeError(ValueError):
     """A float cannot be represented in Q8.8 without saturating."""
 
 
+def _round_half_away_from_zero(scaled: float) -> int:
+    """Nearest integer to finite ``scaled``, ties away from zero.
+
+    Bit-for-bit the rounding of Rust ``f64::round``, which
+    ``src/model.rs`` ``quantize_q8_8`` uses. The textbook
+    ``math.floor(x + 0.5)`` is NOT: for the largest double below 0.5
+    (0.49999999999999994) the addition is inexact and rounds up to 1.0, so
+    that input encoded one LSB away from zero (0001 / FFFF) where Rust gives
+    0000. ``m - floor(m)`` is exact for every finite double (Sterbenz), so
+    comparing the fractional part against 0.5 has no such hole.
+    """
+    magnitude = abs(scaled)
+    whole = math.floor(magnitude)
+    if magnitude - whole >= 0.5:
+        whole += 1
+    return -whole if scaled < 0 else whole
+
+
 def encode_q88(value: float) -> int:
     """Encode a float as a raw unsigned 16-bit Q8.8 word.
 
@@ -135,8 +153,7 @@ def encode_q88(value: float) -> int:
         raise Q88RangeError(
             f"{value!r} overflows Q8.8 scale [{Q88_MIN}, {Q88_MAX}]"
         )
-    # floor/ceil already return int; away-from-zero on both sides of zero.
-    raw = math.floor(scaled + 0.5) if scaled >= 0 else math.ceil(scaled - 0.5)
+    raw = _round_half_away_from_zero(scaled)
     if raw < Q88_MIN_INT or raw > Q88_MAX_INT:
         raise Q88RangeError(
             f"{value!r} -> {raw} is outside Q8.8 range [{Q88_MIN}, {Q88_MAX}]"
@@ -326,17 +343,32 @@ def parse_mem(path: Path) -> list[MemEntry]:
     return entries
 
 
+def loads_json(text: str, where: str) -> object:
+    """``json.loads`` with every decoder failure mapped to ``ParseError``.
+
+    ``json.loads`` fails three ways and only one of them is
+    ``JSONDecodeError``: CPython raises a bare ``ValueError`` for an integer
+    literal longer than ``sys.get_int_max_str_digits()`` (4300 by default on
+    3.11+), and ``RecursionError`` for a document nested past the decoder's
+    limit. Several tools caught only the first, so the other two escaped
+    their exit-2 "could not check" contract as tracebacks (exit 1). This is
+    the one shared spelling of that mapping; ``where`` prefixes the message.
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:  # before ValueError: it is a subclass
+        raise ParseError(f"{where}: {exc}") from exc
+    except RecursionError as exc:
+        raise ParseError(
+            f"{where}: JSON nesting exceeds decoder limit ({exc})"
+        ) from exc
+    except ValueError as exc:
+        raise ParseError(f"{where}: unreadable JSON number: {exc}") from exc
+
+
 def _decode_model_json(path: Path) -> object:
     """Read and decode the model file, keeping every failure in contract."""
-    try:
-        return json.loads(read_utf8_text(path))
-    except json.JSONDecodeError:
-        raise
-    except ValueError as exc:
-        # CPython raises a bare ValueError for an integer literal longer than
-        # sys.get_int_max_str_digits() (4300 by default on 3.11+). It is not a
-        # JSONDecodeError, so it would escape main() as a traceback.
-        raise ParseError(f"{path.name}: unreadable JSON number: {exc}") from exc
+    return loads_json(read_utf8_text(path), path.name)
 
 
 def _model_neurons(path: Path, model: object) -> list:
@@ -393,15 +425,13 @@ def _validate_neuron(path: Path, index: int, neuron: object) -> None:
 def load_model(path: Path) -> dict:
     """Load snn_model.json and assert it has the shape the checker assumes.
 
-    Most rejection routes -- missing file, malformed JSON container, wrong
-    neuron count, missing or wrongly-sized fields, a nonnumeric scalar, a
-    value whose Q8.8 scaling overflows -- raise ``ParseError``, which
-    ``main()`` maps to exit code 2. Two do not, and the difference is worth
-    keeping straight:
+    Every rejection route but one -- missing file, JSON that does not decode
+    (syntax error, oversized integer literal, excessive nesting; see
+    ``loads_json``), malformed JSON container, wrong neuron count, missing or
+    wrongly-sized fields, a nonnumeric scalar, a value whose Q8.8 scaling
+    overflows -- raises ``ParseError``, which ``main()`` maps to exit code 2.
+    The exception is worth keeping straight:
 
-      * A JSON *syntax* error comes out of ``json.loads`` as
-        ``json.JSONDecodeError``. Different type, still exit 2, because the
-        file could not be read as a model at all.
       * A value that is a finite float but outside Q8.8 -- ``200.0`` for a
         threshold -- passes every load-time check and only fails later, when
         ``encode_q88`` tries to encode it. The section loops catch that
@@ -425,10 +455,10 @@ def load_model(path: Path) -> dict:
         later in ``float()`` with an uncaught ``TypeError``.
 
     Raises:
-        ParseError: the file is missing, or its JSON does not match the
-            expected ``{"neurons": [{threshold, decay_rate, weights[16]}, ...]}``
+        ParseError: the file is missing or does not decode as JSON, or its
+            JSON does not match the expected
+            ``{"neurons": [{threshold, decay_rate, weights[16]}, ...]}``
             shape, or a numeric field is not a finite real number.
-        json.JSONDecodeError: the file is not valid JSON at all.
 
     """
     if not path.is_file():
@@ -925,8 +955,6 @@ def verify_shipped() -> list[SectionResult]:
             ),
         ),
     ]
-
-
 
 
 # ---------------------------------------------------------------------------

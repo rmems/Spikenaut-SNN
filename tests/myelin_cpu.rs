@@ -15,8 +15,11 @@ use myelin_accelerator::oracle::{
 };
 use spikenaut_snn::myelin::{
     Backend, GpuAccelerator, GpuBuffer, GpuError, MYELIN_LIF_DECAY, MYELIN_LIF_REFRACT_TICKS,
-    MYELIN_LIF_RESET, MYELIN_LIF_THRESHOLD, backend_summary, is_cuda_build, probe_capabilities,
+    MYELIN_LIF_RESET, MYELIN_LIF_THRESHOLD, MYELIN_PIN, backend_summary, is_cuda_build,
+    probe_capabilities,
 };
+#[cfg(not(feature = "myelin-cuda"))]
+use spikenaut_snn::myelin::{FallbackReason, prefer_gpu, require_gpu};
 
 /// Full registry checksum from `GET /api/v1/crates/myelin-accelerator/0.2.0`,
 /// verified against `sha256sum` of the downloaded `.crate` file.
@@ -108,12 +111,59 @@ fn cpu_accelerator_reports_its_fallback_and_fails_closed() {
         Ok(_) => panic!("no GPU in the CPU build"),
     };
     assert!(is_unavailable(&error));
-    // Exact reason only without the cuda feature; with `myelin-cuda` on a
-    // GPU-less host the reason names the runtime failure instead.
-    #[cfg(not(feature = "myelin-cuda"))]
+    // The whole test is already gated out of `myelin-cuda`, so the reason is
+    // always the missing feature here.
     assert_eq!(
         error.fallback_reason(),
-        Some(spikenaut_snn::myelin::FallbackReason::CudaFeatureNotBuilt)
+        Some(FallbackReason::CudaFeatureNotBuilt)
+    );
+}
+
+/// The adapter's own wrappers, not just the upstream constructors they call.
+#[test]
+#[cfg(not(feature = "myelin-cuda"))]
+fn adapter_constructors_and_summary_report_the_cpu_fallback() {
+    let accelerator = prefer_gpu();
+    assert_eq!(accelerator.selected_backend(), Backend::Cpu);
+    let reason = accelerator
+        .fallback()
+        .expect("a CPU-backend accelerator always records its fallback")
+        .reason;
+    assert_eq!(reason, FallbackReason::CudaFeatureNotBuilt);
+
+    let summary = backend_summary(&accelerator);
+    assert!(
+        summary.starts_with("backend=cpu ready=false fallback=cuda_feature_not_built detail="),
+        "unexpected summary: {summary}",
+    );
+
+    let error = match require_gpu() {
+        Err(error) => error,
+        Ok(_) => panic!("require_gpu must fail closed in the CPU build"),
+    };
+    assert!(is_unavailable(&error));
+    assert_eq!(
+        error.fallback_reason(),
+        Some(FallbackReason::CudaFeatureNotBuilt)
+    );
+}
+
+/// `MYELIN_PIN` must be the requirement the manifest actually declares.
+#[test]
+fn myelin_pin_matches_the_manifest_requirement() {
+    let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+        .expect("read Cargo.toml");
+    let line = manifest
+        .lines()
+        .find(|line| line.trim_start().starts_with("myelin-accelerator ="))
+        .expect("Cargo.toml declares myelin-accelerator");
+    assert!(
+        line.contains(&format!("version = \"{MYELIN_PIN}\"")),
+        "MYELIN_PIN {MYELIN_PIN} must match the manifest, got: {line}",
+    );
+    assert!(
+        line.contains("default-features = false"),
+        "the `myelin` feature must stay the CUDA-free stub, got: {line}",
     );
 }
 

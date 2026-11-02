@@ -13,6 +13,7 @@ encodings) live in ``q88_encoding_scenarios``.
 from __future__ import annotations
 
 import io
+import math
 from pathlib import Path
 
 try:  # package import: `python3 -m tools.verify_q88`
@@ -30,11 +31,13 @@ try:  # package import: `python3 -m tools.verify_q88`
         N_OUTPUT_WEIGHTS,
         OUTPUT_WEIGHTS_CANON_SHA256,
         OUTPUT_WEIGHTS_HEX,
+        Q88RangeError,
         ShippedPin,
         canonical_mem_digest,
         check_against_floats,
         check_signed_section,
         decode_q88,
+        encode_q88,
         encode_q88_clamp_to_zero,
         encode_q88_hex,
         load_model,
@@ -52,11 +55,13 @@ except ImportError:  # direct script: `python3 tools/verify_q88.py`
         N_OUTPUT_WEIGHTS,
         OUTPUT_WEIGHTS_CANON_SHA256,
         OUTPUT_WEIGHTS_HEX,
+        Q88RangeError,
         ShippedPin,
         canonical_mem_digest,
         check_against_floats,
         check_signed_section,
         decode_q88,
+        encode_q88,
         encode_q88_clamp_to_zero,
         encode_q88_hex,
         load_model,
@@ -93,8 +98,60 @@ def codec_unit_vectors(stream) -> int:
         )
         checks += 2
     print(f"   ok: {len(vectors)} vectors decode and round-trip", file=stream)
+    checks += _rounding_matches_rust()
+    print(
+        "   ok: ties round away from zero and the 0.5-ulp edge rounds to 0, "
+        "as Rust f64::round;\n"
+        "       values that round past 7FFF / 8000 are refused, not saturated",
+        file=stream,
+    )
     print("", file=stream)
     return checks
+
+
+def _raises_range_error(value: float) -> bool:
+    try:
+        encode_q88(value)
+    except Q88RangeError:
+        return True
+    return False
+
+
+def _rounding_matches_rust() -> int:
+    """encode_q88 must round exactly like ``src/model.rs`` ``quantize_q8_8``.
+
+    That is ``(v * 256).round()``: ties away from zero. The largest double
+    below 0.5 is the case ``math.floor(x + 0.5)`` gets wrong (the addition
+    rounds up to 1.0), so it encoded 0001 / FFFF where Rust gives 0000. Each
+    value below is divided by 256 exactly (a power of two), so ``scaled`` is
+    the literal shown.
+    """
+    below_half = math.nextafter(0.5, 0.0)  # 0.49999999999999994
+    cases = (
+        (0.5, 0x0001),
+        (-0.5, 0xFFFF),
+        (1.5, 0x0002),
+        (-1.5, 0xFFFE),
+        (below_half, 0x0000),
+        (-below_half, 0x0000),
+        (32767.49, 0x7FFF),
+        (-32768.0, 0x8000),
+    )
+    for scaled, want in cases:
+        got = encode_q88(scaled / 256)
+        _require(
+            got == want,
+            f"encode_q88({scaled!r} / 256) = {got:04X}, expected {want:04X} "
+            "(Rust f64::round, ties away from zero)",
+        )
+    # One past each end after rounding: refused, never clamped to 7FFF/8000.
+    for scaled in (32767.5, -32768.5):
+        _require(
+            _raises_range_error(scaled / 256),
+            f"encode_q88({scaled!r} / 256) rounds outside Q8.8 and must "
+            "raise Q88RangeError, not saturate",
+        )
+    return len(cases) + 2
 
 
 def shipped_artifacts_verify(stream) -> int:

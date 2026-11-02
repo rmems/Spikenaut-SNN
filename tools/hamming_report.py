@@ -11,22 +11,25 @@ import sys
 from pathlib import Path
 
 try:  # package import: `python3 -m tools.measure_hamming`
-    from .hamming_core import EXP024_CLAIMED, FROZEN_LINEAGE, Measurement
+    from .hamming_core import (
+        EXP024_CLAIMED,
+        EXP024_TEST_EPISODE_IDS,
+        FROZEN_LINEAGE,
+        Measurement,
+        episode_span_of_ids,
+    )
     from .q88_core import REPO_ROOT
+    from .q88_report import _stream_safe
 except ImportError:  # direct script: `python3 tools/measure_hamming.py`
-    from hamming_core import EXP024_CLAIMED, FROZEN_LINEAGE, Measurement
+    from hamming_core import (
+        EXP024_CLAIMED,
+        EXP024_TEST_EPISODE_IDS,
+        FROZEN_LINEAGE,
+        Measurement,
+        episode_span_of_ids,
+    )
     from q88_core import REPO_ROOT
-
-
-def _stream_safe(text: str, stream) -> str:
-    encoding = getattr(stream, "encoding", None) or "utf-8"
-    try:
-        text.encode(encoding)
-    except LookupError:
-        return text.encode("utf-8", "backslashreplace").decode("utf-8")
-    except UnicodeEncodeError:
-        return text.encode(encoding, "backslashreplace").decode(encoding)
-    return text
+    from q88_report import _stream_safe
 
 
 def _rel(path: Path) -> str:
@@ -48,7 +51,8 @@ def _protocol_lines(measurement: Measurement) -> list[str]:
     proto = measurement.protocol
     return [
         "float-vs-Q8.8 Hamming holdout  (issue #39)",
-        f"repo root: {_rel(REPO_ROOT)}",
+        # The checkout itself, not _rel(REPO_ROOT): that is always ".".
+        f"repo root: {REPO_ROOT}",
         "",
         "PROTOCOL",
         f"  condition : {proto.condition}",
@@ -133,8 +137,9 @@ def _exp024_comparable(measurement: Measurement) -> bool:
         return False
     if measurement.k_none.n_ticks != claimed["n_ticks"]:
         return False
-    episodes = proto.episodes
-    return "gpu-000170" in episodes and "gpu-000198" in episodes
+    # Exact span, not endpoint membership: a run missing or substituting a
+    # middle episode shares both endpoints but is not the recorded holdout.
+    return proto.episodes == episode_span_of_ids(EXP024_TEST_EPISODE_IDS)
 
 
 def _exp024_delta_lines(measurement: Measurement) -> list[str]:
@@ -159,7 +164,7 @@ def _exp024_delta_lines(measurement: Measurement) -> list[str]:
     ]
 
 
-def render(measurement: Measurement, stream=sys.stdout) -> list[str]:
+def render(measurement: Measurement) -> list[str]:
     """Format the protocol + numbers. Does not decide a Hamming gate."""
     lines = _protocol_lines(measurement)
     lines.append("")

@@ -362,7 +362,9 @@ class ModelBankTests(unittest.TestCase):
 
     def test_nul_checkpoint_path_is_attestation_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            dest = Path(tmp) / "nul"
+            # Not "nul": that is a reserved device name on Windows, so the
+            # copytree below failed there before the case under test ran.
+            dest = Path(tmp) / "nul-checkpoint"
             shutil.copytree(VALID.parent, dest)
             document = json.loads((dest / MANIFEST_FILENAME).read_text(encoding="utf-8"))
             document["models"][0]["checkpoint"] = "check\x00points/ok.bin"

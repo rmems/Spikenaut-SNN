@@ -7,7 +7,8 @@
 //! PTX compilation alone, or a skip never counts as a pass.
 //!
 //! Status: executed 2026-10-02 on RTX 5080 (driver 615.71.09, CUDA 13.3) —
-//! 5 passed, 0 failed; Compute Sanitizer memcheck 0 errors. The `#[ignore]`
+//! 6 passed, 0 failed (all six tests below, as recorded in
+//! `docs/MYELIN_COMPATIBILITY.md`); Compute Sanitizer memcheck 0 errors. The `#[ignore]`
 //! markers remain because every test needs a real device; run with
 //! `-- --ignored` on a provisioned sm_120 runner.
 

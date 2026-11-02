@@ -31,7 +31,7 @@ try:  # package import: `python3 -m tools.live_stim_parity`
         UNUSED_AXONS,
     )
     from .hamming_encode import Sample, encode_record, load_jsonl, select_samples
-    from .q88_core import ParseError, read_utf8_text
+    from .q88_core import ParseError, loads_json, read_utf8_text
 except ImportError:  # direct script: `python3 tools/live_stim_parity.py`
     from hamming_const import (
         FROZEN_LINEAGE,
@@ -43,7 +43,7 @@ except ImportError:  # direct script: `python3 tools/live_stim_parity.py`
         UNUSED_AXONS,
     )
     from hamming_encode import Sample, encode_record, load_jsonl, select_samples
-    from q88_core import ParseError, read_utf8_text
+    from q88_core import ParseError, loads_json, read_utf8_text
 
 FIXTURE_DIR = REPO_ROOT / "tools" / "fixtures" / "live_stim"
 READING_JSONL = FIXTURE_DIR / "reading.jsonl"
@@ -174,10 +174,11 @@ def frozen_minmax_failures() -> list[str]:
     """
     if not SHIPPED_MODEL.is_file():
         raise ParseError(f"missing shipped sidecar: {SHIPPED_MODEL}")
-    try:
-        model = json.loads(read_utf8_text(SHIPPED_MODEL))
-    except json.JSONDecodeError as exc:
-        raise ParseError(f"{SHIPPED_MODEL.name}: {exc}") from exc
+    model = loads_json(read_utf8_text(SHIPPED_MODEL), SHIPPED_MODEL.name)
+    if not isinstance(model, dict):
+        # A list/scalar top level used to reach `.get` as an AttributeError
+        # traceback rather than the documented exit 2.
+        raise ParseError(f"{SHIPPED_MODEL.name}: expected a JSON object")
     recorded = model.get("frozen_minmax")
     if not isinstance(recorded, dict):
         raise ParseError(f"{SHIPPED_MODEL.name}: no frozen_minmax object")
@@ -338,10 +339,9 @@ def _read_pin_object(path: Path) -> dict:
             f"missing pin: {path}. Write it with "
             "`python3 tools/live_stim_parity.py --write`."
         )
-    try:
-        payload = json.loads(read_utf8_text(path))
-    except json.JSONDecodeError as exc:
-        raise ParseError(f"{path.name}: {exc}") from exc
+    # loads_json, not json.loads: an oversized integer literal or deep nesting
+    # in the pin used to escape main() as a ValueError/RecursionError traceback.
+    payload = loads_json(read_utf8_text(path), path.name)
     if not isinstance(payload, dict):
         raise ParseError(f"{path.name}: expected a JSON object")
     return payload
@@ -515,7 +515,9 @@ def _axon_label(axon: int) -> str:
 def write_pin(path: Path = EXPECTED_STIM) -> dict:
     """Regenerate the pin from the reference encoder."""
     payload = build_pin()
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    # newline="\n": without it a Windows `--write` translates to CRLF and
+    # rewrites every line of the checked-in LF pin.
+    path.write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
     return payload
-
-

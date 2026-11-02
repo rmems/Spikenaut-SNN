@@ -5,9 +5,79 @@
 use neuromod::{
     ChannelVector, GifLayerError, NeuroModulators, NonFiniteClass, RmStdpConfig, StepError,
 };
-use spikenaut_snn::{HostGifLayer, HostNetwork};
+use spikenaut_snn::neuromod_host::{HOST_GIF_FAN_IN, HOST_NETWORK_NEURONS};
+use spikenaut_snn::{CHANNEL_COUNT, HOST_NETWORK_INITIAL_WEIGHT, HostGifLayer, HostNetwork};
 
 const STIMULI: [f32; 16] = [0.55; 16];
+
+#[test]
+fn a_fresh_network_has_the_documented_synthetic_shape() {
+    let network = HostNetwork::new(1);
+    let inner = network.inner();
+    assert_eq!(inner.neurons.len(), HOST_NETWORK_NEURONS);
+    assert!(inner.iz_neurons.is_empty(), "no Izhikevich bank");
+    assert_eq!(inner.num_channels, CHANNEL_COUNT);
+    assert_eq!(inner.global_step, 0);
+    for (index, neuron) in inner.neurons.iter().enumerate() {
+        assert_eq!(neuron.weights.len(), CHANNEL_COUNT, "neuron {index}");
+        assert!(
+            neuron
+                .weights
+                .iter()
+                .all(|&weight| weight == HOST_NETWORK_INITIAL_WEIGHT),
+            "neuron {index} must start uniform and non-negative",
+        );
+        // The documented L1 budget: sixteen equal weights summing to 2.0.
+        let l1: f32 = neuron.weights.iter().sum();
+        assert!((l1 - 2.0).abs() < 1e-6, "neuron {index} L1 = {l1}");
+    }
+}
+
+#[test]
+fn gif_layer_has_the_documented_sparse_topology() {
+    let layer = HostGifLayer::new(77).unwrap();
+    let inner = layer.inner();
+    assert_eq!(inner.num_inputs(), CHANNEL_COUNT);
+    assert_eq!(inner.num_neurons(), HOST_NETWORK_NEURONS);
+    assert_eq!(inner.num_synapses(), HOST_NETWORK_NEURONS * HOST_GIF_FAN_IN);
+    assert_eq!(inner.seed(), 77);
+    for neuron in 0..HOST_NETWORK_NEURONS {
+        let (sources, weights) = inner.fan_in_of(neuron).expect("in range");
+        assert_eq!(sources.len(), HOST_GIF_FAN_IN, "neuron {neuron}");
+        assert_eq!(weights.len(), HOST_GIF_FAN_IN, "neuron {neuron}");
+        assert!(
+            sources
+                .iter()
+                .all(|&source| (source as usize) < CHANNEL_COUNT),
+            "neuron {neuron} reads past the input width: {sources:?}",
+        );
+    }
+    assert!(inner.fan_in_of(HOST_NETWORK_NEURONS).is_none());
+}
+
+#[test]
+fn gif_reset_replays_a_fresh_layer() {
+    let mut used = HostGifLayer::new(9).unwrap();
+    let mut fresh = HostGifLayer::new(9).unwrap();
+    for _ in 0..5 {
+        used.step(&[1.0; 16]).unwrap();
+    }
+    assert_eq!(used.inner().step_count(), 5);
+
+    used.reset();
+    assert_eq!(used.inner().step_count(), 0);
+    assert_eq!(
+        used.inner(),
+        fresh.inner(),
+        "reset restores the seeded layer"
+    );
+    for _ in 0..5 {
+        assert_eq!(
+            used.step(&[1.0; 16]).unwrap(),
+            fresh.step(&[1.0; 16]).unwrap()
+        );
+    }
+}
 
 fn assert_same_network(left: &HostNetwork, right: &HostNetwork) {
     let left = left.inner();

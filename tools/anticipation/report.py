@@ -269,7 +269,7 @@ def _score_run(run, output, data, std, base, strongest):
     item = dict(run)
     predpath = run.get("predictions")
     if predpath:
-        pred = json.loads((output / "snn" / predpath).read_text())
+        pred = json.loads(_prediction_artifact_path(output, predpath).read_text())
         prediction_rows = checked_predictions(pred, run)
         for split in ("validation", "test"):
             item[split] = _prediction_metrics(data, split, prediction_rows, std)
@@ -290,6 +290,19 @@ def _score_run(run, output, data, std, base, strongest):
             item["promising"] = None
         item["diagnostics"] = pred.get("diagnostics")
     return item
+
+
+def _prediction_artifact_path(output, predpath):
+    """Resolve a summary-relative prediction path inside `output/snn` only.
+
+    `summary.json` is trainer output; an absolute path, `..` component, or
+    symlink must not make the report read (and score) a file outside the run.
+    """
+    snn = (Path(output) / "snn").resolve()
+    path = (snn / predpath).resolve()
+    if not path.is_relative_to(snn):
+        raise ValueError("SNN prediction path escapes the run directory")
+    return path
 
 
 def _load_runs(output, prepared_path):

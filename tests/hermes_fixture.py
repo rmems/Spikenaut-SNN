@@ -2,13 +2,8 @@
 
 from __future__ import annotations
 
-
-import os
-
-
 import subprocess  # nosec B404
-
-
+import sys
 import time
 
 
@@ -32,7 +27,7 @@ class FakeRuntime:
 
 def _write_fake_hermes(path, events, exit_code=0, sleep_seconds=0, ready_path=None):
     source = (
-        "#!" + os.sys.executable + "\n"
+        "#!" + sys.executable + "\n"
         "import json,time\n"
         "from pathlib import Path\n"
         f"events={events!r}\n"

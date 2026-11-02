@@ -19,7 +19,7 @@
 //! only through `KernelModule::get_function`, which returns a `cust`
 //! launch handle. This crate declares no `cust` dependency, so raw LIF
 //! launches are explicitly out of scope until that dependency is reviewed
-//! and added. See the Phase 0–1 finding in the module docs below.
+//! and added.
 //!
 //! Compatibility gaps, numerical contracts and environment evidence live in
 //! `docs/MYELIN_COMPATIBILITY.md`.
@@ -60,10 +60,8 @@ pub const fn is_cuda_build() -> bool {
 /// One-line backend summary for evidence logs: backend, readiness, fallback.
 #[must_use]
 pub fn backend_summary(accelerator: &GpuAccelerator) -> String {
-    let backend = match accelerator.selected_backend() {
-        Backend::Cuda => "cuda",
-        Backend::Cpu => "cpu",
-    };
+    // The published stable telemetry token, rather than a local restatement.
+    let backend = accelerator.selected_backend().code();
     let ready = accelerator.is_ready();
     match accelerator.fallback() {
         Some(record) => format!(
@@ -86,8 +84,12 @@ pub fn prefer_gpu() -> GpuAccelerator {
 
 /// Fail-closed GPU construction: never returns a CPU-backend accelerator.
 ///
-/// Returns `GpuError::Unavailable` when CUDA is not built or no device is
-/// usable. GPU-gated tests must use this, never [`prefer_gpu`].
+/// GPU-gated tests must use this, never [`prefer_gpu`].
+///
+/// # Errors
+///
+/// Returns `GpuError::Unavailable` (carrying the [`FallbackReason`]) when
+/// CUDA is not built or no device is usable.
 pub fn require_gpu() -> Result<GpuAccelerator, GpuError> {
     GpuAccelerator::require_gpu()
 }
@@ -111,6 +113,7 @@ pub mod cuda {
     /// Returns [`GpuError`] when no usable CUDA device is present. A CPU
     /// fallback success must never count as a CUDA pass.
     pub fn require_gpu_accelerator() -> Result<GpuAccelerator, GpuError> {
-        GpuAccelerator::require_gpu()
+        // One fail-closed constructor, not two that could drift apart.
+        super::require_gpu()
     }
 }

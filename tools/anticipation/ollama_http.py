@@ -100,7 +100,13 @@ class DeadlineHTTPClient:
         if deadline_seconds is not None and deadline_seconds <= 0:
             raise TimeoutError(f"Ollama {path} exceeded its end-to-end deadline")
         if deadline_seconds is not None:
-            socket_timeout = min(socket_timeout, deadline_seconds)
+            # A None socket timeout means "blocking"; min(None, x) raised
+            # TypeError, so the end-to-end deadline alone bounds the socket.
+            socket_timeout = (
+                deadline_seconds
+                if socket_timeout is None
+                else min(socket_timeout, deadline_seconds)
+            )
         return socket_timeout
 
     @staticmethod
