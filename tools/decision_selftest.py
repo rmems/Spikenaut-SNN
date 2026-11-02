@@ -227,7 +227,7 @@ def _self_test_cli_modes_exclusive() -> None:
     try:
         with contextlib.redirect_stderr(io.StringIO()):
             main(["--write", "--self-test"])
-    except SystemExit as exc:  # NOSONAR: the exit status *is* the assertion
+    except SystemExit as exc:  # NOSONAR(S5754) the exit status is the assertion
         # argparse reports the usage error by exiting; this self-test checks
         # that status and must not let it stop the self-test run.
         _require(exc.code == 2, f"--write --self-test exited {exc.code}, expected 2")
