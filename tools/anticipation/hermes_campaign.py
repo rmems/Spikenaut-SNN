@@ -286,9 +286,11 @@ class HermesStimulus:
 
     @staticmethod
     def _positive_usage(usage):
-        # bool is an int subclass; `true` is not a token count.
+        # Token counts are whole numbers. bool is an int subclass, so `true`
+        # is excluded explicitly; floats are excluded so a fractional count or
+        # an `Infinity` literal from a malformed stream cannot pass as usage.
         return isinstance(usage, dict) and any(
-            isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+            isinstance(value, int) and not isinstance(value, bool) and value > 0
             for value in usage.values()
         )
 

@@ -407,6 +407,9 @@ def test_positive_usage_requires_a_real_positive_count():
     assert HermesStimulus._positive_usage({"input": 0, "output": 3}) is True
     assert HermesStimulus._positive_usage({"input": True}) is False
     assert HermesStimulus._positive_usage({"input": float("nan")}) is False
+    assert HermesStimulus._positive_usage({"input": float("inf")}) is False
+    assert HermesStimulus._positive_usage({"input": 2.5}) is False
+    assert HermesStimulus._positive_usage({"input": 3.0}) is False
     assert HermesStimulus._positive_usage([5]) is False
 
 
