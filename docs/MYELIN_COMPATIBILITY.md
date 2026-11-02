@@ -55,9 +55,11 @@ Executed device-vs-oracle comparisons (all in `tests/myelin_gpu.rs`):
 
 Executed on every CPU build (`tests/myelin_cpu.rs`, no GPU needed):
 
-- CPU-backend launches are not implementations: every launch method on a
+- CPU-backend launches are not implementations: a valid, non-empty
+  `poisson_encode`, `stdp_update`, `synchronize` or `kernels()` call on a
   CPU `GpuAccelerator` returns `GpuError::Unavailable`, and
-  `require_gpu()` fails closed.
+  `require_gpu()` fails closed. (The 0.2.0 stub returns `Unavailable`
+  from every launch method unconditionally; the test pins those four.)
 
 Future contracts (not executed — raw launches need `cust`, option 1):
 

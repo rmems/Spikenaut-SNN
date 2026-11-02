@@ -163,6 +163,9 @@ fn nesting_limit_counts_containers_not_their_contents() {
 /// and a surrogate pair combined into one supplementary character.
 #[test]
 fn decodes_unicode_escapes_and_surrogate_pairs() {
+    // Every non-ASCII character goes through the escape parser: `é`
+    // and `é` (both hex cases), `中` (BMP), `\u0000` (NUL), and
+    // two surrogate pairs (U+1F600 and U+10FFFF, the last scalar value).
     let value = parse(r#""Aéé中\u0000😀􏿿""#).unwrap();
     assert_eq!(
         value.as_str(),
