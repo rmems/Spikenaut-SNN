@@ -166,7 +166,7 @@ fn decodes_unicode_escapes_and_surrogate_pairs() {
     // Every non-ASCII character goes through the escape parser: `é`
     // and `é` (both hex cases), `中` (BMP), `\u0000` (NUL), and
     // two surrogate pairs (U+1F600 and U+10FFFF, the last scalar value).
-    let value = parse(r#""Aéé中\u0000😀􏿿""#).unwrap();
+    let value = parse(r#""A\u00e9\u00E9\u4e2d\u0000\uD83D\uDE00\uDBFF\uDFFF""#).unwrap();
     assert_eq!(
         value.as_str(),
         Some("A\u{e9}\u{e9}\u{4e2d}\u{0}\u{1F600}\u{10FFFF}")
