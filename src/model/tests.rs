@@ -651,12 +651,26 @@ fn weight_tensor_refuses_a_hand_built_weight_off_the_q8_8_grid() {
     );
 }
 
-/// Every type error names the unit and the field it came from, and a neuron
-/// with several faults reports them in the documented precedence: weights,
-/// then `last_spike`, then the scalars.
+/// A healthy neuron literal for the fault tests below: the second neuron in
+/// each pair carries the fault, so every message names `neuron 1`.
+const HEALTHY_NEURON: &str = r#"{"decay_rate": 0.5, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0, 2.0], "last_spike": false}"#;
+
+/// Decodes a healthy neuron followed by `second` and asserts the schema
+/// error message contains `expected`.
+fn assert_second_neuron_fault(second: &str, expected: &str) {
+    let text = format!(r#"{{"neurons": [{HEALTHY_NEURON}, {second}]}}"#);
+    let err = SnnModel::from_json_str(&text).unwrap_err();
+    assert!(matches!(err, ModelError::Schema(_)), "{err}");
+    let message = err.to_string();
+    assert!(
+        message.contains(expected),
+        "expected {message:?} to contain {expected:?}"
+    );
+}
+
+/// Every type error names the unit and the field it came from.
 #[test]
 fn decoding_names_the_unit_and_field_of_every_fault() {
-    let ok = r#"{"decay_rate": 0.5, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0, 2.0], "last_spike": false}"#;
     let cases = [
         (
             r#"{"decay_rate": 0.5, "membrane_potential": 0.0, "threshold": 1.0, "weights": ["x", 2.0], "last_spike": false}"#,
@@ -686,31 +700,33 @@ fn decoding_names_the_unit_and_field_of_every_fault() {
             r#"{"decay_rate": 0.5, "membrane_potential": 300.0, "threshold": 1.0, "weights": [1.0, 2.0], "last_spike": false}"#,
             "neuron 1 field `membrane_potential` is 300, outside the Q8.8 range",
         ),
-        // Precedence: a bad weight wins over a bad decay and a bad flag.
-        (
-            r#"{"decay_rate": 5.0, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0, 999.0], "last_spike": 1}"#,
-            "neuron 1 weight 1 is 999, outside the Q8.8 range",
-        ),
-        // Then `last_spike` wins over a bad scalar.
-        (
-            r#"{"decay_rate": 5.0, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0, 2.0], "last_spike": 1}"#,
-            "neuron 1 field `last_spike` is a number, expected a boolean",
-        ),
     ];
     for (second, expected) in cases {
-        let text = format!(r#"{{"neurons": [{ok}, {second}]}}"#);
-        let err = SnnModel::from_json_str(&text).unwrap_err();
-        assert!(matches!(err, ModelError::Schema(_)), "{err}");
-        let message = err.to_string();
-        assert!(
-            message.contains(expected),
-            "expected {message:?} to contain {expected:?}"
-        );
+        assert_second_neuron_fault(second, expected);
     }
 
     // And the healthy pair decodes, so the cases above fail on their fault.
-    let pair = SnnModel::from_json_str(&format!(r#"{{"neurons": [{ok}, {ok}]}}"#)).unwrap();
+    let pair = SnnModel::from_json_str(&format!(
+        r#"{{"neurons": [{HEALTHY_NEURON}, {HEALTHY_NEURON}]}}"#
+    ))
+    .unwrap();
     assert_eq!(pair.len(), 2);
+}
+
+/// A neuron with several faults reports them in the documented precedence:
+/// weights, then `last_spike`, then the scalars.
+#[test]
+fn decoding_reports_faults_in_documented_precedence() {
+    // A bad weight wins over a bad decay and a bad flag.
+    assert_second_neuron_fault(
+        r#"{"decay_rate": 5.0, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0, 999.0], "last_spike": 1}"#,
+        "neuron 1 weight 1 is 999, outside the Q8.8 range",
+    );
+    // Then `last_spike` wins over a bad scalar.
+    assert_second_neuron_fault(
+        r#"{"decay_rate": 5.0, "membrane_potential": 0.0, "threshold": 1.0, "weights": [1.0, 2.0], "last_spike": 1}"#,
+        "neuron 1 field `last_spike` is a number, expected a boolean",
+    );
 }
 
 /// The decay rate is snapped onto the Q8.8 grid like every other number, and

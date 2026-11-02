@@ -22,7 +22,8 @@ def test_worker_module_is_importable_from_output_working_directory(tmp_path):
 
     # Same argv and cwd as the real stage launch. Without the repository root
     # on PYTHONPATH this failed with "No module named 'tools'".
-    completed = subprocess.run(  # nosec B603
+    # Fixed argv (interpreter, module name, --help), no shell, no user input.
+    completed = subprocess.run(  # nosec B603  # nosemgrep: dangerous-subprocess-use-audit
         [sys.executable, "-m", evaluator._EVALUATION_WORKER, "--help"],
         cwd=tmp_path,
         env=evaluator._worker_environment(),

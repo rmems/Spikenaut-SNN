@@ -750,6 +750,16 @@ fn error_messages_match_the_python_reference() {
             DecisionError::InvalidConfidenceFloor { value: 1.5 },
             "confidence floor 1.5 is not a finite value in [0, 1]",
         ),
+    ] {
+        assert_eq!(err.to_string(), want);
+    }
+}
+
+/// The derived-diagnostic messages name exactly the non-finite fields, in
+/// the same wording as the Python reference.
+#[test]
+fn derived_error_messages_match_the_python_reference() {
+    for (err, want) in [
         (
             DecisionError::DerivedNonFinite {
                 margin: true,

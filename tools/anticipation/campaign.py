@@ -486,8 +486,12 @@ def _confirm_collector_shutdown(directory, record, exit_code):
     record["status"] = "collector_stopped"
     write_json(directory / STIMULUS_AUDIT_NAME, record)
     manifest = json.loads((directory / "session_manifest.json").read_text())
+    # `None` means the collector was never reaped, which is not a clean exit.
+    # Today's caller already raises before reaching here on a shutdown
+    # timeout, but this function must not rely on that to stay correct.
     if (
-        exit_code
+        exit_code is None
+        or exit_code
         or not isinstance(manifest, dict)
         or not manifest.get("ended_at_utc")
         or manifest.get("parquet_write_failures") != 0

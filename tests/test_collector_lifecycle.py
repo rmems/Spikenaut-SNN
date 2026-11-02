@@ -139,6 +139,22 @@ def test_malformed_manifest_still_records_collector_exit_code(tmp_path):
     assert audit["status"] == "collector_stopped"
 
 
+def test_unreaped_collector_is_not_confirmed_complete(tmp_path):
+    record = {"session_id": "session-01", "status": "shutdown_requested"}
+    (tmp_path / "session_manifest.json").write_text(
+        json.dumps({"ended_at_utc": "2026-01-01T00:00:00Z", "parquet_write_failures": 0})
+    )
+
+    # A `None` exit code means no reap attempt succeeded; it must not read as
+    # the falsy "exited 0".
+    with pytest.raises(RuntimeError, match="manifest incomplete"):
+        campaign._confirm_collector_shutdown(tmp_path, record, None)
+
+    audit = json.loads((tmp_path / campaign.STIMULUS_AUDIT_NAME).read_text())
+    assert audit["collector_exit_code"] is None
+    assert audit["status"] == "collector_stopped"
+
+
 def test_missing_manifest_still_records_collector_exit_code(tmp_path):
     record = {"session_id": "session-01", "status": "shutdown_requested"}
 

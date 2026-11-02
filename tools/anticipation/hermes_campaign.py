@@ -47,6 +47,38 @@ from .task_verification import (  # noqa: F401
     write_fixture,
 )
 
+# The re-exports above are this module's public surface for tests and
+# callers; naming them here is what marks them as used rather than stray.
+__all__ = [
+    "ALLOWED_TOOLS",
+    "CONTROL_PLANE_TIMEOUT_SECONDS",
+    "DEFAULT_ENDPOINT",
+    "DEFAULT_MODEL",
+    "DURABLE_CLEANUP_INITIAL_BACKOFF_SECONDS",
+    "DURABLE_CLEANUP_MAX_BACKOFF_SECONDS",
+    "DURABLE_CLEANUP_TIMEOUT_SECONDS",
+    "EXCLUDED_MODELS",
+    "HARD_TIMEOUT_SECONDS",
+    "HermesStimulus",
+    "MODEL_PLAN",
+    "OllamaRuntime",
+    "PRELOAD_COMPLETION_TIMEOUT_SECONDS",
+    "PRELOAD_KEEP_ALIVE_SECONDS",
+    "PROTOCOL_ID",
+    "SIGKILL_REAP_TIMEOUT_SECONDS",
+    "SIGTERM_GRACE_SECONDS",
+    "VERIFIER_AS_LIMIT_BYTES",
+    "VERIFIER_CPU_LIMIT_SECONDS",
+    "VERIFIER_FSIZE_LIMIT_BYTES",
+    "VERIFIER_NPROC_LIMIT",
+    "build_hermes_campaign",
+    "capture",
+    "finish_task_cleanup",
+    "main",
+    "verify_fixture",
+    "write_fixture",
+]
+
 HARD_TIMEOUT_SECONDS = 100.0
 # Bound on draining Hermes output after SIGKILL of its process group. Only a
 # descendant that escaped the group can hold the pipes open past this.
