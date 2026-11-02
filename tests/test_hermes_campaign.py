@@ -443,9 +443,11 @@ def test_sigkill_drain_is_bounded_when_a_descendant_holds_output_open(
         tmp_path, hermes_executable=tmp_path / "hermes", runtime=FakeRuntime()
     )
     event = {"hard_deadline_s": 120.0, "termination_grace_s": 0.01}
+    process = HeldPipes()
+    started = time.monotonic() - 20
 
     with pytest.raises(RuntimeError, match="escaped the process group"):
-        stimulus._communicate_task(HeldPipes(), event, time.monotonic() - 20, {})
+        stimulus._communicate_task(process, event, started, {})
 
     assert signals == [signal.SIGTERM, 9]
     assert None not in timeouts, "every communicate() must be bounded"

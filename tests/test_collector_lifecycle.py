@@ -97,11 +97,12 @@ def test_status_write_failure_does_not_mask_returned_cleanup_error(
 
     monkeypatch.setattr(campaign, "write_json", failing_write)
     status = {"status": "finalizing", "sessions": []}
+    stimulus = FailingClose()
 
     # _close_stimulus returns the operational error instead of raising it, so
     # the status write must not be allowed to replace it with its own error.
     with pytest.raises(RuntimeError, match="model unload failed"):
-        campaign._finish_capture(tmp_path, FailingClose(), status, True, False)
+        campaign._finish_capture(tmp_path, stimulus, status, True, False)
 
     assert status["status"] == "incomplete"
     assert status["cleanup_error"] == "RuntimeError: model unload failed"
@@ -134,15 +135,14 @@ def test_session_audit_error_is_raised_even_inside_caller_except_block(
     session = {"session_id": "session-01", "seed": 1, "path": str(directory)}
     plan = {"collector_sha256": "unused", "actual_audit_key": "actual_bot_tasks"}
 
+    stimulus = BrokenAuditStimulus()
     try:
         raise KeyError("unrelated exception the caller is handling")
     except KeyError:
         # Previously the caller's handled exception made the session ignore
         # its own audit failure and be accepted as complete.
         with pytest.raises(RuntimeError, match="audit accessor failed"):
-            campaign._capture_session(
-                session, BrokenAuditStimulus(), tmp_path / "collector", plan
-            )
+            campaign._capture_session(session, stimulus, tmp_path / "collector", plan)
 
     assert process.signals, "collector must still receive its graceful SIGINT"
     audit = json.loads((directory / campaign.STIMULUS_AUDIT_NAME).read_text())
