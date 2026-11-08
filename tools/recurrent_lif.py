@@ -5,7 +5,10 @@ The shipped exp-025 bank is feed-forward: ``v = keep * v + W @ stim``.
 This module defines the one recurrent extension this repository evaluates
 and the checkpoint block that declares it, so a replay can never apply
 recurrence a checkpoint did not spell out, and a checkpoint that carries
-recurrence can never be replayed feed-forward by a tool that ignores it.
+recurrence is never stepped feed-forward by a consumer in this repository:
+``replay_core`` applies the block, ``recurrence_eval`` and the Hamming
+harness (``hamming_banks.bank_from_json``) refuse it through
+``require_feed_forward``, and the Rust loader rejects the unknown key.
 
 Contract (``spikenaut.recurrence.v1``)
 --------------------------------------
@@ -31,8 +34,8 @@ Contract (``spikenaut.recurrence.v1``)
   post-major (word ``post * 16 + pre``). The four feed-forward images keep
   their existing layout, so a consumer without recurrence reads the same
   bytes it always did -- it just must refuse a checkpoint that declares
-  this block (``replay_core`` implements it; the Rust crate and the FPGA
-  path do not, and say so).
+  this block (``require_feed_forward`` below; ``replay_core`` implements
+  the block, the Rust crate and the FPGA path do not, and say so).
 
 With ``R == 0`` the step is bit-identical to the feed-forward reference,
 which ``tests/test_recurrence.py`` asserts. Standard library only.
@@ -272,6 +275,23 @@ def _dale_checked(
             f"entry must be >= 0, got {value!r}"
         )
     return value
+
+
+def require_feed_forward(model: dict, source: str = "checkpoint") -> dict:
+    """Refuse a checkpoint that declares recurrence.
+
+    For consumers that build the feed-forward stepper only. Dropping the
+    block silently would publish feed-forward numbers under a recurrent
+    model's name, which is exactly what this contract rules out.
+    """
+    if RECURRENCE_KEY in model:
+        raise ParseError(
+            f"{source}: checkpoint declares a {RECURRENCE_KEY!r} block "
+            f"({RECURRENCE_SCHEMA}); this consumer steps feed-forward only and "
+            "would silently ignore it. Use tools/replay_frozen.py, which "
+            "applies the block."
+        )
+    return model
 
 
 def recurrence_from_model(

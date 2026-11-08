@@ -10,16 +10,19 @@ Standard library only; pytest is an optional runner.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from tools.hamming_banks import bank_from_model
+from tools.hamming_banks import bank_from_json, bank_from_model
 from tools.hamming_const import N_EXC, N_NEURONS, f32
 from tools.hamming_encode import load_jsonl, select_samples
 from tools.hamming_lif import LifBank, keep_lif_step
+from tools.measure_hamming import main as hamming_main
 from tools.model_bank import load_model_bank
 from tools.q88_core import (
     ParseError,
@@ -68,6 +71,7 @@ from tools.recurrent_lif import (
     recurrence_from_model,
     recurrent_lif_step,
     recurrent_mem_words,
+    require_feed_forward,
 )
 from tools.replay_core import (
     REPO_ROOT,
@@ -578,6 +582,26 @@ class TestRecordedVariantBundle(unittest.TestCase):
         self.assertEqual(
             doc["input"]["splits"]["test"]["sessions"][-1], "gpu-000198"
         )
+
+    def test_feed_forward_consumers_refuse_the_variant(self):
+        # The contract: a checkpoint that declares recurrence is never
+        # stepped feed-forward with the block dropped. The Hamming harness
+        # is the one consumer that takes an arbitrary float checkpoint.
+        variant = REPO_ROOT / "dataset" / "merged_v2_rec_v1"
+        model = json.loads((variant / "snn_model.json").read_text(encoding="utf-8"))
+        with self.assertRaises(ParseError):
+            require_feed_forward(model, "variant")
+        feed_forward = _grid_model()
+        self.assertIs(require_feed_forward(feed_forward), feed_forward)
+        with self.assertRaises(ParseError):
+            bank_from_json(variant / "snn_model.json", "float-json", 0.05)
+        argv = [
+            "--condition", "shipped-merged-v2", "--jsonl", str(FIXTURE_JSONL),
+            "--float-json", str(variant / "snn_model.json"), "--mem-dir", str(variant),
+        ]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = hamming_main(argv)
+        self.assertEqual(code, 2)
 
     def test_variant_replays_on_fixture(self):
         with tempfile.TemporaryDirectory() as tmp:

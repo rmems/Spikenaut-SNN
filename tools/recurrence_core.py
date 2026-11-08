@@ -18,8 +18,8 @@ protocol it implements:
   Every arm, ``ff`` included, also gets a readout refit on the train
   split: ridge regression on the emitted spike vectors with the exp-025
   outgoing-Dale sign constraint (excitatory columns >= 0, inhibitory
-  <= 0), solved exactly by Lawson-Hanson NNLS on the normal equations,
-  then snapped to the Q8.8 grid. The ridge strength is chosen on the
+  <= 0), solved exactly by Lawson-Hanson NNLS on the normal equations
+  (``recurrence_linalg``), then snapped to the Q8.8 grid. The ridge strength is chosen on the
   validation split only. Refitting ``ff`` too is what makes the
   recurrence effect separable from the effect of a fresh fit.
 * **Metrics.** Per head, mean absolute error per session, averaged with
@@ -51,6 +51,7 @@ try:  # package import: `python3 -m tools.recurrence_eval`
     from .hamming_encode import Sample
     from .hamming_lif import LifBank, keep_lif_step
     from .q88_core import ParseError, Q88RangeError, decode_q88, encode_q88
+    from .recurrence_linalg import nnls, solve_dense
     from .recurrent_lif import Recurrence, RecurrentState, recurrent_lif_step
 except ImportError:  # direct script: `python3 tools/recurrence_eval.py`
     from decision_core import SHIPPED_VOCABULARY, replay_output_row, score_readout
@@ -58,6 +59,7 @@ except ImportError:  # direct script: `python3 tools/recurrence_eval.py`
     from hamming_encode import Sample
     from hamming_lif import LifBank, keep_lif_step
     from q88_core import ParseError, Q88RangeError, decode_q88, encode_q88
+    from recurrence_linalg import nnls, solve_dense
     from recurrent_lif import Recurrence, RecurrentState, recurrent_lif_step
 
 HEADS: tuple[str, ...] = SHIPPED_VOCABULARY
@@ -290,161 +292,6 @@ def normal_equations(stats: dict[int, list[float]]) -> tuple[list[list[float]], 
     return gram, rhs
 
 
-def _pivot_row(a: list[list[float]], col: int, n: int) -> int:
-    """Row at or below ``col`` with the largest ``|a[r][col]|``.
-
-    Ties go to the lowest index, so the elimination order is deterministic.
-    """
-    best = col
-    for r in range(col + 1, n):
-        if abs(a[r][col]) > abs(a[best][col]):
-            best = r
-    return best
-
-
-def _solve(matrix: list[list[float]], vector: list[float]) -> list[float]:
-    """Gaussian elimination with partial pivoting on a small dense system.
-
-    Zero tests are truthiness, the repo's form of an exact IEEE-zero test
-    (``0.0`` and ``-0.0`` are the only falsy floats). A tolerance would be
-    the wrong test: the ridge term keeps every real pivot away from zero,
-    and only an exactly singular system must be refused.
-    """
-    n = len(vector)
-    a = [row[:] + [vector[i]] for i, row in enumerate(matrix)]
-    _eliminate(a, n)
-    return _back_substitute(a, n)
-
-
-def _eliminate(a: list[list[float]], n: int) -> None:
-    """Forward elimination in place on the augmented matrix ``a``."""
-    for col in range(n):
-        pivot = _pivot_row(a, col, n)
-        if not a[pivot][col]:
-            raise ParseError("readout fit: singular normal equations")
-        a[col], a[pivot] = a[pivot], a[col]
-        for r in range(col + 1, n):
-            factor = a[r][col] / a[col][col]
-            if factor:
-                for c in range(col, n + 1):
-                    a[r][c] -= factor * a[col][c]
-
-
-def _back_substitute(a: list[list[float]], n: int) -> list[float]:
-    # Row ``col`` is never modified after its own elimination step, so each
-    # ``a[r][r]`` here is the pivot that passed ``_eliminate``'s zero test.
-    x = [0.0] * n
-    for r in range(n - 1, -1, -1):
-        acc = a[r][n]
-        for c in range(r + 1, n):
-            acc -= a[r][c] * x[c]
-        x[r] = acc / a[r][r]
-    return x
-
-
-def _gradient(
-    matrix: list[list[float]], vector: list[float], u: list[float]
-) -> list[float]:
-    """``c - A u``, the negative gradient of the NNLS objective."""
-    n = len(vector)
-    return [
-        vector[i] - sum(matrix[i][j] * u[j] for j in range(n))
-        for i in range(n)
-    ]
-
-
-def _entering_index(grad: list[float], passive: list[bool], tol: float) -> int | None:
-    """Largest positive gradient outside the passive set, ties to the
-    lowest index; ``None`` when no coordinate can still improve."""
-    best: int | None = None
-    for j, g in enumerate(grad):
-        if not passive[j] and g > tol and (best is None or g > grad[best]):
-            best = j
-    return best
-
-
-def _inner_step(
-    matrix: list[list[float]],
-    vector: list[float],
-    passive: list[bool],
-    u: list[float],
-    tol: float,
-) -> tuple[list[float], bool]:
-    """One Lawson-Hanson inner iteration on the passive set.
-
-    Solves the passive-set least squares. If that solution is feasible it
-    becomes the iterate and the step is done. Otherwise ``u`` moves toward
-    it until the first coordinate reaches zero; those coordinates leave the
-    passive set and the caller iterates again.
-    """
-    n = len(u)
-    active_set, z = _passive_solution(matrix, vector, passive, n)
-    if all(value > tol for value in z):
-        out = [0.0] * n
-        for i, value in zip(active_set, z, strict=True):
-            out[i] = value
-        return out, True
-    _move_toward(u, active_set, z, passive, tol)
-    return u, False
-
-
-def _passive_solution(
-    matrix: list[list[float]], vector: list[float], passive: list[bool], n: int
-) -> tuple[list[int], list[float]]:
-    """The passive set and the least-squares solution restricted to it."""
-    active_set = [i for i in range(n) if passive[i]]
-    sub = [[matrix[i][j] for j in active_set] for i in active_set]
-    return active_set, _solve(sub, [vector[i] for i in active_set])
-
-
-def _move_toward(
-    u: list[float], active_set: list[int], z: list[float], passive: list[bool], tol: float
-) -> None:
-    """Move ``u`` toward ``z`` until the first coordinate reaches zero and
-    drop every coordinate that did from the passive set (in place)."""
-    alpha = min(
-        u[i] / (u[i] - value)
-        for i, value in zip(active_set, z, strict=True)
-        if value <= tol
-    )
-    for i, value in zip(active_set, z, strict=True):
-        u[i] = u[i] + alpha * (value - u[i])
-    for i in active_set:
-        if u[i] <= tol:
-            passive[i] = False
-            u[i] = 0.0
-
-
-def nnls(matrix: list[list[float]], vector: list[float]) -> list[float]:
-    """Lawson-Hanson NNLS on the normal equations ``A u = c``, ``u >= 0``.
-
-    Exact active-set solution of ``min 1/2 u^T A u - c^T u`` for SPD ``A``.
-    Ties in the entering variable go to the lowest index, so the fit is
-    deterministic. Both loops carry an iteration cap that fails closed: the
-    inner ``break`` leaves only the inner loop, so the outer cap is live and
-    fires if ``cap`` entering steps pass without the gradient test clearing.
-    """
-    if not vector:
-        raise ParseError("readout fit: empty system")
-    n = len(vector)
-    tol = 1e-12 * max(1.0, max(abs(v) for v in vector))
-    passive = [False] * n
-    u = [0.0] * n
-    cap = 4 * n + 16
-    for _ in range(cap):
-        entering = _entering_index(_gradient(matrix, vector, u), passive, tol)
-        if entering is None:
-            return u
-        passive[entering] = True
-        for _ in range(cap):
-            u, feasible = _inner_step(matrix, vector, passive, u, tol)
-            if feasible:
-                break
-        else:
-            raise ParseError("readout fit: NNLS inner loop did not converge")
-    raise ParseError("readout fit: NNLS outer loop did not converge")
-
-
 def snap_q88(value: float, where: str) -> float:
     try:
         return f32(decode_q88(encode_q88(value)))
@@ -497,8 +344,8 @@ def sign_census(weights: list[list[float]], inhibitory: Sequence[bool]) -> dict:
     """How the fitted head sits against outgoing Dale; zeros are allowed."""
     e_neg = _count_side(weights, inhibitory, False, lambda w: w < 0.0)
     i_pos = _count_side(weights, inhibitory, True, lambda w: w > 0.0)
-    # Truthiness is the exact-zero test (see ``_solve``): a literal float
-    # equality is the same test but trips python:S1244.
+    # Truthiness is the exact-zero test (see ``recurrence_linalg``): a literal
+    # float equality is the same test but trips python:S1244.
     zero = sum(1 for row in weights for w in row if not w)
     return {
         "dale_violations": e_neg + i_pos,
@@ -702,7 +549,7 @@ def fit_linear_inputs(
     for i in range(width - 1):  # the bias term is not penalized
         gram[i][i] += lam
     return [
-        _solve(gram, [rhs[i][h] for i in range(width)]) for h in range(N_HEADS)
+        solve_dense(gram, [rhs[i][h] for i in range(width)]) for h in range(N_HEADS)
     ]
 
 
