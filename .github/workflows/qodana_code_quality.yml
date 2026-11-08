@@ -42,7 +42,7 @@ jobs:
         # they are force-moved on every patch release and a scan could change
         # under us without a commit here saying so. The trailing comment names
         # the exact tag this SHA resolves to; Dependabot rewrites both.
-        uses: JetBrains/qodana-action@10be11607eb323a180e2b76b26c9c5cdceac3e77 # v2026.2.1
+        uses: JetBrains/qodana-action@3e8d76ff0e0241618abd808682f426afe84bab3f # v2026.2.2
         with:
           # pr-mode: false analyses the whole repository, so the counts this
           # reports are whole-repo baseline totals -- not the debt a given pull
