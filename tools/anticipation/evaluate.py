@@ -11,6 +11,8 @@ from .campaign import sha256, write_json
 
 _EVALUATION_WORKER = "tools.anticipation.evaluation_worker"
 _ALLOWED_PYTHON_STAGES = frozenset({"baselines", "comparison"})
+# Root that contains the `tools` package (tools/anticipation/evaluate.py).
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def unfinished_summary(prepared, snn, reason):
@@ -147,47 +149,41 @@ def _python_stage(stage, prepared, output, remaining):
         raise ValueError(f"unsupported evaluation stage: {stage}")
     if remaining <= 0:
         raise subprocess.TimeoutExpired([_EVALUATION_WORKER, stage], max(0.0, remaining))
-    if stage == "baselines":
-        return _run_baselines_worker(prepared, output, remaining)
-    return _run_comparison_worker(prepared, output, remaining)
+    return _run_stage_worker(stage, prepared, output, remaining)
 
 
-def _run_baselines_worker(prepared, output, remaining):
+def _run_stage_worker(stage, prepared, output, remaining):
     output = output.resolve()
     prepared = Path(prepared).resolve()
     write_json(
         output / "worker-invocation.json",
         {"prepared": os.fspath(prepared)},
     )
-    with _open_exclusive_log(output, "baselines.log") as log:
+    with _open_exclusive_log(output, f"{stage}.log") as log:
         subprocess.run(  # nosec B603  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-            [sys.executable, "-m", _EVALUATION_WORKER, "baselines"],
+            [sys.executable, "-m", _EVALUATION_WORKER, stage],
             stdout=log,
             stderr=log,
             timeout=remaining,
             check=True,
             cwd=output,
+            env=_worker_environment(),
         )
-    return json.loads((output / "baselines-status.json").read_text())["complete"]
+    return json.loads((output / f"{stage}-status.json").read_text())["complete"]
 
 
-def _run_comparison_worker(prepared, output, remaining):
-    output = output.resolve()
-    prepared = Path(prepared).resolve()
-    write_json(
-        output / "worker-invocation.json",
-        {"prepared": os.fspath(prepared)},
+def _worker_environment(inherited=None):
+    """Make `-m tools.anticipation.evaluation_worker` importable from the output.
+
+    The worker runs with the output directory as its working directory, so
+    `-m` no longer finds the `tools` package via the caller's cwd. Without the
+    repository root on PYTHONPATH every real stage died with ModuleNotFoundError.
+    """
+    env = dict(os.environ if inherited is None else inherited)
+    env["PYTHONPATH"] = os.pathsep.join(
+        entry for entry in (str(_REPOSITORY_ROOT), env.get("PYTHONPATH")) if entry
     )
-    with _open_exclusive_log(output, "comparison.log") as log:
-        subprocess.run(  # nosec B603  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-            [sys.executable, "-m", _EVALUATION_WORKER, "comparison"],
-            stdout=log,
-            stderr=log,
-            timeout=remaining,
-            check=True,
-            cwd=output,
-        )
-    return json.loads((output / "comparison-status.json").read_text())["complete"]
+    return env
 
 
 def _open_exclusive_log(output, leaf_name):

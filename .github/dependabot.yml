@@ -16,12 +16,27 @@ updates:
         patterns:
           - '*'
 
-# Deliberately github-actions only. A `cargo` ecosystem here would open pull
-# requests against `[dependencies]`, and the suite already asserts that table
-# exactly: `nir_rs_resolves_from_crates_io` requires the runtime set to be
-# axon-encoder, kinetic-signals, neuromod and nir-rs, each resolving from the
-# registry. A bot bump would fail it -- which is the test working -- but the
-# fix belongs in a commit that also updates the README's Ecosystem table and
-# the reasoning behind the pin, not in an automated one. `pip` is likewise
-# omitted: the Python verifier is standard library only, so there is nothing
-# to update.
+  # The anticipation-python CI job installs this hash-pinned file with
+  # `--require-hashes --only-binary=:all:` (NumPy, pytest and their resolved
+  # dependencies). Dependabot rewrites the pins and their hashes together.
+  # The top-level tools/*.py verifiers are standard library only and have
+  # nothing to update.
+  - package-ecosystem: pip
+    directory: /tools/anticipation
+    schedule:
+      interval: monthly
+    groups:
+      anticipation-test:
+        patterns:
+          - '*'
+
+# Deliberately no `cargo` ecosystem. A bot bump would open pull requests
+# against `[dependencies]`, and the suite already asserts that table exactly:
+# `nir_rs_resolves_from_crates_io` (tests/nir_graph.rs) requires the declared
+# runtime set to be the reviewed registry crates, and the per-crate
+# `*_resolves_from_crates_io*` tests pin the reviewed releases (nir-rs 0.4.4,
+# plasticity-lab 0.2.1, silicon-bridge 0.3, myelin-accelerator =0.2.0). A bot
+# bump would fail them -- which is the tests working -- but the fix belongs in
+# a commit that also updates the README's Ecosystem table, rust-toolchain.toml
+# (the pin is the highest dependency MSRV), and the reasoning behind each pin,
+# not in an automated one.

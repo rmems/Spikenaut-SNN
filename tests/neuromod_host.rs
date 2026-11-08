@@ -23,6 +23,22 @@ fn host_lif_exposes_the_published_lif_neuron() {
     );
 }
 
+/// `Default` is the published default cell, and a resting cell never fires.
+#[test]
+fn a_default_cell_rests_without_firing() {
+    let mut cell = HostLif::default();
+    let published = LifNeuron::new();
+    assert_eq!(cell.inner().threshold, published.threshold);
+    assert_eq!(cell.inner().decay_rate, published.decay_rate);
+    assert_eq!(cell.membrane_potential(), published.membrane_potential);
+
+    for tick in 0..8 {
+        cell.integrate(0.0);
+        assert!(cell.check_fire().is_none(), "rest fired at tick {tick}");
+    }
+    assert_eq!(cell.membrane_potential(), published.membrane_potential);
+}
+
 /// A quiet subthreshold input leaks and does not fire.
 #[test]
 fn a_subthreshold_step_leaks_without_firing() {

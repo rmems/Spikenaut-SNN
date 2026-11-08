@@ -91,8 +91,12 @@ bank, so Hamming is large and pinned. That is a harness regression pin,
 not a claim about FPGA parity and not a substitute for the 117653-tick
 figure.
 
-When the scratch paths are supplied, the printed report compares the
-fresh numbers to the claimed exp-024 figures and reports the delta.
+When the scratch paths are supplied *and* the run is the recorded holdout
+(`--split test`, all 29 episodes `gpu-000170..198` in order, n = 117653),
+the printed report compares the fresh numbers to the claimed exp-024
+figures and reports the delta. Any other split, episode set or tick count
+prints the deltas as N/A (not comparable) rather than subtracting figures
+from a different holdout.
 Until then the honest statement is: **protocol published; figures
 recorded; in-repo reproduction blocked on artifacts this vault does not
 ship.**

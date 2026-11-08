@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import struct
+import tempfile
+from pathlib import Path
 
 try:  # package import: `python3 -m tools.live_stim_parity`
     from .hamming_const import LIVE_COLUMNS, N_INPUTS
@@ -20,9 +22,11 @@ try:  # package import: `python3 -m tools.live_stim_parity`
         _f64_bits,
         _shape_problem,
         build_pin,
+        load_pin,
         pin_failures,
     )
-    from .q88_core import SelfTestFailure
+    from .q88_core import ParseError, SelfTestFailure
+    from .q88_selftest import json_text_that_raises_recursion_error
 except ImportError:  # direct script: `python3 tools/live_stim_parity.py`
     from hamming_const import LIVE_COLUMNS, N_INPUTS
     from live_stim_pin import (
@@ -30,9 +34,12 @@ except ImportError:  # direct script: `python3 tools/live_stim_parity.py`
         _f64_bits,
         _shape_problem,
         build_pin,
+        load_pin,
         pin_failures,
     )
-    from q88_core import SelfTestFailure
+    from q88_core import ParseError, SelfTestFailure
+    from q88_selftest import json_text_that_raises_recursion_error
+
 
 def _require(condition: bool, message: str) -> None:
     if not condition:
@@ -159,6 +166,32 @@ def _self_test_leaks(reference: dict) -> None:
     )
 
 
+def _self_test_undecodable_pin() -> None:
+    """A pin JSON cannot decode must be ParseError (exit 2), not a traceback.
+
+    ``load_pin`` used to catch only JSONDecodeError, so an oversized integer
+    literal (bare ValueError) or deep nesting (RecursionError) escaped
+    ``main`` and exited 1 -- "the pin disagrees" -- for a file that was never
+    compared at all.
+    """
+    with tempfile.TemporaryDirectory(prefix="live-stim-selftest-") as tmp:
+        for label, text in (
+            ("oversized integer", '{"samples": [1' + "0" * 5000 + "]}"),
+            ("deep nesting", json_text_that_raises_recursion_error()),
+        ):
+            path = Path(tmp) / "expected_stim.json"
+            path.write_text(text, encoding="utf-8")
+            try:
+                load_pin(path)
+            except ParseError:
+                continue
+            except (RecursionError, ValueError) as exc:
+                raise SelfTestFailure(
+                    f"load_pin leaked {type(exc).__name__} on {label}"
+                ) from exc
+            raise SelfTestFailure(f"load_pin ACCEPTED a pin with {label}")
+
+
 def self_test() -> None:
     """Prove the comparison can fail, without touching the shipped pin."""
     reference = build_pin()
@@ -170,6 +203,5 @@ def self_test() -> None:
     _self_test_samples(reference)
     _self_test_bit_exact(reference)
     _self_test_leaks(reference)
+    _self_test_undecodable_pin()
     print("SELF-TEST PASSED: the stim parity pin can fail.")
-
-

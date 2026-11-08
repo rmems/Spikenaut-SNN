@@ -42,6 +42,7 @@ try:
         as_finite_float,
         decode_q88,
         encode_q88_hex,
+        loads_json,
         parse_mem,
         read_utf8_text,
     )
@@ -69,6 +70,7 @@ except ImportError:
         as_finite_float,
         decode_q88,
         encode_q88_hex,
+        loads_json,
         parse_mem,
         read_utf8_text,
     )
@@ -159,21 +161,11 @@ def _shipped_readout() -> list[float]:
 def _load_json_object(path: Path) -> dict:
     """Decode a JSON object, wrapping decoder failures as ``ParseError``.
 
-    CPython 3.11+ raises a bare ``ValueError`` (not ``JSONDecodeError``) for
-    an integer literal longer than ``sys.get_int_max_str_digits()``, and a
-    ``RecursionError`` for a document nested past the decoder limit. Both
-    must take the documented status-2 path, same as ``q88_core``.
+    ``q88_core.loads_json`` maps the bare ``ValueError`` (oversized integer
+    literal) and ``RecursionError`` (deep nesting) that ``json.loads`` raises
+    besides ``JSONDecodeError``, so all three take the status-2 path.
     """
-    try:
-        payload = json.loads(read_utf8_text(path))
-    except json.JSONDecodeError as exc:
-        raise ParseError(f"{path.name}: {exc}") from exc
-    except RecursionError as exc:
-        raise ParseError(
-            f"{path.name}: JSON nesting exceeds decoder limit ({exc})"
-        ) from exc
-    except ValueError as exc:
-        raise ParseError(f"{path.name}: unreadable JSON number: {exc}") from exc
+    payload = loads_json(read_utf8_text(path), path.name)
     if not isinstance(payload, dict):
         raise ParseError(f"{path.name}: expected an object")
     return payload
@@ -427,7 +419,11 @@ def build_pin() -> dict:
 def write_pin(path: Path = EXPECTED_DECISION) -> dict:
     payload = build_pin()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    # newline="\n": without it a Windows `--write` translates to CRLF and
+    # rewrites every line of the checked-in LF pin.
+    path.write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
     return payload
 
 

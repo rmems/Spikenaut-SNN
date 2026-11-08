@@ -38,6 +38,7 @@ try:  # package import
         encode_record,
         keep_lif_step,
         load_expected,
+        load_jsonl,
         measure,
         measure_method_fixture,
         method_fixture_paths,
@@ -61,6 +62,7 @@ except ImportError:
         encode_record,
         keep_lif_step,
         load_expected,
+        load_jsonl,
         measure,
         measure_method_fixture,
         method_fixture_paths,
@@ -79,9 +81,9 @@ def _require(condition: bool, message: str) -> None:
 
 _require.calls = 0
 
-SELF_TEST_SECTIONS = 16
-EXPECTED_REQUIRE_CALLS = 34
-EXPECTED_GUARD_CHECKS = 10
+SELF_TEST_SECTIONS = 17
+EXPECTED_REQUIRE_CALLS = 38
+EXPECTED_GUARD_CHECKS = 12
 
 
 def _v3_row(episode: str, mem_util: float = 75.0, temp: float = 0.0) -> dict:
@@ -157,7 +159,23 @@ def malformed_jsonl_is_parse_error(tmp: Path, stream) -> int:
         _require("not a JSON object" in str(exc), f"wrong error: {exc}")
     else:
         raise SelfTestFailure("malformed JSONL did not raise ParseError")
-    return 2
+    # An integer literal past sys.get_int_max_str_digits() is a bare
+    # ValueError from json.loads, not JSONDecodeError; it used to escape as
+    # a traceback (exit 1) instead of ParseError (exit 2).
+    huge = tmp / "huge_int.jsonl"
+    huge.write_text(
+        '{"episode_id": "gpu-000170", "mem_util_pct": 1' + "0" * 5000 + "}\n",
+        encoding="utf-8",
+    )
+    try:
+        select_samples(load_jsonl(huge), "all")
+    except ParseError as exc:
+        _require("huge_int.jsonl:1" in str(exc), f"wrong error: {exc}")
+    except ValueError as exc:
+        raise SelfTestFailure("oversized JSONL integer leaked ValueError") from exc
+    else:
+        raise SelfTestFailure("oversized JSONL integer was accepted")
+    return 4
 
 
 def missing_episode_id_is_parse_error(stream) -> int:
@@ -358,7 +376,17 @@ def malformed_expect_json_is_parse_error(tmp: Path, stream) -> int:
         _require("k_none_pct" in str(exc), f"wrong error: {exc}")
     else:
         raise SelfTestFailure("nonnumeric expect-json did not raise ParseError")
-    return 4
+    huge = tmp / "huge_int.json"
+    huge.write_text('{"k_none_pct": 1' + "0" * 5000 + "}", encoding="utf-8")
+    try:
+        load_expected(huge)
+    except ParseError:
+        pass
+    except ValueError as exc:
+        raise SelfTestFailure("oversized pin integer leaked ValueError") from exc
+    else:
+        raise SelfTestFailure("oversized pin integer did not raise ParseError")
+    return 5
 
 
 def custom_method_fixture_without_pin_refused(stream) -> int:
@@ -437,6 +465,61 @@ def exp024_delta_suppressed_for_wrong_split(stream) -> int:
     return 2
 
 
+def exp024_delta_suppressed_for_partial_holdout(stream) -> int:
+    """17 -- sharing the holdout's endpoints is not being the holdout."""
+    print("17. exp-024 deltas are N/A when a middle episode is missing", file=stream)
+    try:
+        from .hamming_core import (
+            EXP024_TEST_EPISODE_IDS,
+            EXP024_TEST_N_TICKS,
+            episode_span_of_ids,
+        )
+        from .hamming_report import _exp024_comparable, render
+    except ImportError:
+        from hamming_core import (
+            EXP024_TEST_EPISODE_IDS,
+            EXP024_TEST_N_TICKS,
+            episode_span_of_ids,
+        )
+        from hamming_report import _exp024_comparable, render
+
+    def holdout(episodes: str) -> Measurement:
+        n = EXP024_TEST_N_TICKS
+        proto = Protocol(
+            condition="exp-024",
+            weights_label="synthetic",
+            float_json=FIXTURE_DIR / "snn_model.json",
+            mem_dir=FIXTURE_DIR,
+            encoder="synthetic",
+            split="test",
+            episodes=episodes,
+            seed="123",
+            n_ticks=n,
+            i_drive=0.05,
+            stepper="synthetic",
+            compared="synthetic",
+        )
+        return Measurement(
+            protocol=proto,
+            k_none=KResult(k=None, n_ticks=n, disagree_ticks=1, mean_bits=1.0, pct=10.0),
+            k_4=KResult(k=4, n_ticks=n, disagree_ticks=1, mean_bits=1.0, pct=20.0),
+            hidden_json_mem_mismatches=0,
+            hidden_compared=256,
+        )
+
+    # Positive control: the exact recorded span is comparable.
+    _require(
+        _exp024_comparable(holdout(episode_span_of_ids(EXP024_TEST_EPISODE_IDS))),
+        "the exact recorded holdout span was not treated as comparable",
+    )
+    # Same endpoints and tick count, one middle episode dropped: not the holdout.
+    partial = [e for e in EXP024_TEST_EPISODE_IDS if e != "gpu-000185"]
+    text = "\n".join(render(holdout(episode_span_of_ids(partial))))
+    _require("N/A" in text or "not comparable" in text, f"deltas not marked N/A: {text}")
+    _require("delta_pct=" not in text, "subtracted exp-024 deltas on a partial holdout")
+    return 3
+
+
 def _scenarios() -> tuple[tuple[Callable[..., int], ...], tuple[Callable[..., int], ...]]:
     standalone = (
         method_fixture_matches_pin,
@@ -451,6 +534,7 @@ def _scenarios() -> tuple[tuple[Callable[..., int], ...], tuple[Callable[..., in
         overflowing_live_number_is_parse_error,
         mixed_live_forbidden_refused,
         exp024_delta_suppressed_for_wrong_split,
+        exp024_delta_suppressed_for_partial_holdout,
     )
     tempdir = (
         empty_holdout_is_parse_error,

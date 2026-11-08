@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Timing harness behind the published numbers in
 //! `docs/MYELIN_COMPATIBILITY.md` (issue #73).
 //!
@@ -16,8 +18,9 @@ use std::time::Instant;
 
 const GROUP: usize = 8;
 
+/// Upper median: for an even count this is the higher of the two middle samples.
 fn median(mut samples: Vec<f64>) -> f64 {
-    samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    samples.sort_by(f64::total_cmp);
     samples[samples.len() / 2]
 }
 
@@ -30,7 +33,6 @@ fn time_once(work: &mut dyn FnMut()) -> f64 {
 
 /// Run the three workloads per rep in rep-rotated order so clock drift
 /// spreads across all of them instead of biasing one comparison side.
-#[allow(clippy::too_many_arguments)]
 fn time_round(
     reps: usize,
     incl: &mut dyn FnMut(),

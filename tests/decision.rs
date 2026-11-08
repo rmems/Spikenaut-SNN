@@ -512,6 +512,287 @@ fn assert_overflowing_readout() {
     }
 }
 
+/// Config validation paths the pin does not cover: only `empty_vocabulary`
+/// is pinned, so the other three refusals are asserted here.
+#[test]
+fn invalid_configs_are_refused() {
+    assert_eq!(
+        DecisionConfig::new(Vec::<String>::new(), 0.0, false),
+        Err(DecisionError::EmptyVocabulary)
+    );
+    assert_eq!(
+        DecisionConfig::new(["a", "", "c"], 0.0, false),
+        Err(DecisionError::InvalidLabel { index: 1 })
+    );
+    assert_eq!(
+        DecisionConfig::new(["a", "b", "a"], 0.0, false),
+        Err(DecisionError::DuplicateLabel { label: "a".into() })
+    );
+    // An empty label is reported before a later duplicate.
+    assert_eq!(
+        DecisionConfig::new(["", ""], 0.0, false),
+        Err(DecisionError::InvalidLabel { index: 0 })
+    );
+    for floor in [
+        -0.1,
+        1.0 + f64::EPSILON,
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    ] {
+        match DecisionConfig::new(SHIPPED_VOCABULARY, floor, false) {
+            Err(DecisionError::InvalidConfidenceFloor { value }) => {
+                assert!(value.to_bits() == floor.to_bits(), "{value} vs {floor}");
+            }
+            other => panic!("floor {floor}: expected InvalidConfidenceFloor, got {other:?}"),
+        }
+    }
+    // Both ends of `[0, 1]` are legal floors.
+    for floor in [0.0, -0.0, 1.0] {
+        let config = DecisionConfig::new(SHIPPED_VOCABULARY, floor, true).expect("legal floor");
+        assert_eq!(config.confidence_floor(), floor);
+        assert!(config.abstain_on_tie());
+    }
+    // Owned and borrowed label sequences build the same config.
+    let owned: Vec<String> = SHIPPED_VOCABULARY.iter().map(|s| (*s).to_owned()).collect();
+    assert_eq!(
+        DecisionConfig::new(owned, 0.0, false).unwrap(),
+        DecisionConfig::shipped()
+    );
+}
+
+/// Confidence *strictly* below the floor abstains; equal to it proposes.
+#[test]
+fn the_confidence_floor_is_strict() {
+    // margin 2, denominator 4: confidence is exactly 0.5.
+    let row = [3.0, 1.0, 0.0];
+    let at = DecisionConfig::new(SHIPPED_VOCABULARY, 0.5, false).unwrap();
+    let decision = decide(&row, &at).unwrap();
+    assert_eq!(decision.diagnostics.confidence, 0.5);
+    assert_eq!(decision.kind, DecisionKind::Propose);
+
+    let above = DecisionConfig::new(SHIPPED_VOCABULARY, 0.5 + f64::EPSILON, false).unwrap();
+    let decision = decide(&row, &above).unwrap();
+    assert_eq!(
+        decision.kind,
+        DecisionKind::Abstain(AbstainReason::LowConfidence)
+    );
+    // Abstention keeps the would-be winner in the diagnostics.
+    assert_eq!(decision.diagnostics.winning_action, "comfort");
+    assert_eq!(decision.diagnostics.margin, 2.0);
+}
+
+/// A tie has confidence 0, so with a positive floor it abstains either way;
+/// opting into tie abstention names the tie rather than the confidence.
+#[test]
+fn tie_abstention_takes_precedence_over_low_confidence() {
+    let row = [0.25, 0.25, 0.0];
+    let floor_only = DecisionConfig::new(SHIPPED_VOCABULARY, 0.1, false).unwrap();
+    assert_eq!(
+        decide(&row, &floor_only).unwrap().kind,
+        DecisionKind::Abstain(AbstainReason::LowConfidence)
+    );
+    let both = DecisionConfig::new(SHIPPED_VOCABULARY, 0.1, true).unwrap();
+    assert_eq!(
+        decide(&row, &both).unwrap().kind,
+        DecisionKind::Abstain(AbstainReason::Tie)
+    );
+    // A clear winner is not a tie, whatever the tie knob says.
+    let clear = decide(&[0.9, 0.1, 0.0], &both).unwrap();
+    assert_eq!(clear.kind, DecisionKind::Propose);
+    assert!(!clear.diagnostics.tied);
+}
+
+/// `0.0 == -0.0` under IEEE comparison, so signed zeros tie and the lower
+/// index wins -- the same answer Python's `==` gives.
+#[test]
+fn signed_zeros_tie() {
+    let decision = replay_output_row(&[-0.0, 0.0, -1.0]).unwrap();
+    assert!(decision.diagnostics.tied);
+    assert_eq!(decision.diagnostics.winning_index, 0);
+    assert_eq!(decision.diagnostics.runner_up_index, Some(1));
+    assert_eq!(decision.diagnostics.confidence, 0.0);
+}
+
+/// Width 1 has no runner-up: margin 0, confidence 1, never abstains on
+/// confidence even at the maximum floor.
+#[test]
+fn a_width_one_row_proposes_with_full_confidence() {
+    let config = DecisionConfig::new(["only"], 1.0, true).unwrap();
+    let decision = decide(&[-3.5], &config).unwrap();
+    assert_eq!(decision.kind, DecisionKind::Propose);
+    let diagnostics = &decision.diagnostics;
+    assert_eq!(diagnostics.winning_index, 0);
+    assert_eq!(diagnostics.winning_action, "only");
+    assert_eq!(diagnostics.runner_up_index, None);
+    assert_eq!(diagnostics.runner_up_score, None);
+    assert_eq!(diagnostics.margin, 0.0);
+    assert_eq!(diagnostics.confidence, 1.0);
+    assert!(!diagnostics.tied);
+}
+
+/// Without a tie, the runner-up is the highest remaining score, lowest index
+/// first among equals, wherever it sits relative to the winner.
+#[test]
+fn runner_up_is_the_lowest_index_of_the_next_highest_score() {
+    let config = DecisionConfig::new(["a", "b", "c", "d", "e"], 0.0, false).unwrap();
+    let decision = decide(&[2.0, 5.0, 1.0, 2.0, -1.0], &config).unwrap();
+    let diagnostics = &decision.diagnostics;
+    assert_eq!(diagnostics.winning_index, 1);
+    assert_eq!(diagnostics.runner_up_index, Some(0));
+    assert_eq!(diagnostics.runner_up_score, Some(2.0));
+    assert_eq!(diagnostics.margin, 3.0);
+    assert_eq!(diagnostics.confidence, 3.0 / 7.0);
+    assert!(!diagnostics.tied);
+
+    // A later max clears an earlier tie.
+    let decision = decide(&[1.0, 1.0, 4.0, 0.0, 0.0], &config).unwrap();
+    assert_eq!(decision.diagnostics.winning_index, 2);
+    assert!(!decision.diagnostics.tied);
+    assert_eq!(decision.diagnostics.runner_up_index, Some(0));
+}
+
+/// `score_readout` shape and value refusals, and the silent-row baseline.
+#[test]
+fn score_readout_refuses_malformed_images() {
+    let weights = read_output_mem();
+    let spikes = vec![false; OUTPUT_WEIGHT_COUNT / OUTPUT_WIDTH];
+
+    assert_eq!(score_readout(&[], &spikes), Err(DecisionError::EmptyRow));
+    assert_eq!(
+        score_readout(&weights[1..], &spikes),
+        Err(DecisionError::WidthMismatch {
+            got: OUTPUT_WEIGHT_COUNT - 1,
+            expected: OUTPUT_WEIGHT_COUNT
+        })
+    );
+    assert_eq!(
+        score_readout(&weights, &spikes[1..]),
+        Err(DecisionError::WidthMismatch {
+            got: spikes.len() - 1,
+            expected: spikes.len()
+        })
+    );
+
+    // A non-finite weight is refused even on a silent neuron: the image is
+    // checked whole, not only the rows a spike happens to read.
+    let mut poisoned = weights.clone();
+    poisoned[5] = f64::NAN;
+    poisoned[OUTPUT_WEIGHT_COUNT - 1] = f64::NEG_INFINITY;
+    assert_eq!(
+        score_readout(&poisoned, &spikes),
+        Err(DecisionError::NonFinite {
+            indices: vec![5, OUTPUT_WEIGHT_COUNT - 1]
+        })
+    );
+
+    // No spikes, no score: an all-zero row, which replays as a full tie.
+    assert_eq!(score_readout(&weights, &spikes), Ok([0.0; OUTPUT_WIDTH]));
+    let silent = replay_tick(&weights, &spikes).unwrap();
+    assert_eq!(silent.kind, DecisionKind::Propose);
+    assert!(silent.diagnostics.tied);
+    assert_eq!(silent.diagnostics.winning_action, "comfort");
+    assert_eq!(silent.diagnostics.confidence, 0.0);
+}
+
+/// Every spike adds exactly its neuron's three weights, in channel order.
+#[test]
+fn score_readout_sums_the_spiking_neurons_rows() {
+    let weights = read_output_mem();
+    let neurons = OUTPUT_WEIGHT_COUNT / OUTPUT_WIDTH;
+    let spikes: Vec<bool> = (0..neurons).map(|neuron| neuron % 3 == 1).collect();
+    let mut expected = [0.0; OUTPUT_WIDTH];
+    for neuron in (0..neurons).filter(|neuron| neuron % 3 == 1) {
+        for (channel, score) in expected.iter_mut().enumerate() {
+            *score += weights[neuron * OUTPUT_WIDTH + channel];
+        }
+    }
+    assert_eq!(score_readout(&weights, &spikes), Ok(expected));
+}
+
+/// Display text mirrors the messages `tools/decision_core.py` raises for the
+/// same refusals. The one spelling difference is quoting: Python's `repr`
+/// writes a duplicate label as `'a'`, Rust's `Debug` as `"a"`.
+#[test]
+fn error_messages_match_the_python_reference() {
+    for (err, want) in [
+        (DecisionError::EmptyRow, "output row is empty"),
+        (
+            DecisionError::WidthMismatch {
+                got: 2,
+                expected: 3,
+            },
+            "output row width 2, expected 3",
+        ),
+        (
+            DecisionError::NonFinite { indices: vec![0] },
+            "non-finite output score at index 0",
+        ),
+        (
+            DecisionError::NonFinite {
+                indices: vec![1, 2],
+            },
+            "non-finite output scores at indexes 1, 2",
+        ),
+        (
+            DecisionError::EmptyVocabulary,
+            "decision vocabulary is empty",
+        ),
+        (
+            DecisionError::InvalidLabel { index: 1 },
+            "decision vocabulary label 1 is empty",
+        ),
+        (
+            DecisionError::DuplicateLabel { label: "a".into() },
+            "decision vocabulary repeats \"a\"",
+        ),
+        (
+            DecisionError::InvalidConfidenceFloor { value: 1.5 },
+            "confidence floor 1.5 is not a finite value in [0, 1]",
+        ),
+    ] {
+        assert_eq!(err.to_string(), want);
+    }
+}
+
+/// The derived-diagnostic messages name exactly the non-finite fields, in
+/// the same wording as the Python reference.
+#[test]
+fn derived_error_messages_match_the_python_reference() {
+    for (err, want) in [
+        (
+            DecisionError::DerivedNonFinite {
+                margin: true,
+                confidence: true,
+            },
+            "derived margin and confidence are not finite",
+        ),
+        (
+            DecisionError::DerivedNonFinite {
+                margin: true,
+                confidence: false,
+            },
+            "derived margin is not finite",
+        ),
+        (
+            DecisionError::DerivedNonFinite {
+                margin: false,
+                confidence: true,
+            },
+            "derived confidence is not finite",
+        ),
+        (
+            DecisionError::DerivedNonFinite {
+                margin: false,
+                confidence: false,
+            },
+            "derived diagnostics are not finite",
+        ),
+    ] {
+        assert_eq!(err.to_string(), want);
+    }
+}
+
 fn read_output_mem() -> Vec<f64> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("dataset/merged_v2/parameters_output_weights.mem");

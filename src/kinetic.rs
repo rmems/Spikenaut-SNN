@@ -314,7 +314,9 @@ pub struct KineticFeatures {
     pub sma: f64,
     /// [`ZScore::compute`] of `raw` against moments of the causal window.
     pub z_score: f64,
-    /// [`VolEstimator::rms`] over absolute log-returns seen so far.
+    /// [`VolEstimator::rms`] over the last [`VOL_WINDOW`] absolute log-returns,
+    /// clamped to `[0, 1]` by kinetic-signals (`0.0` before the first strictly
+    /// positive transition). Older returns fall out of the ring.
     pub volatility: f64,
     /// [`compute_surprise`] against the previous sample (`0.0` on the first tick).
     pub surprise: f64,
@@ -364,7 +366,10 @@ impl KineticFeatures {
     }
 }
 
-/// Causal streaming adapter: one raw series → kinetic-signals → encoder frame.
+/// Causal streaming adapter: one raw series → kinetic-signals features.
+///
+/// It does not project onto an axon; [`LiveKineticFrontEnd::to_live_frame`]
+/// does that for the five live sensors.
 ///
 /// State is updated only from the sample passed to [`step`](Self::step).
 /// [`VolEstimator`] is not `Clone` in 0.4.0, so this pipeline is not either:

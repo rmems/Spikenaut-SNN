@@ -1,10 +1,191 @@
 """Collector identity and shutdown lifecycle regression tests."""
 
+import json
 import os
 
 import pytest
 
 from tools.anticipation import campaign
+
+
+class _GracefulProcess:
+    """Collector stand-in that exits 0 on SIGINT (no fork, no memfd)."""
+
+    def __init__(self):
+        self.signals = []
+
+    def poll(self):
+        return 0 if self.signals else None
+
+    def send_signal(self, number):
+        self.signals.append(number)
+
+    @staticmethod
+    def wait(timeout=None):
+        return 0
+
+    @staticmethod
+    def kill():
+        pytest.fail("a graceful collector must not be killed")
+
+
+def test_collector_signal_interrupt_kills_and_reaps_child(tmp_path):
+    class InterruptOnSignal:
+        def __init__(self):
+            self.killed = False
+            self.waits = []
+
+        def poll(self):
+            return -9 if self.killed else None
+
+        @staticmethod
+        def send_signal(_number):
+            raise KeyboardInterrupt
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            self.waits.append(timeout)
+            return -9
+
+    process = InterruptOnSignal()
+
+    with pytest.raises(KeyboardInterrupt):
+        campaign._stop_collector(process, tmp_path, {}, None)
+
+    # Previously the interrupt escaped before the guarded wait, orphaning it.
+    assert process.killed is True
+    assert process.waits == [campaign.SHUTDOWN_TIMEOUT_SECONDS]
+
+
+def test_capture_cleanup_error_is_raised_even_inside_caller_except_block(tmp_path):
+    collector = tmp_path / "collector"
+    collector.write_bytes(b"never launched: the plan has no sessions")
+
+    class FailingClose:
+        @staticmethod
+        def close():
+            raise RuntimeError("model unload failed")
+
+    try:
+        raise KeyError("unrelated exception the caller is handling")
+    except KeyError:
+        with pytest.raises(RuntimeError, match="model unload failed"):
+            campaign.capture(
+                tmp_path / "run",
+                collector,
+                campaign={"sessions": []},
+                stimulus_factory=FailingClose,
+            )
+
+    status = json.loads((tmp_path / "run" / campaign.CAPTURE_STATUS_NAME).read_text())
+    assert status["status"] == "incomplete"
+    assert status["cleanup_error"] == "RuntimeError: model unload failed"
+
+
+def test_status_write_failure_does_not_mask_returned_cleanup_error(
+    tmp_path, monkeypatch
+):
+    class FailingClose:
+        @staticmethod
+        def close():
+            raise RuntimeError("model unload failed")
+
+    def failing_write(path, payload):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(campaign, "write_json", failing_write)
+    status = {"status": "finalizing", "sessions": []}
+    stimulus = FailingClose()
+
+    # _close_stimulus returns the operational error instead of raising it, so
+    # the status write must not be allowed to replace it with its own error.
+    with pytest.raises(RuntimeError, match="model unload failed"):
+        campaign._finish_capture(tmp_path, stimulus, status, True, False)
+
+    assert status["status"] == "incomplete"
+    assert status["cleanup_error"] == "RuntimeError: model unload failed"
+
+
+def test_session_audit_error_is_raised_even_inside_caller_except_block(
+    tmp_path, monkeypatch
+):
+    directory = tmp_path / "session-01"
+    process = _GracefulProcess()
+
+    def record_stimuli(directory, _process, _stimulus, _session, _state):
+        (directory / "session_manifest.json").write_text(
+            json.dumps({"ended_at_utc": "done", "parquet_write_failures": 0})
+        )
+
+    class BrokenAuditStimulus:
+        @staticmethod
+        def seed(_seed):
+            return None
+
+        @staticmethod
+        def session_records():
+            raise RuntimeError("audit accessor failed")
+
+    monkeypatch.setattr(
+        campaign, "_launch_verified_collector", lambda *_args: process
+    )
+    monkeypatch.setattr(campaign, "_record_stimuli", record_stimuli)
+    session = {"session_id": "session-01", "seed": 1, "path": str(directory)}
+    plan = {"collector_sha256": "unused", "actual_audit_key": "actual_bot_tasks"}
+
+    stimulus = BrokenAuditStimulus()
+    try:
+        raise KeyError("unrelated exception the caller is handling")
+    except KeyError:
+        # Previously the caller's handled exception made the session ignore
+        # its own audit failure and be accepted as complete.
+        with pytest.raises(RuntimeError, match="audit accessor failed"):
+            campaign._capture_session(session, stimulus, tmp_path / "collector", plan)
+
+    assert process.signals, "collector must still receive its graceful SIGINT"
+    audit = json.loads((directory / campaign.STIMULUS_AUDIT_NAME).read_text())
+    assert audit["audit_error"] == "RuntimeError: audit accessor failed"
+    assert audit["status"] == "shutdown_requested"
+
+
+def test_malformed_manifest_still_records_collector_exit_code(tmp_path):
+    (tmp_path / "session_manifest.json").write_text("[]")
+    record = {"session_id": "session-01", "status": "shutdown_requested"}
+
+    with pytest.raises(RuntimeError, match="manifest incomplete"):
+        campaign._confirm_collector_shutdown(tmp_path, record, 0)
+
+    audit = json.loads((tmp_path / campaign.STIMULUS_AUDIT_NAME).read_text())
+    assert audit["collector_exit_code"] == 0
+    assert audit["status"] == "collector_stopped"
+
+
+def test_unreaped_collector_is_not_confirmed_complete(tmp_path):
+    record = {"session_id": "session-01", "status": "shutdown_requested"}
+    (tmp_path / "session_manifest.json").write_text(
+        json.dumps({"ended_at_utc": "2026-01-01T00:00:00Z", "parquet_write_failures": 0})
+    )
+
+    # A `None` exit code means no reap attempt succeeded; it must not read as
+    # the falsy "exited 0".
+    with pytest.raises(RuntimeError, match="manifest incomplete"):
+        campaign._confirm_collector_shutdown(tmp_path, record, None)
+
+    audit = json.loads((tmp_path / campaign.STIMULUS_AUDIT_NAME).read_text())
+    assert audit["collector_exit_code"] is None
+    assert audit["status"] == "collector_stopped"
+
+
+def test_missing_manifest_still_records_collector_exit_code(tmp_path):
+    record = {"session_id": "session-01", "status": "shutdown_requested"}
+
+    with pytest.raises(FileNotFoundError):
+        campaign._confirm_collector_shutdown(tmp_path, record, 3)
+
+    audit = json.loads((tmp_path / campaign.STIMULUS_AUDIT_NAME).read_text())
+    assert audit["collector_exit_code"] == 3
 
 
 def test_collector_wait_interrupt_kills_and_reaps_child(tmp_path):

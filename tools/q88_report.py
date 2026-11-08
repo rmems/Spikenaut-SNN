@@ -39,11 +39,18 @@ def _stream_safe(text: str, stream) -> str:
     process, say) a path holding an unencodable character made a *successful*
     verification die with UnicodeEncodeError and exit 1. The path is
     diagnostic, so escaping the offending characters beats crashing on them.
+
+    Shared with ``hamming_report``, which used to carry its own copy.
     """
     encoding = getattr(stream, "encoding", None) or "utf-8"
     try:
         text.encode(encoding)
-    except (UnicodeEncodeError, LookupError):
+    except LookupError:
+        # A codec name Python does not know. Re-encoding with that same name
+        # (what this used to do) raises LookupError again; ASCII with escapes
+        # is encodable by every stream that can print anything.
+        return text.encode("ascii", "backslashreplace").decode("ascii")
+    except UnicodeEncodeError:
         return text.encode(encoding, "backslashreplace").decode(encoding)
     return text
 

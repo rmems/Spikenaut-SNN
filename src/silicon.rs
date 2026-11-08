@@ -128,10 +128,31 @@ impl From<ParameterShapeError> for SiliconExportError {
 pub fn export_shipped_fpga_image() -> Result<ShippedFpgaImage, SiliconExportError> {
     let model = SnnModel::load_default()?;
     let (readout_n_by_k, inhibitory) = shipped_readout()?;
+    encode_image(&model, &readout_n_by_k, inhibitory)
+}
+
+/// Encode `model` plus its neuron-major readout through `silicon-bridge`.
+fn encode_image(
+    model: &SnnModel,
+    readout_n_by_k: &[Vec<f32>],
+    inhibitory: Vec<bool>,
+) -> Result<ShippedFpgaImage, SiliconExportError> {
     let neurons = model.len();
-    let outputs = readout_width(&readout_n_by_k)?;
-    let (thresholds, weights, decay_rates) = model_parameters(&model);
-    let readout_k_by_n = transpose_for_exporter(&readout_n_by_k, neurons, outputs);
+    // The exporter's `K × N` check cannot see a readout that is short by a
+    // neuron: `transpose_for_exporter` pre-fills every column with zeros, so a
+    // missing row would export as silent `0000` words, and an extra row (or a
+    // longer-than-first row) would index out of bounds. Both blocks come from
+    // the same embedded JSON today, so this is defensive, but the adapter must
+    // not lean on that to stay total.
+    if readout_n_by_k.len() != neurons {
+        return Err(schema(format!(
+            "the readout has {} neuron rows, the model has {neurons} neurons",
+            readout_n_by_k.len()
+        )));
+    }
+    let outputs = readout_width(readout_n_by_k)?;
+    let (thresholds, weights, decay_rates) = model_parameters(model);
+    let readout_k_by_n = transpose_for_exporter(readout_n_by_k, neurons, outputs);
 
     let mut exporter = FpgaParameterExporter::from_params(thresholds, weights, decay_rates);
     exporter.set_output_weights(readout_k_by_n);
@@ -151,11 +172,23 @@ pub fn export_shipped_fpga_image() -> Result<ShippedFpgaImage, SiliconExportErro
 
 type FloatParameters = (Vec<f32>, Vec<Vec<f32>>, Vec<f32>);
 
+/// Width `K` of a rectangular neuron-major readout.
 fn readout_width(readout: &[Vec<f32>]) -> Result<usize, SiliconExportError> {
-    readout
+    let width = readout
         .first()
         .map(Vec::len)
-        .ok_or_else(|| schema("the shipped readout has no neuron rows"))
+        .ok_or_else(|| schema("the shipped readout has no neuron rows"))?;
+    if let Some((neuron, row)) = readout
+        .iter()
+        .enumerate()
+        .find(|(_, row)| row.len() != width)
+    {
+        return Err(schema(format!(
+            "readout row {neuron} has {} outputs, expected {width}",
+            row.len()
+        )));
+    }
+    Ok(width)
 }
 
 fn model_parameters(model: &SnnModel) -> FloatParameters {
@@ -308,7 +341,41 @@ fn schema(message: impl Into<String>) -> SiliconExportError {
 
 #[cfg(test)]
 mod tests {
-    use super::{restore_neuron_major, transpose_for_exporter};
+    use super::{
+        SiliconExportError, encode_image, restore_neuron_major, shipped_readout,
+        transpose_for_exporter,
+    };
+    use crate::model::{ModelError, SnnModel};
+
+    fn assert_schema_error(result: Result<super::ShippedFpgaImage, SiliconExportError>) {
+        match result {
+            Err(SiliconExportError::Model(ModelError::Schema(message))) => {
+                assert!(message.contains("readout"), "{message}");
+            }
+            other => panic!("expected a readout schema error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_readout_row_count_mismatch_is_an_error_not_a_zero_fill_or_panic() {
+        let model = SnnModel::load_default().expect("shipped model");
+        let (readout, inhibitory) = shipped_readout().expect("shipped readout");
+        assert!(encode_image(&model, &readout, inhibitory.clone()).is_ok());
+
+        // One row short: without the guard this exported a silent 0000 column.
+        let short = &readout[..readout.len() - 1];
+        assert_schema_error(encode_image(&model, short, inhibitory.clone()));
+
+        // One row long: without the guard this indexed out of bounds.
+        let mut long = readout.clone();
+        long.push(readout[0].clone());
+        assert_schema_error(encode_image(&model, &long, inhibitory.clone()));
+
+        // A ragged row: a longer row would also have indexed out of bounds.
+        let mut ragged = readout.clone();
+        ragged[3].push(0.0);
+        assert_schema_error(encode_image(&model, &ragged, inhibitory));
+    }
 
     #[test]
     fn readout_layout_round_trips_through_exporter_order() {

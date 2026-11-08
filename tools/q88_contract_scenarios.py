@@ -3,7 +3,8 @@
 What the verifier promises when it *cannot* check something. An empty or
 short result set must FAIL rather than report a clean verification of
 nothing, and every malformed model -- a list or null top level, a null
-neuron, a nonnumeric or non-finite scalar, an oversized integer literal --
+neuron, a nonnumeric or non-finite scalar, an oversized integer literal,
+JSON nested past the decoder limit --
 must exit through ``ParseError`` (exit code 2) rather than a traceback.
 """
 
@@ -14,9 +15,9 @@ import json
 from pathlib import Path
 
 try:  # package import: `python3 -m tools.verify_q88`
-    from .q88_selftest import _require
+    from .q88_selftest import _require, json_text_that_raises_recursion_error
 except ImportError:  # direct script: `python3 tools/verify_q88.py`
-    from q88_selftest import _require
+    from q88_selftest import _require, json_text_that_raises_recursion_error
 
 try:  # package import: `python3 -m tools.verify_q88`
     from .q88_core import (
@@ -267,6 +268,27 @@ def _reject_oversized_json_int(tmp: Path) -> int:
     raise SelfTestFailure("load_model ACCEPTED an oversized JSON integer")
 
 
+def _reject_deeply_nested_json(tmp: Path) -> int:
+    """JSON nested past the decoder limit must be a ParseError.
+
+    json.loads raises RecursionError there -- neither JSONDecodeError nor
+    ValueError -- so it used to escape main()'s handlers (and those of
+    measure_hamming, which loads a caller-supplied --float-json through the
+    same load_model) as a traceback, exit 1 instead of 2.
+    """
+    path = tmp / "model_deep.json"
+    path.write_text(json_text_that_raises_recursion_error(), encoding="utf-8")
+    try:
+        load_model(path)
+    except ParseError:
+        return 1
+    except RecursionError as exc:
+        raise SelfTestFailure(
+            "load_model leaked RecursionError on deeply nested JSON"
+        ) from exc
+    raise SelfTestFailure("load_model ACCEPTED deeply nested JSON")
+
+
 def _finite_float_positive_controls() -> int:
     """The scalar guard must not reject valid numbers, or it is just breaking the tool."""
     checks = 0
@@ -363,6 +385,7 @@ def nonnumeric_fields_parse_error(tmp: Path, stream) -> int:
         file=stream,
     )
     checks += _reject_oversized_json_int(tmp)
+    checks += _reject_deeply_nested_json(tmp)
 
     checks += _finite_float_positive_controls()
 

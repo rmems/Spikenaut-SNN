@@ -12,7 +12,9 @@ use neuromod::NeuroModulators;
 /// Normalized host observation consumed by [`HostCritic`].
 ///
 /// `limbic-critic` clamps the auxiliary channels to its documented ranges.
-/// Non-finite values are rejected through `TDCritic::try_assess`.
+/// Non-finite values in any of the four channels are rejected by
+/// [`HostCritic::assess`] before `TDCritic::try_assess` runs; `try_assess`
+/// alone never reads `surprise`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SupervisorObservation {
     /// Scalar objective whose step-to-step change drives dopamine.
@@ -53,6 +55,10 @@ pub struct HostCritic {
 impl HostCritic {
     /// Create a critic with EMA rate `alpha`, which must be finite and in
     /// `(0, 1]`.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidAlpha`] if `alpha` is not finite or not in `(0, 1]`.
     pub fn new(alpha: f32) -> Result<Self, InvalidAlpha> {
         Ok(Self {
             critic: TDCritic::new(alpha)?,
@@ -63,6 +69,13 @@ impl HostCritic {
     ///
     /// The conversion copies the four fields exactly, including signed TD
     /// dopamine; no clamp or semantic reinterpretation is added here.
+    ///
+    /// # Errors
+    ///
+    /// [`CriticError`] naming the first non-finite observation channel, in
+    /// field order (objective, volatility, surprise, stress), or whatever
+    /// `TDCritic::try_assess` refuses. Either way the TD history is left
+    /// untouched.
     pub fn assess(
         &mut self,
         observation: &SupervisorObservation,

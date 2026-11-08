@@ -68,6 +68,10 @@ pub const Q8_8_MAX: f64 = 127.996_093_75;
 /// Q8.8 values are dyadic, hence exact in binary floating point: the snapped
 /// value round-trips through `f64` without further error.
 ///
+/// An exact half-LSB tie rounds half away from zero ([`f64::round`]), the same
+/// symmetric rule `tools/q88_core.py::encode_q88` uses, so the Rust decode and
+/// the Python exporter/verifier agree even on a tie.
+///
 /// # This rounds; it does not validate
 ///
 /// The result is a Q8.8 code only when `value` is inside
@@ -96,8 +100,11 @@ pub fn quantize_q8_8(value: f64) -> f64 {
 /// True when it is finite, within `[Q8_8_MIN, Q8_8_MAX]`, and lands on the
 /// `1/256` grid. This is the public counterpart to [`quantize_q8_8`], which
 /// rounds without judging: `is_q8_8(quantize_q8_8(v))` is the question worth
-/// asking of an arbitrary `v`, and answers false exactly when `v` is out of
-/// range rather than merely off-grid.
+/// asking of an arbitrary `v`, and answers false exactly when `v` is not finite
+/// or rounds past an extreme code — out of range, rather than merely off-grid.
+/// (Less than half an LSB beyond [`Q8_8_MAX`] or [`Q8_8_MIN`] still rounds
+/// onto the extreme code, which is the same tolerance the decode path applies;
+/// an exact half-LSB tie rounds away from zero, off the grid.)
 #[must_use]
 pub fn is_q8_8(value: f64) -> bool {
     value.is_finite()
@@ -167,7 +174,8 @@ impl Neuron {
     /// # Errors
     ///
     /// Returns [`ModelError::Schema`] unless `decay_rate` lies in `(0, 1)`,
-    /// where the inversion is defined.
+    /// where the inversion is defined, or on any other condition
+    /// [`tau_from_decay`] refuses (a bad timestep, or a non-finite result).
     pub fn tau_seconds(&self, timestep_seconds: f64) -> Result<f64, ModelError> {
         tau_from_decay(self.decay_rate, timestep_seconds)
     }
@@ -341,6 +349,9 @@ impl SnnModel {
     ///   would pass as a 2×2 tensor with one weight shifted into the wrong
     ///   neuron. Decoding enforces this per row already; the check covers the
     ///   hand-built and mutated [`SnnModel`] values the public fields allow.
+    /// - [`ModelError::Schema`] if any weight is not exactly a Q8.8 code (see
+    ///   [`is_q8_8`]). Like the row check, this only bites on hand-built or
+    ///   mutated values; nothing is rounded on the caller's behalf.
     /// - [`ModelError::Nir`] if `nir-rs` rejects the tensor.
     pub fn weight_tensor(&self) -> Result<Tensor, ModelError> {
         let units = self.len();
@@ -420,29 +431,6 @@ fn require_merged_v2_width(model: &SnnModel) -> Result<(), ModelError> {
     Ok(())
 }
 
-/// Decode one entry of the `neurons` array.
-///
-/// `index` names the unit in error messages; `expected_weights` is the length
-/// the row must have, which the caller sets to the number of units so the
-/// matrix comes out square.
-///
-/// The contract is stricter than it looks, and deliberately asymmetric:
-///
-/// - Unknown members are refused, not ignored — see [`reject_unknown_members`]
-///   for why the provenance stamp depends on that.
-/// - `weights`, `threshold` and `membrane_potential` go through
-///   [`q8_8_field`], which *snaps* them onto the Q8.8 grid rather than
-///   demanding they already sit on it. The artifact prints at seven
-///   significant digits, so off-grid input is expected here.
-/// - `decay_rate` is not a Q8.8 field. It is a per-step multiplier and must lie
-///   strictly inside `(0, 1)`, since [`tau_from_decay`] takes its logarithm.
-/// - `last_spike` is simulator state, carried but never placed on the graph.
-///
-/// # Errors
-///
-/// [`ModelError::Schema`], naming the unit and the field, if a member is
-/// missing, has the wrong JSON type, breaks one of the invariants above, or is
-/// not read by this decoder at all.
 /// The neuron array, rejecting a document that does not carry a non-empty one.
 fn neuron_entries(document: &Json) -> Result<&[Json], ModelError> {
     let entries = document
@@ -551,10 +539,30 @@ fn parse_neuron_weights(
         .collect()
 }
 
-/// Decode one neuron record: its weight row, then its scalars.
+/// Decode one entry of the `neurons` array: its weight row, then its scalars.
 ///
-/// `index` appears in every error this raises, so a bad value in a
-/// 16-record document names the record it came from.
+/// `index` names the unit in every error this raises, so a bad value in a
+/// 16-record document names the record it came from; `expected_weights` is the
+/// length the row must have, which the caller sets to the number of units so
+/// the matrix comes out square.
+///
+/// The contract is stricter than it looks, and deliberately asymmetric:
+///
+/// - Unknown members are refused, not ignored — see [`reject_unknown_members`]
+///   for why the provenance stamp depends on that.
+/// - `weights`, `threshold` and `membrane_potential` go through
+///   [`q8_8_field`], which *snaps* them onto the Q8.8 grid rather than
+///   demanding they already sit on it. The artifact prints at seven
+///   significant digits, so off-grid input is expected here.
+/// - `decay_rate` is snapped the same way and must then lie strictly inside
+///   `(0, 1)`, since [`tau_from_decay`] takes its logarithm.
+/// - `last_spike` is simulator state, carried but never placed on the graph.
+///
+/// # Errors
+///
+/// [`ModelError::Schema`], naming the unit and the field, if a member is
+/// missing, has the wrong JSON type, breaks one of the invariants above, or is
+/// not read by this decoder at all.
 fn parse_neuron(index: usize, entry: &Json, expected_weights: usize) -> Result<Neuron, ModelError> {
     reject_unknown_members(&format!("neuron {index}"), entry, NEURON_MEMBERS)?;
     let fields = NeuronFields { index, entry };
@@ -613,8 +621,8 @@ fn reject_unknown_members(context: &str, value: &Json, known: &[&str]) -> Result
 /// is snapped onto the grid before the caller ever sees it.
 ///
 /// The range check runs on the *snapped* value, not on the literal in the file.
-/// `snn_model.json` prints at seven significant digits, which is why
-/// [`check_finite_and_in_range`] tolerates off-grid input at all — but that
+/// `snn_model.json` prints at seven significant digits, which is why this
+/// tolerates off-grid input at all — but that
 /// same formatting writes the largest Q8.8 code, `0x7FFF` = 127.996_093_75, as
 /// `127.9961`, which overshoots [`Q8_8_MAX`] by 6.25e-6. Checking the literal
 /// would reject a boundary value the encoding can hold perfectly well, purely
@@ -654,9 +662,9 @@ pub(crate) fn q8_8_field(context: &str, value: f64) -> Result<f64, ModelError> {
 /// Check one number is finite and inside the Q8.8 range, saying nothing about
 /// whether it lands on the grid.
 ///
-/// This is the decode pre-check: `snn_model.json` prints Q8.8 values at limited
-/// precision (`0.7539062` for `193/256`), so off-grid input is *expected* there
-/// and [`q8_8_field`] snaps it. Rejecting it would reject the shipped artifact.
+/// The range half of [`check_q8_8`], its only caller. The decode path does not
+/// use this: [`q8_8_field`] range-checks the *snapped* value instead, so that a
+/// boundary code printed at seven digits (`127.9961`) still loads.
 fn check_finite_and_in_range(context: &str, value: f64) -> Result<(), ModelError> {
     if !value.is_finite() {
         return Err(ModelError::Schema(format!(

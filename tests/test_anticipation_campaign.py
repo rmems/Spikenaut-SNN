@@ -365,6 +365,22 @@ def test_budget_limited_run_has_no_promising_verdict(tmp_path, monkeypatch):
     assert any(line.endswith("| incomplete |") for line in lines)
 
 
+@pytest.mark.parametrize("escape", ["parent-relative", "absolute"])
+def test_score_run_rejects_prediction_path_escaping_snn_directory(tmp_path, escape):
+    from tools.anticipation import report
+    from tools.anticipation.campaign import write_json
+
+    outside = tmp_path / "outside.json"
+    write_json(outside, {"arm": "uniform", "seed": 123, "predictions": []})
+    output = tmp_path / "results"
+    (output / "snn").mkdir(parents=True)
+    predpath = str(outside) if escape == "absolute" else "../../outside.json"
+    run = {"arm": "uniform", "seed": 123, "status": "complete", "predictions": predpath}
+
+    with pytest.raises(ValueError, match="escapes the run directory"):
+        report._score_run(run, output, {}, np.ones(4), {}, "persistence")
+
+
 def test_cleanup_interrupt_persists_incomplete_capture_status(tmp_path):
     from tools.anticipation import campaign
     import json

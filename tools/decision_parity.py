@@ -73,12 +73,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Pin the Spikenaut output-row decision contract."
     )
-    parser.add_argument(
+    # Mutually exclusive, as in live_stim_parity: `--write --self-test` used
+    # to run only the self-test and leave the caller believing the pin had
+    # been regenerated.
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--write",
         action="store_true",
         help="regenerate tools/fixtures/decision/expected.json",
     )
-    parser.add_argument(
+    mode.add_argument(
         "--self-test",
         action="store_true",
         help="prove the pin comparison can fail",

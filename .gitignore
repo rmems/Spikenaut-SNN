@@ -1,6 +1,5 @@
 # Rust
 /target/
-actions-runner/
 **/*.rs.bk
 
 # Python
@@ -9,6 +8,17 @@ actions-runner/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+# Local virtual environments (.agents/setup creates /.venv/)
+.venv/
+venv/
+
+# Julia
+# tools/anticipation/Manifest.toml is checked in on purpose (it pins the
+# trainer environment CI instantiates), so only per-machine output is ignored.
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+LocalPreferences.toml
 
 # IDE
 .idea/
@@ -36,7 +46,7 @@ docs/reseach/
 # Local env overrides (contributors create their own, never tracked)
 .env.local
 
-# Generated per-run artifacts (tracked via .gitkeep only)
+# Generated per-run artifacts
 /artifacts/*
 !/artifacts/.gitkeep
 
@@ -46,15 +56,8 @@ docs/reseach/
 # GitHub Actions runner
 /actions-runner/
 
-# Scripts
-/scripts/*
-configs/local_lineup.toml
-configs/local_gguf_lineup.toml
-configs/local_safetensors_lineup.toml
-configs/safetensors_lineup.toml
-.beads/
-
 # Beads / Dolt files (added by bd init)
+.beads/
 .dolt/
 *.db
 .beads-credential-key
@@ -62,18 +65,19 @@ configs/safetensors_lineup.toml
 # IDE/AI tool dirs
 .mimocode/
 .opencode/
-.cursor/
 .hermes/
 .kilo/
 .zed/
 .ai/
 .junie/
 .claude/
-.cursor/
-
+# The Cursor Cloud Agent environment (.cursor/Dockerfile, .cursor/environment.json)
+# is tracked; anything else Cursor writes there is local.
+.cursor/*
+!.cursor/Dockerfile
+!.cursor/environment.json
 
 # Agent skills & MCP servers
-.beads/
 .swarm/
 
 # Codacy results

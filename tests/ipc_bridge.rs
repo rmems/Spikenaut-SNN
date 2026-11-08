@@ -173,6 +173,92 @@ fn strict_decoder_rejects_unsupported_envelope_versions() {
 }
 
 #[test]
+fn spike_messages_round_trip_and_an_empty_tick_is_valid() {
+    let message = spike_message(&context(), 3, &[15, 0, 4]).unwrap();
+    assert_eq!(
+        decode_ipc_message(&encode_ipc_message(&message).unwrap()).unwrap(),
+        message
+    );
+    let IpcMessage::Spikes(batch) = &message else {
+        panic!("spike builder returned the wrong message variant")
+    };
+    // Events keep the caller's order rather than being sorted.
+    let channels: Vec<u16> = batch.spikes.iter().map(|spike| spike.channel).collect();
+    assert_eq!(channels, [15, 0, 4]);
+
+    let silent = spike_message(&context(), 3, &[]).unwrap();
+    let IpcMessage::Spikes(batch) = &silent else {
+        panic!("spike builder returned the wrong message variant")
+    };
+    assert!(batch.spikes.is_empty());
+    assert_eq!(
+        decode_ipc_message(&encode_ipc_message(&silent).unwrap()).unwrap(),
+        silent
+    );
+}
+
+/// The first out-of-range index is the one reported, even after valid ones.
+#[test]
+fn the_first_out_of_range_spike_channel_is_reported() {
+    assert!(matches!(
+        spike_message(&context(), 0, &[1, 20, 17]),
+        Err(IpcBridgeError::ChannelOutOfRange { channel: 20 })
+    ));
+}
+
+#[test]
+fn malformed_envelope_bytes_are_rejected() {
+    for bytes in [
+        b"".as_slice(),
+        b"not json".as_slice(),
+        br#"{"wire_version":1}"#.as_slice(),
+        br#"{"wire_version":1,"payload":"Ping"} trailing"#.as_slice(),
+    ] {
+        assert!(
+            matches!(decode_ipc_message(bytes), Err(IpcBridgeError::Envelope(_))),
+            "{:?}",
+            String::from_utf8_lossy(bytes)
+        );
+    }
+}
+
+/// Each error variant says which boundary failed and chains its cause.
+#[test]
+fn bridge_errors_describe_themselves_and_expose_their_source() {
+    use std::error::Error;
+
+    let range = spike_message(&context(), 0, &[16]).unwrap_err();
+    assert_eq!(
+        range.to_string(),
+        "IPC spike channel 16 is outside host range 0..16"
+    );
+    assert!(range.source().is_none());
+
+    let validation = neuromodulator_message(NeuromodulatorSnapshot {
+        tick: 1,
+        dopamine: 0.0,
+        cortisol: 1.1,
+        acetylcholine: 0.0,
+        tempo: 1.0,
+    })
+    .unwrap_err();
+    assert!(matches!(validation, IpcBridgeError::Validation(_)));
+    assert!(
+        validation.to_string().starts_with("invalid IPC payload: "),
+        "{validation}"
+    );
+    assert!(validation.source().is_some());
+
+    let envelope = decode_ipc_message(b"not json").unwrap_err();
+    assert!(matches!(envelope, IpcBridgeError::Envelope(_)));
+    assert!(
+        envelope.to_string().starts_with("invalid IPC envelope: "),
+        "{envelope}"
+    );
+    assert!(envelope.source().is_some());
+}
+
+#[test]
 fn corpus_ipc_is_registry_only_without_transport_features() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let lock = std::fs::read_to_string(root.join("Cargo.lock")).expect("read Cargo.lock");

@@ -1,8 +1,9 @@
 """Float-vs-Q8.8 Hamming holdout core: encoder, keep-LIF, K-WTA, report data.
 
-Shared by ``measure_hamming`` and ``hamming_selftest``. This module is the
-only place in this repository that advances a LIF membrane **with the
-shipped weights in it** -- ``src/neuromod_host.rs`` steps a default published
+Shared by ``measure_hamming`` and ``hamming_selftest``. This harness (the
+stepper itself lives in ``hamming_lif`` and is re-exported here) is the only
+place in this repository that advances a LIF membrane **with the shipped
+weights in it** -- ``src/neuromod_host.rs`` steps a default published
 ``neuromod::LifNeuron``, which never sees them. That is a deliberate,
 documented exception for issue #39:
 
@@ -31,8 +32,8 @@ Standard library only.
 
 from __future__ import annotations
 
-import json
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -67,7 +68,7 @@ try:
         select_samples,
     )
     from .hamming_lif import LifBank, apply_kwta, hamming_bits, keep_lif_step
-    from .q88_core import ParseError, encode_q88_hex, read_utf8_text
+    from .q88_core import ParseError, encode_q88_hex, loads_json, read_utf8_text
 except ImportError:
     from hamming_banks import (
         bank_from_json,
@@ -99,7 +100,7 @@ except ImportError:
         select_samples,
     )
     from hamming_lif import LifBank, apply_kwta, hamming_bits, keep_lif_step
-    from q88_core import ParseError, encode_q88_hex, read_utf8_text
+    from q88_core import ParseError, encode_q88_hex, loads_json, read_utf8_text
 
 # Re-export the public harness surface so callers keep importing hamming_core.
 __all__ = (
@@ -145,6 +146,13 @@ __all__ = (
 # reproducing them needs the scratch weights + v3 JSONL, which this
 # repository does not ship. The harness must not pretend merged_v2 is
 # that bank.
+# The recorded exp-024 holdout is every test episode gpu-000170..198, in
+# order. A run that shares only the endpoints (a missing or substituted
+# middle episode) is a different holdout and must not be compared.
+EXP024_TEST_EPISODE_IDS: tuple[str, ...] = tuple(
+    f"gpu-{index:06d}" for index in range(170, 199)
+)
+
 EXP024_CLAIMED = {
     "k_none_pct": 13.187,
     "k_none_bits": 0.1608,
@@ -254,6 +262,15 @@ def _episode_span(samples: list[Sample]) -> str:
         if sample.episode_id not in seen:
             seen.add(sample.episode_id)
             ids.append(sample.episode_id)
+    return episode_span_of_ids(ids)
+
+
+def episode_span_of_ids(ids: Sequence[str]) -> str:
+    """The protocol's episode label: first, last and count, in file order.
+
+    Shared with the exp-024 comparability check so the recorded holdout is
+    spelled exactly the way a measurement spells its own span.
+    """
     if not ids:
         return "(none)"
     if len(ids) == 1:
@@ -305,7 +322,7 @@ def _protocol_for(ctx: dict, samples: list[Sample]) -> Protocol:
         n_ticks=len(samples),
         i_drive=ctx["i_drive"],
         stepper=(
-            "Python keep-LIF in tools/hamming_core.py "
+            "Python keep-LIF in tools/hamming_lif.py "
             "(v = decay*v + W@stim; decay is KEEP). "
             "Not the Rust crate."
         ),
@@ -420,10 +437,9 @@ def _pin_number(payload: dict, key: str, where: str, *, as_int: bool) -> float |
 def load_expected(path: Path) -> dict:
     if not path.is_file():
         raise ParseError(f"missing expected pin: {path}")
-    try:
-        payload = json.loads(read_utf8_text(path))
-    except json.JSONDecodeError as exc:
-        raise ParseError(f"{path.name}: {exc}") from exc
+    # loads_json, not json.loads: an oversized integer literal or deep
+    # nesting used to escape main() as a ValueError/RecursionError traceback.
+    payload = loads_json(read_utf8_text(path), path.name)
     if not isinstance(payload, dict):
         raise ParseError(f"{path.name}: expected a JSON object")
     where = path.name

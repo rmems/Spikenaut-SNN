@@ -94,6 +94,93 @@ fn invalid_small_world_configuration_is_rejected() {
     );
 }
 
+/// The boundaries the `neighbors` doc promises: even values in `[2, 15]`
+/// build, and NaN is not a probability.
+#[test]
+fn neighbor_and_probability_bounds_match_the_documentation() {
+    for neighbors in [2, 14] {
+        let mesh = ExperimentalDaleMesh::new(DaleMeshConfig {
+            neighbors,
+            ..DaleMeshConfig::default()
+        })
+        .unwrap_or_else(|err| panic!("neighbors {neighbors}: {err}"));
+        assert_eq!(mesh.inner().synapse_count(), 16 * neighbors);
+    }
+    for neighbors in [0, 1, 15, 16, 17] {
+        assert!(
+            ExperimentalDaleMesh::new(DaleMeshConfig {
+                neighbors,
+                ..DaleMeshConfig::default()
+            })
+            .is_err(),
+            "neighbors {neighbors} must be rejected"
+        );
+    }
+    for rewire_probability in [-0.1, f32::NAN] {
+        assert!(
+            ExperimentalDaleMesh::new(DaleMeshConfig {
+                rewire_probability,
+                ..DaleMeshConfig::default()
+            })
+            .is_err(),
+            "rewire probability {rewire_probability} must be rejected"
+        );
+    }
+}
+
+/// Dale's rule holds for every rewiring and delay setting, not just the
+/// default.
+#[test]
+fn polarity_follows_the_source_under_any_rewiring() {
+    for rewire_probability in [0.0, 0.5, 1.0] {
+        let mesh = ExperimentalDaleMesh::new(DaleMeshConfig {
+            neighbors: 6,
+            rewire_probability,
+            max_delay: 4,
+        })
+        .unwrap();
+        for source in 0..16 {
+            for (target, weight, delay, polarity) in mesh.inner().graph().outgoing(source) {
+                assert_ne!(target as usize, source, "no self-loops");
+                assert!((1..=4).contains(&delay), "delay {delay}");
+                if source < spikenaut_snn::wiring::INHIBITORY_START {
+                    assert_eq!(polarity, Polarity::Excitatory);
+                    assert!(weight > 0.0);
+                } else {
+                    assert_eq!(polarity, Polarity::Inhibitory);
+                    assert!(weight < 0.0);
+                }
+            }
+        }
+    }
+}
+
+/// `propagate_into` delivers what `propagate` does, overwriting the buffer.
+#[test]
+fn propagate_into_matches_propagate() {
+    let config = DaleMeshConfig {
+        max_delay: 3,
+        ..DaleMeshConfig::default()
+    };
+    let mut allocating = ExperimentalDaleMesh::new(config).unwrap();
+    let mut in_place = ExperimentalDaleMesh::new(config).unwrap();
+    let mut buffer = [f32::NAN; 16];
+
+    let frames: [[bool; 16]; 5] = [
+        std::array::from_fn(|i| i == 0 || i == 13),
+        [false; 16],
+        std::array::from_fn(|i| i % 2 == 0),
+        [false; 16],
+        [false; 16],
+    ];
+    for frame in &frames {
+        let expected = allocating.propagate(frame).unwrap();
+        in_place.propagate_into(frame, &mut buffer).unwrap();
+        assert_eq!(buffer.as_slice(), expected.as_slice());
+    }
+    assert_eq!(allocating.inner().tick(), in_place.inner().tick());
+}
+
 #[test]
 fn synaptic_wiring_resolves_from_the_registry_at_zero_three() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
