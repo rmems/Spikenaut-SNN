@@ -2,6 +2,10 @@
 
 //! Deterministic 12:4 Dale recurrent-topology experiment.
 
+//! This bridge is not a router integration test. The shipped consumer is the
+//! five-column analog exp-025 bank, whose unused axons remain zero; the
+//! historical 16-channel coin map has no compatible consumer and is retired.
+
 use std::path::Path;
 
 use spikenaut_snn::{DaleMeshConfig, ExperimentalDaleMesh};

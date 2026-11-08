@@ -39,8 +39,10 @@ training = ["dep:plasticity-lab", "dep:neuromod06"]
 # limbic-critic: checked TD reward shaping only. The app-level adapter copies
 # its four fields into neuromod; domain reward collection stays outside.
 #
-# synaptic-wiring: deterministic recurrent topology experiment only. It does
-# not reinterpret the shipped dense input matrix or change FPGA artifacts.
+# synaptic-wiring: deterministic recurrent topology experiment only. The old
+# 16-channel coin router has no compatible consumer: live exp-025 accepts five
+# analog columns and unused axons stay zero. This crate does not route telemetry,
+# reinterpret the dense input matrix, or change FPGA artifacts.
 #
 # corpus-ipc: typed, versioned message construction only. Default features are
 # kept off explicitly; no ZMQ socket, HTTP server, or background runtime.

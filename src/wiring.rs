@@ -4,7 +4,11 @@
 //!
 //! This mesh is deliberately parallel to the shipped exp-025 feed-forward
 //! input matrix. It proposes recurrent wiring; it does not reinterpret or
-//! rewrite the model's weights or FPGA `.mem` layout.
+//! rewrite the model's weights or FPGA `.mem` layout. It is not a telemetry
+//! router: the historical 16-channel coin map has no compatible consumer in
+//! this crate and is retired. The live bank consumes five analog telemetry
+//! columns; unused axons stay zero. Recurrence remains an isolated experiment
+//! until a separately specified and validated model consumes it.
 
 use synaptic_wiring::topology::generate_small_world;
 use synaptic_wiring::{

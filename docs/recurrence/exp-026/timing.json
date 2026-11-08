@@ -1,0 +1,46 @@
+{
+  "arms": {
+    "ff": {
+      "test": {
+        "seconds": 8.693905000007362,
+        "ticks": 117653,
+        "us_per_tick": 73.89446082979066
+      },
+      "train": {
+        "seconds": 40.79565209998691,
+        "ticks": 569344,
+        "us_per_tick": 71.65378417966451
+      },
+      "val": {
+        "seconds": 8.833438999994542,
+        "ticks": 118784,
+        "us_per_tick": 74.36556270200147
+      }
+    },
+    "rec-g0.125": {
+      "test": {
+        "seconds": 10.261667999991914,
+        "ticks": 117653,
+        "us_per_tick": 87.2197734013745
+      },
+      "train": {
+        "seconds": 50.08985649999522,
+        "ticks": 569344,
+        "us_per_tick": 87.97819332423846
+      },
+      "val": {
+        "seconds": 10.480313599997316,
+        "ticks": 118784,
+        "us_per_tick": 88.23001077583947
+      }
+    }
+  },
+  "note": "Wall-clock of the Python binary32 reference stepper on this host (tools/hamming_lif.py / tools/recurrent_lif.py). Host latency only: not FPGA latency, not a deterministic artifact, excluded from comparison.json.",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.13.12 (main, Mar  3 2026, 15:00:12) [MSC v.1944 64 bit (AMD64)]",
+  "structural_cost_per_tick": "feed-forward: 16x16 MAC on stim; recurrent: + up to 16x16 MAC on s(t-1) (48 nonzero for I->E lateral inhibition) and one 16-bit register for s(t-1); one tick of added algorithmic delay",
+  "test_split_ratio_vs_ff": {
+    "ff": 1.0,
+    "rec-g0.125": 1.180328977597895
+  }
+}
