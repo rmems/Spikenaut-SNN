@@ -10,7 +10,8 @@ inhibition at gain 1/8 lowers the held-out readout error by 9.5% against the fee
 bank with an identically refit head and by 8.4% against the shipped head, with no head
 more than 0.3% worse, so it meets the criterion predeclared in `tools/recurrence_core.py`.
 It does so by breaking the lockstep of the excitatory population (268 → 418 distinct spike
-patterns at the same spike count), not by adding memory. The same comparison also shows
+patterns at nearly the same spike count, 3.59 → 3.57 spikes per tick), not by adding
+memory. The same comparison also shows
 that **no network arm, recurrent or not, beats a constant predictor** of the train-mean
 target on the test split (0.0816 versus 0.0967 for the best arm), and that a memoryless
 linear read of the five inputs is ten times better than any of them (0.0090). With K-WTA
@@ -78,7 +79,12 @@ The result is 805,781 rows, 119,734,661 bytes, sha256
 `b1e601077100aabcc24021bcf86b8eeabbd9f5c1140623cdbc4ea08d946372da`; every episode is
 contiguous, `step_idx` is monotonic within each, no live column is null, and 11,997 test
 rows carry `gpu_temp_c == 0` (13 in train, 0 in validation), the dropout sentinel the state
-contract in #20 says must be masked and which the exp-025 protocol encodes as 0.
+contract in #20 says must be masked and which the exp-025 protocol encodes as 0. This
+comparison keeps the frozen exp-025 protocol: those ticks are stepped and scored like any
+other, with the target computed from the encoded zero, for every arm and every baseline
+alike. The relative verdicts are unaffected, but the absolute test errors include them (see
+"Interpretation"); masking them is a protocol change that belongs to #20/#21, not to this
+experiment.
 
 **This is the recorded holdout, not a lookalike.** Stepping the float `snn_model.json` bank
 through `tools/hamming_lif.py` with `k=none` over these test rows reproduces the README health
@@ -230,15 +236,22 @@ python3 tools/recurrence_eval.py --jsonl PATH/state_telemetry.jsonl \
     --out-dir out/k4 --emit-checkpoint out/k4/bundle
 python3 tools/recurrence_eval.py --jsonl PATH/state_telemetry.jsonl --input-label "..." \
     --k none --out-dir out/k-none
-sha256sum out/k4/comparison.json docs/recurrence/exp-026/comparison.json   # identical
+python3 - out/k4/comparison.json docs/recurrence/exp-026/comparison.json <<'PY'
+import json, sys
+a, b = (json.load(open(p, encoding="utf-8")) for p in sys.argv[1:])
+a.pop("source"), b.pop("source")        # checkout commit/branch, the only run-dependent field
+raise SystemExit(0 if a == b else "comparison.json differs from the committed run")
+PY
+sha256sum out/k4/bundle/* dataset/merged_v2_rec_v1/*   # bundle files identical, pairwise
 python3 tools/replay_frozen.py --bank-manifest dataset/merged_v2_rec_v1/model_bank.json \
     --jsonl PATH/state_telemetry.jsonl --split test --out-dir out/replay
 ```
 
-`comparison.json` carries no wall-clock field and is byte-identical across runs on the same
-input; `report.md` is `recurrence_bundle.render_report` applied to it. The default
-invocation without `--jsonl` runs the synthetic `tools/fixtures/recurrence/` method fixture,
-which proves the pipeline and is not evidence.
+`comparison.json` carries no wall-clock field; apart from `source` (the checkout's commit
+and branch, recorded for provenance) it is identical across runs on the same input, and the
+emitted bundle is byte-identical. `report.md` is `recurrence_bundle.render_report` applied to
+the full document. The default invocation without `--jsonl` runs the synthetic
+`tools/fixtures/recurrence/` method fixture, which proves the pipeline and is not evidence.
 
 ## Files
 

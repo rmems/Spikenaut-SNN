@@ -31,17 +31,31 @@ from tools.q88_core import (
 )
 from tools.recurrence_bundle import UNCHANGED_MEM_IMAGES
 from tools.recurrence_core import (
+    ReadoutScorer,
     Span,
     activity,
+    constant_predictor,
+    decision_agreement,
     fit_dale_readout,
+    fmt_ratio,
     metrics_from_predictions,
     nnls,
     promising,
     readout_target,
     session_spans,
+    sign_census,
     step_arm,
+    target_argmax_agreement,
 )
-from tools.recurrence_eval import FIXTURE_JSONL
+from tools.recurrence_eval import (
+    FIXTURE_JSONL,
+    AttestedBase,
+    Comparison,
+    EvalInput,
+    Protocol,
+    load_splits,
+    prepare_base,
+)
 from tools.recurrence_eval import main as cli_main
 from tools.recurrent_lif import (
     RECURRENCE_KEY,
@@ -64,7 +78,7 @@ from tools.replay_core import (
     trace_jsonl,
 )
 from tools.replay_frozen import main as replay_main
-from tools.replay_inputs import load_replay_inputs
+from tools.replay_inputs import load_replay_inputs, select_entry
 
 SHIPPED_DIR = REPO_ROOT / "dataset" / "merged_v2"
 SHIPPED_MANIFEST = SHIPPED_DIR / "model_bank.json"
@@ -197,8 +211,10 @@ class TestStepContract(unittest.TestCase):
             rec.feedback(prev[:-1])
 
     def test_feedback_width_refused_by_stepper(self):
+        bank = _toy_bank()
+        stim = [0.0] * N_NEURONS
         with self.assertRaises(ParseError):
-            keep_lif_step(_toy_bank(), [0.0] * N_NEURONS, None, feedback=[0.0] * 3)
+            keep_lif_step(bank, stim, None, feedback=[0.0] * 3)
 
 
 class TestBlockValidation(unittest.TestCase):
@@ -313,6 +329,14 @@ class TestReplayIntegration(unittest.TestCase):
             self.assertEqual(row["spikes"], [i for i in range(N_NEURONS) if (mask >> i) & 1])
 
 
+def _diagonal_fit_case() -> tuple[list[list[float]], list[list[float]], list[bool]]:
+    """Diagonal Gram matrix, one shared rhs row, Dale flags as shipped."""
+    gram = [[(4.0 if i == j else 0.0) for j in range(N_NEURONS)] for i in range(N_NEURONS)]
+    rhs = [[1.0, -1.0, 2.0] for _ in range(N_NEURONS)]
+    inhibitory = [i >= N_EXC for i in range(N_NEURONS)]
+    return gram, rhs, inhibitory
+
+
 class TestFitAndMetrics(unittest.TestCase):
     def test_nnls_unconstrained_optimum_when_positive(self):
         u = nnls([[2.0, 0.0], [0.0, 3.0]], [2.0, 3.0])
@@ -324,18 +348,44 @@ class TestFitAndMetrics(unittest.TestCase):
         self.assertAlmostEqual(u[0], 1.0)
         self.assertEqual(u[1], 0.0)
 
+    def test_nnls_drops_a_passive_coordinate_on_the_way(self):
+        # Coordinate 0 enters first (largest gradient, ties to the lowest
+        # index), then 2; the passive-set solution is then infeasible in 0,
+        # so the inner loop takes the alpha step and drops 0 again.
+        a = [[19.0, -3.0, 3.0], [-3.0, 10.0, 0.0], [3.0, 0.0, 3.0]]
+        c = [2.0, -4.0, 2.0]
+        u = nnls(a, c)
+        self.assertEqual(u[:2], [0.0, 0.0])
+        self.assertAlmostEqual(u[2], 2 / 3)
+        # KKT: zero gradient where u > 0, non-positive where u == 0.
+        grad = [c[i] - sum(a[i][j] * u[j] for j in range(3)) for i in range(3)]
+        self.assertAlmostEqual(grad[2], 0.0)
+        self.assertLessEqual(grad[0], 1e-12)
+        self.assertLessEqual(grad[1], 0.0)
+
+    def test_nnls_refuses_singular_and_empty_systems(self):
+        with self.assertRaises(ParseError):
+            nnls([[0.0]], [1.0])
+        with self.assertRaises(ParseError):
+            nnls([], [])
+
+    def test_agreement_and_baseline_refuse_empty_traces(self):
+        scorer = ReadoutScorer([0.0] * (N_NEURONS * 3))
+        with self.assertRaises(ParseError):
+            decision_agreement([], scorer, [], scorer)
+        with self.assertRaises(ParseError):
+            target_argmax_agreement([], scorer, [])
+        with self.assertRaises(ParseError):
+            target_argmax_agreement([1], scorer, [])
+        with self.assertRaises(ParseError):
+            constant_predictor([])
+
     def test_dale_readout_respects_sign_box_and_grid(self):
-        gram = [[(4.0 if i == j else 0.0) for j in range(N_NEURONS)] for i in range(N_NEURONS)]
-        rhs = [[1.0, -1.0, 2.0] for _ in range(N_NEURONS)]
-        inhibitory = [i >= N_EXC for i in range(N_NEURONS)]
+        gram, rhs, inhibitory = _diagonal_fit_case()
         weights = fit_dale_readout(gram, rhs, 0.5, inhibitory)
-        for i in range(N_NEURONS):
-            for h, value in enumerate(weights[i]):
-                self.assertEqual(value, f32(decode_q88(encode_q88(value))))
-                if inhibitory[i]:
-                    self.assertLessEqual(value, 0.0)
-                else:
-                    self.assertGreaterEqual(value, 0.0)
+        flat = [w for row in weights for w in row]
+        self.assertEqual(flat, [f32(decode_q88(encode_q88(w))) for w in flat])
+        self.assertEqual(sign_census(weights, inhibitory)["dale_violations"], 0)
         # E neurons: positive rhs fits positive, negative rhs clamps to 0.
         self.assertGreater(weights[0][0], 0.0)
         self.assertEqual(weights[0][1], 0.0)
@@ -381,6 +431,26 @@ class TestFitAndMetrics(unittest.TestCase):
         self.assertFalse(promising(bad_head, ref)["promising"])
         self.assertFalse(promising(ref, ref)["promising"])
 
+    def test_promising_never_passes_a_regression_from_a_zero_reference(self):
+        # A head the reference gets exactly right has no finite relative
+        # degradation; any candidate error there must fail the per-head limit.
+        zero_head_ref = {"primary": 0.2, "session_weighted_mae": [0.0, 0.3, 0.3]}
+        regressed = {"primary": 0.1, "session_weighted_mae": [0.05, 0.1, 0.15]}
+        verdict = promising(regressed, zero_head_ref)
+        self.assertFalse(verdict["promising"])
+        self.assertIsNone(verdict["per_head_degradation"][0])
+        self.assertIsNone(verdict["worst_head_degradation"])
+        self.assertEqual(fmt_ratio(verdict["worst_head_degradation"]),
+                         "undefined (reference error is 0)")
+        # Zero against zero is a real 0.0, and a zero-error reference cannot be improved on.
+        zeros = {"primary": 0.0, "session_weighted_mae": [0.0, 0.0, 0.0]}
+        same = promising(zeros, zeros)
+        self.assertEqual(same["per_head_degradation"], [0.0, 0.0, 0.0])
+        self.assertEqual(same["primary_improvement"], 0.0)
+        self.assertFalse(same["promising"])
+        self.assertIsNone(promising(regressed, zeros)["primary_improvement"])
+        self.assertEqual(fmt_ratio(0.0948), "+9.48%")
+
 
 class TestCli(unittest.TestCase):
     def test_fixture_run_is_deterministic(self):
@@ -405,6 +475,33 @@ class TestCli(unittest.TestCase):
             self.assertEqual(
                 cli_main(["--jsonl", str(REPLAY_FIXTURE), "--out-dir", tmp]), 2
             )
+
+    def test_emit_checkpoint_refuses_k_and_i_drive_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp) / "bundle"
+            for extra in (["--k", "none"], ["--k", "4"], ["--i-drive", "0.05"]):
+                self.assertEqual(
+                    cli_main([*extra, "--out-dir", str(Path(tmp) / "out"),
+                              "--emit-checkpoint", str(bundle)]),
+                    2,
+                )
+            self.assertFalse(bundle.exists())
+
+    def test_protocol_and_input_refuse_empty_gains_and_empty_splits(self):
+        bank = load_model_bank(SHIPPED_MANIFEST)
+        entry = select_entry(bank, None)
+        raw, grid = prepare_base(entry)
+        splits, digest = load_splits(FIXTURE_JSONL)
+        with self.assertRaises(ParseError):
+            Protocol(k=4, i_drive=0.05, gains=())
+        with self.assertRaises(ParseError):
+            EvalInput(splits={**splits, "val": []}, sha256=digest, jsonl=FIXTURE_JSONL)
+        comparison = Comparison(
+            AttestedBase(bank=bank, entry=entry, raw=raw, grid=grid),
+            EvalInput(splits=splits, sha256=digest, jsonl=FIXTURE_JSONL),
+            Protocol(k=4, i_drive=0.05, gains=(0.125,)),
+        )
+        self.assertEqual(comparison.gains, (0.125,))
 
     def test_emitted_bundle_attests_and_replays(self):
         with tempfile.TemporaryDirectory() as tmp:

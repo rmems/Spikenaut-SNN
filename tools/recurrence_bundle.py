@@ -26,7 +26,7 @@ try:  # package import: `python3 -m tools.recurrence_eval`
         dumps_manifest,
     )
     from .q88_core import ParseError, Q88RangeError, encode_q88_hex
-    from .recurrence_core import HEADS, N_HEADS
+    from .recurrence_core import HEADS, N_HEADS, fmt_ratio
     from .recurrent_lif import (
         RECURRENCE_KEY,
         RECURRENT_MEM_NAME,
@@ -44,7 +44,7 @@ except ImportError:  # direct script: `python3 tools/recurrence_eval.py`
         dumps_manifest,
     )
     from q88_core import ParseError, Q88RangeError, encode_q88_hex
-    from recurrence_core import HEADS, N_HEADS
+    from recurrence_core import HEADS, N_HEADS, fmt_ratio
     from recurrent_lif import (
         RECURRENCE_KEY,
         RECURRENT_MEM_NAME,
@@ -188,9 +188,17 @@ def _arm_row(name: str, arm: dict) -> str:
 
 def render_report(comparison: dict) -> str:
     """Deterministic markdown view of ``comparison.json`` (no timing)."""
+    return "\n".join(
+        _report_header(comparison)
+        + _arms_table(comparison)
+        + _baselines_table(comparison)
+        + _verdict_lines(comparison)
+    )
+
+
+def _report_header(comparison: dict) -> list[str]:
     inputs = comparison["input"]
-    sel = comparison["selection"]
-    lines = [
+    return [
         f"# {EXPERIMENT_ID}: recurrence vs the frozen exp-025 baseline",
         "",
         f"Input `{inputs['path']}` ({inputs['sha256']}); k = "
@@ -204,6 +212,11 @@ def render_report(comparison: dict) -> str:
         "",
         f"Primary = {comparison['protocol']['primary']}.",
         "",
+    ]
+
+
+def _arms_table(comparison: dict) -> list[str]:
+    lines = [
         "| arm | gain | lambda_rel | val primary | test primary | "
         + " | ".join(f"test MAE {h}" for h in HEADS)
         + " | spk/tick | patterns | cofire | I spikes | silent | decision agreement vs ff-shipped |",
@@ -211,35 +224,41 @@ def render_report(comparison: dict) -> str:
     ]
     for name in comparison["arm_order"]:
         lines.append(_arm_row(name, comparison["arms"][name]))
-    lines.extend(["", "## Baselines (float, not quantized)", "",
-                  "| baseline | val primary | test primary | "
-                  + " | ".join(f"test MAE {h}" for h in HEADS) + " |",
-                  "|---|---:|---:|" + "---:|" * N_HEADS])
+    return lines
+
+
+def _baselines_table(comparison: dict) -> list[str]:
+    lines = ["", "## Baselines (float, not quantized)", "",
+             "| baseline | val primary | test primary | "
+             + " | ".join(f"test MAE {h}" for h in HEADS) + " |",
+             "|---|---:|---:|" + "---:|" * N_HEADS]
     for name, base in comparison["baselines"].items():
         heads = " | ".join(_fmt(v) for v in base["test"]["session_weighted_mae"])
         lines.append(
             f"| `{name}` | {_fmt(base['val']['primary'])} | "
             f"{_fmt(base['test']['primary'])} | {heads} |"
         )
+    return lines
+
+
+def _verdict_lines(comparison: dict) -> list[str]:
+    sel = comparison["selection"]
     verdict = sel["verdict_vs_ff_refit"]
-    lines.extend(
-        [
+    return [
             "",
             "## Verdict",
             "",
             f"Validation-selected recurrent arm: `{sel['selected_rec_arm']}`.",
-            f"Against `ff-refit`: primary improvement {verdict['primary_improvement']:+.2%}, "
-            f"worst head degradation {verdict['worst_head_degradation']:+.2%}; "
+            f"Against `ff-refit`: primary improvement {fmt_ratio(verdict['primary_improvement'])}, "
+            f"worst head degradation {fmt_ratio(verdict['worst_head_degradation'])}; "
             f"promising = **{verdict['promising']}**.",
             f"Against `ff-shipped`: primary improvement "
-            f"{sel['verdict_vs_ff_shipped']['primary_improvement']:+.2%}.",
+            f"{fmt_ratio(sel['verdict_vs_ff_shipped']['primary_improvement'])}.",
             _constant_baseline_line(comparison),
             "",
             f"Criterion (predeclared): {verdict['criterion']}.",
             "",
-        ]
-    )
-    return "\n".join(lines)
+    ]
 
 
 def _constant_baseline_line(comparison: dict) -> str:

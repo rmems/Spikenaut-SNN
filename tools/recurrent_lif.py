@@ -91,7 +91,9 @@ class Recurrence:
     schema: str = RECURRENCE_SCHEMA
 
     def nonzero(self) -> int:
-        return sum(1 for row in self.weights for w in row if w != 0.0)
+        # Truthiness is the exact-zero test: ``0.0`` and ``-0.0`` are the
+        # only falsy floats, and every weight here passed ``_on_q88_grid``.
+        return sum(1 for row in self.weights for w in row if w)
 
     def feedback(self, prev_spikes: list[bool]) -> list[float]:
         """``R @ s(t-1)`` accumulated in binary32, pre index ascending.
@@ -174,7 +176,8 @@ def dale_flags(model: dict, source: str) -> list[bool]:
     return flags
 
 
-def _require_block_shape(block: object, source: str) -> dict:
+def _require_block_keys(block: object, source: str) -> dict:
+    """The block is a JSON object carrying exactly the schema's keys."""
     if not isinstance(block, dict):
         raise ParseError(
             f"{source}: {RECURRENCE_KEY!r} must be a JSON object, got "
@@ -192,6 +195,12 @@ def _require_block_shape(block: object, source: str) -> dict:
         raise ParseError(
             f"{source}: {RECURRENCE_KEY}: missing key(s) {missing}"
         )
+    return block
+
+
+def _require_block_shape(block: object, source: str) -> dict:
+    """Keys, schema id, delay and topology of a declared recurrence block."""
+    block = _require_block_keys(block, source)
     if block["schema"] != RECURRENCE_SCHEMA:
         raise ParseError(
             f"{source}: {RECURRENCE_KEY}.schema must be "
@@ -215,18 +224,11 @@ def _require_block_shape(block: object, source: str) -> dict:
 def _validated_rows(
     block: dict, flags: list[bool], source: str
 ) -> list[list[float]]:
-    rows = block["weights"]
     where = f"{source}: {RECURRENCE_KEY}.weights"
-    if not isinstance(rows, list) or len(rows) != N_NEURONS:
-        got = len(rows) if isinstance(rows, list) else type(rows).__name__
-        raise ParseError(f"{where}: {got} rows, expected {N_NEURONS}")
+    rows = _require_list_of(block["weights"], where, "rows")
     out: list[list[float]] = []
     for post, row in enumerate(rows):
-        if not isinstance(row, list) or len(row) != N_NEURONS:
-            got = len(row) if isinstance(row, list) else type(row).__name__
-            raise ParseError(
-                f"{where}[{post}]: {got} entries, expected {N_NEURONS}"
-            )
+        row = _require_list_of(row, f"{where}[{post}]", "entries")
         out.append(
             [
                 _dale_checked(
@@ -242,10 +244,20 @@ def _validated_rows(
     return out
 
 
+def _require_list_of(value: object, where: str, what: str) -> list:
+    """``value`` is a list of exactly ``N_NEURONS`` items."""
+    if not isinstance(value, list) or len(value) != N_NEURONS:
+        got = len(value) if isinstance(value, list) else type(value).__name__
+        raise ParseError(f"{where}: {got} {what}, expected {N_NEURONS}")
+    return value
+
+
 def _dale_checked(
     value: float, post: int, pre: int, pre_inhibitory: bool, where: str
 ) -> float:
-    if post == pre and value != 0.0:
+    # ``value`` is a finite Q8.8 grid float (``_on_q88_grid`` ran first), so
+    # truthiness is the exact "not 0" test without a float-equality compare.
+    if post == pre and value:
         raise ParseError(
             f"{where}[{post}][{pre}]: self-connection must be 0, got {value!r}"
         )
@@ -294,27 +306,35 @@ def lateral_inhibition(
     value = _on_q88_grid(gain, "recurrence gain")
     if value <= 0.0:
         raise ParseError(f"recurrence gain must be positive, got {gain!r}")
-    flags = dale_flags(model, source)
-    if not any(flags) or all(flags):
-        raise ParseError(
-            "lateral inhibition needs at least one excitatory and one "
-            f"inhibitory neuron; inhibitory flags are {flags}"
-        )
-    rows = [
-        [
-            f32(-value) if (flags[pre] and not flags[post]) else 0.0
-            for pre in range(N_NEURONS)
-        ]
-        for post in range(N_NEURONS)
-    ]
+    flags = _require_mixed_population(dale_flags(model, source))
     return Recurrence(
         topology=(
             f"I->E lateral inhibition, gain {value!r}: R[e][i] = {-value!r} "
             "for every excitatory e and inhibitory i (checkpoint "
             "'inhibitory' flags); E->E, E->I, I->I and self connections 0"
         ),
-        weights=tuple(tuple(row) for row in rows),
+        weights=tuple(tuple(row) for row in _lateral_rows(flags, value)),
     )
+
+
+def _require_mixed_population(flags: list[bool]) -> list[bool]:
+    if not any(flags) or all(flags):
+        raise ParseError(
+            "lateral inhibition needs at least one excitatory and one "
+            f"inhibitory neuron; inhibitory flags are {flags}"
+        )
+    return flags
+
+
+def _lateral_rows(flags: list[bool], value: float) -> list[list[float]]:
+    """``R[post][pre] = -value`` for inhibitory ``pre`` onto excitatory ``post``."""
+    return [
+        [
+            f32(-value) if (flags[pre] and not flags[post]) else 0.0
+            for pre in range(N_NEURONS)
+        ]
+        for post in range(N_NEURONS)
+    ]
 
 
 def recurrence_block(recurrence: Recurrence) -> dict:

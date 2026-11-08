@@ -65,6 +65,7 @@ N_HEADS = len(HEADS)
 TEMP_AXON = LIVE_COLUMNS.index("gpu_temp_c")
 POWER_AXON = LIVE_COLUMNS.index("power_w")
 N_LIVE = len(LIVE_COLUMNS)
+SPLITS: tuple[str, ...] = ("train", "val", "test")
 
 # Gains on the Q8.8 grid. 1/2 and above silenced every excitatory neuron
 # in the design prototype; the grid brackets that collapse deliberately.
@@ -203,17 +204,20 @@ def _cofire(counts: list[int], both: list[list[int]]) -> float:
     return acc / pairs if pairs else 0.0
 
 
-def activity(masks: Sequence[int]) -> dict:
-    """Health-style activity summary of one arm on one split."""
-    n = len(masks)
-    if n == 0:
-        raise ParseError("NOTHING WAS MEASURED: activity over 0 ticks")
+def _count_pairs(both: list[list[int]], bits: list[int], count: int) -> None:
+    for a in range(len(bits)):
+        for b in range(a + 1, len(bits)):
+            both[bits[a]][bits[b]] += count
+
+
+def _pattern_totals(patterns: Counter) -> tuple[list[int], list[list[int]], int, int, int]:
+    """Per-neuron counts, pairwise co-fire counts, total spikes, all-16
+    ticks and inhibitory spikes, accumulated over the distinct patterns."""
     counts = [0] * N_NEURONS
     both = [[0] * N_NEURONS for _ in range(N_NEURONS)]
     total = 0
     all16 = 0
     inhibitory = 0
-    patterns = Counter(masks)
     for mask, count in sorted(patterns.items()):
         bits = mask_bits(mask)
         total += count * len(bits)
@@ -222,9 +226,17 @@ def activity(masks: Sequence[int]) -> dict:
         inhibitory += count * sum(1 for i in bits if i >= N_EXC)
         for i in bits:
             counts[i] += count
-        for a in range(len(bits)):
-            for b in range(a + 1, len(bits)):
-                both[bits[a]][bits[b]] += count
+        _count_pairs(both, bits, count)
+    return counts, both, total, all16, inhibitory
+
+
+def activity(masks: Sequence[int]) -> dict:
+    """Health-style activity summary of one arm on one split."""
+    n = len(masks)
+    if n == 0:
+        raise ParseError("NOTHING WAS MEASURED: activity over 0 ticks")
+    patterns = Counter(masks)
+    counts, both, total, all16, inhibitory = _pattern_totals(patterns)
     silent = [i for i in range(N_NEURONS) if counts[i] == 0]
     return {
         "n_ticks": n,
@@ -278,20 +290,49 @@ def normal_equations(stats: dict[int, list[float]]) -> tuple[list[list[float]], 
     return gram, rhs
 
 
+def _pivot_row(a: list[list[float]], col: int, n: int) -> int:
+    """Row at or below ``col`` with the largest ``|a[r][col]|``.
+
+    Ties go to the lowest index, so the elimination order is deterministic.
+    """
+    best = col
+    for r in range(col + 1, n):
+        if abs(a[r][col]) > abs(a[best][col]):
+            best = r
+    return best
+
+
 def _solve(matrix: list[list[float]], vector: list[float]) -> list[float]:
-    """Gaussian elimination with partial pivoting on a small dense system."""
+    """Gaussian elimination with partial pivoting on a small dense system.
+
+    Zero tests are truthiness, the repo's form of an exact IEEE-zero test
+    (``0.0`` and ``-0.0`` are the only falsy floats). A tolerance would be
+    the wrong test: the ridge term keeps every real pivot away from zero,
+    and only an exactly singular system must be refused.
+    """
     n = len(vector)
     a = [row[:] + [vector[i]] for i, row in enumerate(matrix)]
+    _eliminate(a, n)
+    return _back_substitute(a, n)
+
+
+def _eliminate(a: list[list[float]], n: int) -> None:
+    """Forward elimination in place on the augmented matrix ``a``."""
     for col in range(n):
-        pivot = max(range(col, n), key=lambda r: (abs(a[r][col]), -r))
-        if abs(a[pivot][col]) == 0.0:
+        pivot = _pivot_row(a, col, n)
+        if not a[pivot][col]:
             raise ParseError("readout fit: singular normal equations")
         a[col], a[pivot] = a[pivot], a[col]
         for r in range(col + 1, n):
             factor = a[r][col] / a[col][col]
-            if factor != 0.0:
+            if factor:
                 for c in range(col, n + 1):
                     a[r][c] -= factor * a[col][c]
+
+
+def _back_substitute(a: list[list[float]], n: int) -> list[float]:
+    # Row ``col`` is never modified after its own elimination step, so each
+    # ``a[r][r]`` here is the pivot that passed ``_eliminate``'s zero test.
     x = [0.0] * n
     for r in range(n - 1, -1, -1):
         acc = a[r][n]
@@ -301,52 +342,104 @@ def _solve(matrix: list[list[float]], vector: list[float]) -> list[float]:
     return x
 
 
+def _gradient(
+    matrix: list[list[float]], vector: list[float], u: list[float]
+) -> list[float]:
+    """``c - A u``, the negative gradient of the NNLS objective."""
+    n = len(vector)
+    return [
+        vector[i] - sum(matrix[i][j] * u[j] for j in range(n))
+        for i in range(n)
+    ]
+
+
+def _entering_index(grad: list[float], passive: list[bool], tol: float) -> int | None:
+    """Largest positive gradient outside the passive set, ties to the
+    lowest index; ``None`` when no coordinate can still improve."""
+    best: int | None = None
+    for j, g in enumerate(grad):
+        if not passive[j] and g > tol and (best is None or g > grad[best]):
+            best = j
+    return best
+
+
+def _inner_step(
+    matrix: list[list[float]],
+    vector: list[float],
+    passive: list[bool],
+    u: list[float],
+    tol: float,
+) -> tuple[list[float], bool]:
+    """One Lawson-Hanson inner iteration on the passive set.
+
+    Solves the passive-set least squares. If that solution is feasible it
+    becomes the iterate and the step is done. Otherwise ``u`` moves toward
+    it until the first coordinate reaches zero; those coordinates leave the
+    passive set and the caller iterates again.
+    """
+    n = len(u)
+    active_set, z = _passive_solution(matrix, vector, passive, n)
+    if all(value > tol for value in z):
+        out = [0.0] * n
+        for i, value in zip(active_set, z, strict=True):
+            out[i] = value
+        return out, True
+    _move_toward(u, active_set, z, passive, tol)
+    return u, False
+
+
+def _passive_solution(
+    matrix: list[list[float]], vector: list[float], passive: list[bool], n: int
+) -> tuple[list[int], list[float]]:
+    """The passive set and the least-squares solution restricted to it."""
+    active_set = [i for i in range(n) if passive[i]]
+    sub = [[matrix[i][j] for j in active_set] for i in active_set]
+    return active_set, _solve(sub, [vector[i] for i in active_set])
+
+
+def _move_toward(
+    u: list[float], active_set: list[int], z: list[float], passive: list[bool], tol: float
+) -> None:
+    """Move ``u`` toward ``z`` until the first coordinate reaches zero and
+    drop every coordinate that did from the passive set (in place)."""
+    alpha = min(
+        u[i] / (u[i] - value)
+        for i, value in zip(active_set, z, strict=True)
+        if value <= tol
+    )
+    for i, value in zip(active_set, z, strict=True):
+        u[i] = u[i] + alpha * (value - u[i])
+    for i in active_set:
+        if u[i] <= tol:
+            passive[i] = False
+            u[i] = 0.0
+
+
 def nnls(matrix: list[list[float]], vector: list[float]) -> list[float]:
     """Lawson-Hanson NNLS on the normal equations ``A u = c``, ``u >= 0``.
 
     Exact active-set solution of ``min 1/2 u^T A u - c^T u`` for SPD ``A``.
     Ties in the entering variable go to the lowest index, so the fit is
-    deterministic. Both loops carry an iteration cap that fails closed.
+    deterministic. Both loops carry an iteration cap that fails closed: the
+    inner ``break`` leaves only the inner loop, so the outer cap is live and
+    fires if ``cap`` entering steps pass without the gradient test clearing.
     """
+    if not vector:
+        raise ParseError("readout fit: empty system")
     n = len(vector)
     tol = 1e-12 * max(1.0, max(abs(v) for v in vector))
     passive = [False] * n
     u = [0.0] * n
     cap = 4 * n + 16
-
-    def gradient() -> list[float]:
-        return [
-            vector[i] - sum(matrix[i][j] * u[j] for j in range(n))
-            for i in range(n)
-        ]
-
     for _ in range(cap):
-        grad = gradient()
-        candidates = [j for j in range(n) if not passive[j] and grad[j] > tol]
-        if not candidates:
+        entering = _entering_index(_gradient(matrix, vector, u), passive, tol)
+        if entering is None:
             return u
-        entering = max(candidates, key=lambda j: (grad[j], -j))
         passive[entering] = True
         for _ in range(cap):
-            active_set = [i for i in range(n) if passive[i]]
-            sub = [[matrix[i][j] for j in active_set] for i in active_set]
-            z = _solve(sub, [vector[i] for i in active_set])
-            if all(value > tol for value in z):
-                u = [0.0] * n
-                for i, value in zip(active_set, z, strict=True):
-                    u[i] = value
+            u, feasible = _inner_step(matrix, vector, passive, u, tol)
+            if feasible:
                 break
-            alpha = min(
-                u[i] / (u[i] - value)
-                for i, value in zip(active_set, z, strict=True)
-                if value <= tol
-            )
-            for i, value in zip(active_set, z, strict=True):
-                u[i] = u[i] + alpha * (value - u[i])
-            for i in active_set:
-                if u[i] <= tol:
-                    passive[i] = False
-                    u[i] = 0.0
         else:
             raise ParseError("readout fit: NNLS inner loop did not converge")
     raise ParseError("readout fit: NNLS outer loop did not converge")
@@ -370,13 +463,9 @@ def fit_dale_readout(
     ``w = D u`` with ``u >= 0`` and ``D = diag(+1 for E, -1 for I)``, so the
     sign box becomes a plain NNLS on ``D (G + lam I) D`` and ``D b``.
     """
-    if lam <= 0.0 or not math.isfinite(lam):
-        raise ParseError(f"readout fit: lambda must be positive, got {lam!r}")
+    _require_positive_lambda(lam)
     sign = [-1.0 if flag else 1.0 for flag in inhibitory]
-    system = [
-        [sign[i] * (gram[i][j] + (lam if i == j else 0.0)) * sign[j] for j in range(N_NEURONS)]
-        for i in range(N_NEURONS)
-    ]
+    system = _signed_ridge_system(gram, lam, sign)
     weights = [[0.0] * N_HEADS for _ in range(N_NEURONS)]
     for h in range(N_HEADS):
         u = nnls(system, [sign[i] * rhs[i][h] for i in range(N_NEURONS)])
@@ -385,20 +474,53 @@ def fit_dale_readout(
     return weights
 
 
+def _require_positive_lambda(lam: float) -> None:
+    if lam <= 0.0 or not math.isfinite(lam):
+        raise ParseError(f"readout fit: lambda must be positive, got {lam!r}")
+
+
+def _signed_ridge_system(
+    gram: list[list[float]], lam: float, sign: list[float]
+) -> list[list[float]]:
+    """``D (G + lam I) D`` for the sign vector ``D = diag(sign)``."""
+    return [
+        [sign[i] * (gram[i][j] + (lam if i == j else 0.0)) * sign[j] for j in range(N_NEURONS)]
+        for i in range(N_NEURONS)
+    ]
+
+
 def flatten_readout(weights: list[list[float]]) -> list[float]:
     return [weights[i][h] for i in range(N_NEURONS) for h in range(N_HEADS)]
 
 
 def sign_census(weights: list[list[float]], inhibitory: Sequence[bool]) -> dict:
     """How the fitted head sits against outgoing Dale; zeros are allowed."""
-    e_neg = sum(1 for i in range(N_NEURONS) if not inhibitory[i] for w in weights[i] if w < 0.0)
-    i_pos = sum(1 for i in range(N_NEURONS) if inhibitory[i] for w in weights[i] if w > 0.0)
-    zero = sum(1 for row in weights for w in row if w == 0.0)
+    e_neg = _count_side(weights, inhibitory, False, lambda w: w < 0.0)
+    i_pos = _count_side(weights, inhibitory, True, lambda w: w > 0.0)
+    # Truthiness is the exact-zero test (see ``_solve``): a literal float
+    # equality is the same test but trips python:S1244.
+    zero = sum(1 for row in weights for w in row if not w)
     return {
         "dale_violations": e_neg + i_pos,
         "zero_weights": zero,
         "nonzero_weights": N_NEURONS * N_HEADS - zero,
     }
+
+
+def _count_side(
+    weights: list[list[float]],
+    inhibitory: Sequence[bool],
+    side: bool,
+    violates: Callable[[float], bool],
+) -> int:
+    """Weights on the ``side`` (inhibitory or not) rows for which ``violates`` holds."""
+    return sum(
+        1
+        for i in range(N_NEURONS)
+        if bool(inhibitory[i]) == side
+        for w in weights[i]
+        if violates(w)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -449,12 +571,7 @@ def metrics_from_predictions(
     abs_sum = [0.0] * N_HEADS
     sq_sum = [0.0] * N_HEADS
     for span in spans:
-        session_abs = [0.0] * N_HEADS
-        for t in range(span.start, span.stop):
-            for h in range(N_HEADS):
-                err = predictions[t][h] - targets[t][h]
-                session_abs[h] += abs(err)
-                sq_sum[h] += err * err
+        session_abs = _session_abs_errors(predictions, targets, span, sq_sum)
         n = span.stop - span.start
         per_session[span.session] = {
             "n_ticks": n,
@@ -462,7 +579,29 @@ def metrics_from_predictions(
         }
         for h in range(N_HEADS):
             abs_sum[h] += session_abs[h]
-    total = len(targets)
+    return _metrics_summary(per_session, abs_sum, sq_sum, len(targets))
+
+
+def _session_abs_errors(
+    predictions: Sequence[Sequence[float]],
+    targets: Sequence[Target],
+    span: Span,
+    sq_sum: list[float],
+) -> list[float]:
+    """Sum of |error| per head over one session; squared errors accumulate
+    into ``sq_sum`` in the same tick-then-head order."""
+    session_abs = [0.0] * N_HEADS
+    for t in range(span.start, span.stop):
+        for h in range(N_HEADS):
+            err = predictions[t][h] - targets[t][h]
+            session_abs[h] += abs(err)
+            sq_sum[h] += err * err
+    return session_abs
+
+
+def _metrics_summary(
+    per_session: dict[str, dict], abs_sum: list[float], sq_sum: list[float], total: int
+) -> dict:
     weighted = [
         math.fsum(row["mae"][h] for row in per_session.values()) / len(per_session)
         for h in range(N_HEADS)
@@ -490,6 +629,8 @@ def decision_agreement(
     """Fraction of ticks on which two arm/readout pairs pick the same head."""
     if len(masks_a) != len(masks_b):
         raise ParseError("decision agreement needs equal-length traces")
+    if not masks_a:
+        raise ParseError("NOTHING WAS MEASURED: decision agreement over 0 ticks")
     same = sum(
         1
         for a, b in zip(masks_a, masks_b, strict=True)
@@ -509,6 +650,10 @@ def target_argmax(target: Sequence[float]) -> int:
 def target_argmax_agreement(
     masks: Sequence[int], scorer: ReadoutScorer, targets: Sequence[Target]
 ) -> float:
+    if len(masks) != len(targets):
+        raise ParseError(f"{len(masks)} masks but {len(targets)} targets")
+    if not masks:
+        raise ParseError("NOTHING WAS MEASURED: target agreement over 0 ticks")
     same = sum(
         1
         for mask, target in zip(masks, targets, strict=True)
@@ -524,6 +669,8 @@ def target_argmax_agreement(
 
 def constant_predictor(train_targets: Sequence[Target]) -> list[float]:
     n = len(train_targets)
+    if n == 0:
+        raise ParseError("NOTHING WAS MEASURED: constant baseline over 0 train ticks")
     return [math.fsum(t[h] for t in train_targets) / n for h in range(N_HEADS)]
 
 
@@ -551,17 +698,27 @@ def fit_linear_inputs(
     gram = [[0.0] * width for _ in range(width)]
     rhs = [[0.0] * N_HEADS for _ in range(width)]
     for sample, target in zip(samples, targets, strict=True):
-        x = input_features(sample)
-        for i in range(width):
-            for j in range(width):
-                gram[i][j] += x[i] * x[j]
-            for h in range(N_HEADS):
-                rhs[i][h] += x[i] * target[h]
+        _accumulate_normal(gram, rhs, input_features(sample), target, width)
     for i in range(width - 1):  # the bias term is not penalized
         gram[i][i] += lam
     return [
         _solve(gram, [rhs[i][h] for i in range(width)]) for h in range(N_HEADS)
     ]
+
+
+def _accumulate_normal(
+    gram: list[list[float]],
+    rhs: list[list[float]],
+    x: list[float],
+    target: Target,
+    width: int,
+) -> None:
+    """Add one sample's outer products to ``X^T X`` and ``X^T Y`` in place."""
+    for i in range(width):
+        for j in range(width):
+            gram[i][j] += x[i] * x[j]
+        for h in range(N_HEADS):
+            rhs[i][h] += x[i] * target[h]
 
 
 def linear_predictions(
@@ -588,19 +745,41 @@ def select_by_val(candidates: dict, key: Callable[[dict], float]) -> object:
     return min(sorted(candidates), key=lambda name: key(candidates[name]))
 
 
+def relative_change(delta: float, reference: float) -> float | None:
+    """``delta / reference``, or ``None`` when no finite ratio exists.
+
+    A reference error of exactly zero makes any nonzero delta an unbounded
+    change; reporting it as ``0.0`` would let a regression pass the per-head
+    limit, so it is ``None`` (JSON ``null``) and never counts as within limit.
+    Zero against zero is a genuine ``0.0``.
+    """
+    if reference > 0.0:
+        return delta / reference
+    return None if delta else 0.0
+
+
+def fmt_ratio(value: float | None) -> str:
+    """``+9.48%`` style, or a plain word when the ratio is undefined."""
+    return "undefined (reference error is 0)" if value is None else f"{value:+.2%}"
+
+
 def promising(candidate_test: dict, reference_test: dict) -> dict:
     """The predeclared verdict against the refit feed-forward reference."""
     ref = reference_test["primary"]
     cand = candidate_test["primary"]
-    improvement = (ref - cand) / ref if ref > 0.0 else 0.0
-    degradations = []
-    for h in range(N_HEADS):
-        r = reference_test["session_weighted_mae"][h]
-        c = candidate_test["session_weighted_mae"][h]
-        degradations.append((c - r) / r if r > 0.0 else 0.0)
-    worst = max(degradations)
+    improvement = relative_change(ref - cand, ref)
+    degradations = [
+        relative_change(
+            candidate_test["session_weighted_mae"][h] - reference_test["session_weighted_mae"][h],
+            reference_test["session_weighted_mae"][h],
+        )
+        for h in range(N_HEADS)
+    ]
+    worst = None if any(d is None for d in degradations) else max(degradations)
     verdict = (
-        improvement >= PROMISING_MIN_IMPROVEMENT
+        improvement is not None
+        and improvement >= PROMISING_MIN_IMPROVEMENT
+        and worst is not None
         and worst <= PROMISING_MAX_DEGRADATION
     )
     return {

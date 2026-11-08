@@ -38,7 +38,7 @@ Run fmt and clippy before committing. Never pass `--all-features` (enables `myel
 - `src/lib.rs`: crate root. `model.rs` + `mem.rs` + `json.rs` load the `merged_v2` bank; `graph.rs` builds the NIR graph.
 - `src/stim.rs`, `src/encode.rs`: live exp-025 front end (`LiveStimAdapter`) and the deprecated `TelemetryEncoder` channel map.
 - `src/decision.rs`, `src/decision_helpers.rs`: output-row decision contract (argmax, fail-closed).
-- `tools/recurrent_lif.py`: the `spikenaut.recurrence.v1` contract (I->E lateral inhibition, one-tick delay, per-session state) and its checkpoint block; `tools/replay_core.py` replays it when a checkpoint declares it. `tools/recurrence_core.py` / `recurrence_eval.py` / `recurrence_bundle.py` run the exp-026 comparison and emit `dataset/merged_v2_rec_v1/`.
+- `tools/recurrent_lif.py`: the `spikenaut.recurrence.v1` contract (I->E lateral inhibition, one-tick delay, per-session state) and its checkpoint block; `tools/replay_core.py` replays it when a checkpoint declares it. `tools/recurrence_core.py` / `recurrence_eval.py` / `recurrence_bundle.py` / `recurrence_documents.py` run the exp-026 comparison and emit `dataset/merged_v2_rec_v1/`.
 - `src/silicon.rs`, `src/kinetic.rs`, `src/critic.rs`, `src/wiring.rs`, `src/ipc.rs`, `src/neuromod_host.rs`: thin glue over the published sibling crates.
 - `src/training.rs` (feature `training`), `src/myelin.rs` (feature `myelin`).
 - `dataset/merged_v2/` + `config.json`: the shipped bank; `tools/*.py` verify it. Python mirrors of Rust logic live in `tools/*_core.py`.

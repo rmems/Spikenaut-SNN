@@ -43,24 +43,24 @@ Run from anywhere::
 from __future__ import annotations
 
 import argparse
-import platform
+import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 try:  # package import: `python3 -m tools.recurrence_eval`
     from .decision_core import DecisionError
     from .hamming_banks import bank_from_model, model_from_bytes
-    from .hamming_const import FROZEN_LINEAGE, FROZEN_MINMAX, LIVE_COLUMNS
     from .hamming_encode import Sample, parse_jsonl_text, select_samples
     from .model_bank import AttestedEntry, BankError, ModelBank, load_model_bank
     from .q88_core import ParseError
-    from .recurrence_bundle import EXPERIMENT_ID, render_report, write_bundle
+    from .recurrence_bundle import render_report, write_bundle
     from .recurrence_core import (
         GAINS_DEFAULT,
         LAMBDA_GRID,
-        PRIMARY_DEFINITION,
         READOUT_FIT_METHOD,
+        SPLITS,
         ReadoutScorer,
         Span,
         activity,
@@ -69,6 +69,7 @@ try:  # package import: `python3 -m tools.recurrence_eval`
         fit_dale_readout,
         fit_linear_inputs,
         flatten_readout,
+        fmt_ratio,
         linear_predictions,
         metrics_from_predictions,
         normal_equations,
@@ -84,11 +85,8 @@ try:  # package import: `python3 -m tools.recurrence_eval`
         target_argmax_agreement,
         targets_for,
     )
+    from .recurrence_documents import comparison_json, provenance_json, timing_json
     from .recurrent_lif import (
-        ORDER_SEMANTICS,
-        RECURRENCE_DELAY_TICKS,
-        RECURRENCE_SCHEMA,
-        STATE_SEMANTICS,
         Recurrence,
         dale_flags,
         describe_recurrence,
@@ -99,7 +97,6 @@ try:  # package import: `python3 -m tools.recurrence_eval`
         REPO_ROOT,
         default_i_drive,
         default_k,
-        git_revision,
         manifest_json,
         model_on_numeric_grid,
         readout_from_model,
@@ -108,16 +105,15 @@ try:  # package import: `python3 -m tools.recurrence_eval`
 except ImportError:  # direct script: `python3 tools/recurrence_eval.py`
     from decision_core import DecisionError
     from hamming_banks import bank_from_model, model_from_bytes
-    from hamming_const import FROZEN_LINEAGE, FROZEN_MINMAX, LIVE_COLUMNS
     from hamming_encode import Sample, parse_jsonl_text, select_samples
     from model_bank import AttestedEntry, BankError, ModelBank, load_model_bank
     from q88_core import ParseError
-    from recurrence_bundle import EXPERIMENT_ID, render_report, write_bundle
+    from recurrence_bundle import render_report, write_bundle
     from recurrence_core import (
         GAINS_DEFAULT,
         LAMBDA_GRID,
-        PRIMARY_DEFINITION,
         READOUT_FIT_METHOD,
+        SPLITS,
         ReadoutScorer,
         Span,
         activity,
@@ -126,6 +122,7 @@ except ImportError:  # direct script: `python3 tools/recurrence_eval.py`
         fit_dale_readout,
         fit_linear_inputs,
         flatten_readout,
+        fmt_ratio,
         linear_predictions,
         metrics_from_predictions,
         normal_equations,
@@ -141,11 +138,8 @@ except ImportError:  # direct script: `python3 tools/recurrence_eval.py`
         target_argmax_agreement,
         targets_for,
     )
+    from recurrence_documents import comparison_json, provenance_json, timing_json
     from recurrent_lif import (
-        ORDER_SEMANTICS,
-        RECURRENCE_DELAY_TICKS,
-        RECURRENCE_SCHEMA,
-        STATE_SEMANTICS,
         Recurrence,
         dale_flags,
         describe_recurrence,
@@ -156,18 +150,15 @@ except ImportError:  # direct script: `python3 tools/recurrence_eval.py`
         REPO_ROOT,
         default_i_drive,
         default_k,
-        git_revision,
         manifest_json,
         model_on_numeric_grid,
         readout_from_model,
     )
     from replay_inputs import select_entry, sha256_bytes
 
-COMPARISON_SCHEMA = "spikenaut.recurrence-comparison.v1"
 FIXTURE_JSONL = REPO_ROOT / "tools" / "fixtures" / "recurrence" / "telemetry.jsonl"
 SHIPPED_MANIFEST = REPO_ROOT / "dataset" / "merged_v2" / "model_bank.json"
 DEFAULT_VARIANT_ID = "merged_v2_rec_v1"
-SPLITS = ("train", "val", "test")
 _K_UNSET = object()
 
 
@@ -176,18 +167,13 @@ _K_UNSET = object()
 # ---------------------------------------------------------------------------
 
 
-def _display_path(path: Path) -> str:
-    try:
-        return path.resolve().relative_to(REPO_ROOT).as_posix()
-    except ValueError:
-        return path.as_posix()
-
-
 def _read_bytes(path: Path) -> bytes:
+    # NOSONAR pythonsecurity:S8707 -- --jsonl is the tool's explicit
+    # user-chosen input, as for replay_frozen's inputs.
     if not path.is_file():
         raise ParseError(f"missing file: {path}")
     try:
-        return path.read_bytes()
+        return path.read_bytes()  # NOSONAR
     except OSError as exc:
         raise ParseError(f"unreadable file {path}: {exc}") from exc
 
@@ -225,39 +211,63 @@ def prepare_base(entry: AttestedEntry) -> tuple[dict, dict]:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class AttestedBase:
+    """The attested feed-forward checkpoint every arm derives from."""
+
+    bank: ModelBank
+    entry: AttestedEntry
+    raw: dict
+    grid: dict
+
+
+@dataclass(frozen=True)
+class EvalInput:
+    """The encoded splits of one JSONL input, its digest and its label."""
+
+    splits: dict[str, list[Sample]]
+    sha256: str
+    jsonl: Path
+    label: str | None = None
+
+    def __post_init__(self) -> None:
+        # Stepping, timing and scoring divide by every split's tick count.
+        for split in SPLITS:
+            require_split(self.splits.get(split, []), split)
+
+
+@dataclass(frozen=True)
+class Protocol:
+    """K-WTA, I-drive and the recurrent gains to compare."""
+
+    k: int | None
+    i_drive: float
+    gains: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        if not self.gains:
+            raise ParseError("the comparison needs at least one recurrent gain")
+
+
 class Comparison:
     """Holds the stepped traces and scored arms for one configuration."""
 
-    def __init__(
-        self,
-        *,
-        bank: ModelBank,
-        entry: AttestedEntry,
-        raw: dict,
-        grid: dict,
-        splits: dict[str, list[Sample]],
-        input_sha256: str,
-        jsonl: Path,
-        k: int | None,
-        i_drive: float,
-        gains: tuple[float, ...],
-        input_label: str | None = None,
-    ) -> None:
-        self.bank = bank
-        self.input_label = input_label
-        self.entry = entry
-        self.raw = raw
-        self.grid = grid
-        self.splits = splits
-        self.input_sha256 = input_sha256
-        self.jsonl = jsonl
-        self.k = k
-        self.i_drive = i_drive
-        self.gains = gains
-        self.flags = dale_flags(grid, entry.checkpoint_relative)
-        self.lif = bank_from_model(grid, entry.id, i_drive)
-        self.targets = {s: targets_for(splits[s]) for s in SPLITS}
-        self.spans: dict[str, list[Span]] = {s: session_spans(splits[s]) for s in SPLITS}
+    def __init__(self, base: AttestedBase, data: EvalInput, protocol: Protocol) -> None:
+        self.bank = base.bank
+        self.entry = base.entry
+        self.raw = base.raw
+        self.grid = base.grid
+        self.splits = data.splits
+        self.input_sha256 = data.sha256
+        self.jsonl = data.jsonl
+        self.input_label = data.label
+        self.k = protocol.k
+        self.i_drive = protocol.i_drive
+        self.gains = protocol.gains
+        self.flags = dale_flags(self.grid, self.entry.checkpoint_relative)
+        self.lif = bank_from_model(self.grid, self.entry.id, self.i_drive)
+        self.targets = {s: targets_for(self.splits[s]) for s in SPLITS}
+        self.spans: dict[str, list[Span]] = {s: session_spans(self.splits[s]) for s in SPLITS}
         self.traces: dict[str, dict[str, Any]] = {}
         self.recurrences: dict[str, Recurrence | None] = {}
         self.arms: dict[str, dict] = {}
@@ -428,130 +438,13 @@ class Comparison:
     # -- documents --------------------------------------------------------
 
     def comparison_document(self) -> dict:
-        entry = self.entry
-        return {
-            "schema_version": COMPARISON_SCHEMA,
-            "experiment": EXPERIMENT_ID,
-            "model": {
-                "id": entry.id,
-                "checkpoint": entry.checkpoint_relative,
-                "checkpoint_digest": entry.checkpoint_digest,
-                "feature_map_id": entry.feature_map_id,
-                "output_contract_id": entry.output_contract_id,
-                "numeric_format": entry.numeric_format,
-                "training_dataset_digest": entry.training_dataset_digest,
-                "bank_manifest": (
-                    _display_path(self.bank.manifest_path)
-                    if self.bank.manifest_path is not None else None
-                ),
-            },
-            "input": {
-                "path": (
-                    self.input_label if self.input_label is not None
-                    else _display_path(self.jsonl)
-                ),
-                "sha256": self.input_sha256,
-                "splits": {
-                    s: {
-                        "n_ticks": len(self.splits[s]),
-                        "sessions": [span.session for span in self.spans[s]],
-                    }
-                    for s in SPLITS
-                },
-                "encoder": {
-                    "kind": "analog-current, frozen minmax (not spikes)",
-                    "columns": list(LIVE_COLUMNS),
-                    "frozen_minmax_lineage": FROZEN_LINEAGE,
-                    "frozen_minmax": {k: list(v) for k, v in FROZEN_MINMAX.items()},
-                    "missing_policy": "encode-zero (missing live sensor encodes to 0)",
-                },
-            },
-            "protocol": {
-                "k": self.k,
-                "i_drive": self.i_drive,
-                "gains": list(self.gains),
-                "lambda_grid_rel": list(LAMBDA_GRID),
-                "readout_fit": READOUT_FIT_METHOD,
-                "primary": PRIMARY_DEFINITION,
-                "target": (
-                    "Distill sample_readout_target: (comfort, temp, power) with "
-                    "temp = gpu_temp_c axon, power = power_w axon, "
-                    "comfort = clamp(1 - 0.5*temp - 0.5*power, 0, 1), binary32"
-                ),
-                "stepper": (
-                    "tools/hamming_lif.py keep_lif_step on the Q8.8 grid; "
-                    "recurrent arms via tools/recurrent_lif.py recurrent_lif_step"
-                ),
-                "recurrence_contract": {
-                    "schema": RECURRENCE_SCHEMA,
-                    "delay_ticks": RECURRENCE_DELAY_TICKS,
-                    "family": "I->E lateral inhibition at one gain; E->E, E->I, I->I, self = 0",
-                    "state": STATE_SEMANTICS,
-                    "order": ORDER_SEMANTICS,
-                },
-                "session_reset": "membrane and previous-spike state reset at each episode_id boundary",
-            },
-            "arm_order": list(self.arm_order),
-            "arms": self.arms,
-            "baselines": self.baselines(),
-            "selection": self.selection(),
-            "source": git_revision(REPO_ROOT),
-        }
+        return comparison_json(self)
 
     def timing_document(self) -> dict:
-        ff = self.timing["ff"]["test"]["us_per_tick"]
-        return {
-            "note": (
-                "Wall-clock of the Python binary32 reference stepper on this host "
-                "(tools/hamming_lif.py / tools/recurrent_lif.py). Host latency only: "
-                "not FPGA latency, not a deterministic artifact, excluded from "
-                "comparison.json."
-            ),
-            "python": sys.version,
-            "platform": platform.platform(),
-            "arms": self.timing,
-            "test_split_ratio_vs_ff": {
-                name: self.timing[name]["test"]["us_per_tick"] / ff for name in self.timing
-            },
-            "structural_cost_per_tick": (
-                "feed-forward: 16x16 MAC on stim; recurrent: + up to 16x16 MAC on "
-                "s(t-1) (48 nonzero for I->E lateral inhibition) and one 16-bit "
-                "register for s(t-1); one tick of added algorithmic delay"
-            ),
-        }
+        return timing_json(self)
 
     def bundle_provenance(self, selected: str) -> dict:
-        arm = self.arms[selected]
-        train = self.spans["train"]
-        return {
-            "experiment": EXPERIMENT_ID,
-            "issue": "rmems/Spikenaut-SNN#3",
-            "derived_from": {
-                "model_id": self.entry.id,
-                "checkpoint": self.entry.checkpoint_relative,
-                "checkpoint_digest": self.entry.checkpoint_digest,
-                "unchanged_fields": [
-                    "threshold", "decay_rate", "weights", "inhibitory",
-                    "membrane_potential", "last_spike",
-                ],
-            },
-            "gain": arm["gain"],
-            "readout_fit": {
-                "method": READOUT_FIT_METHOD,
-                "lambda_rel": arm["lambda_rel"],
-                "lambda_abs": arm["lambda_abs"],
-                "k": self.k,
-                "i_drive": self.i_drive,
-                "train_sessions": f"{train[0].session}..{train[-1].session} ({len(train)} sessions)",
-                "train_ticks": len(self.splits["train"]),
-                "input_sha256": self.input_sha256,
-                "selected_on": "validation primary",
-            },
-            "status": (
-                "research variant for GH #3; not the shipped bank, not loaded by "
-                "the Rust crate, no FPGA/board evidence (silicon-hdl#76)"
-            ),
-        }
+        return provenance_json(self, selected)
 
 
 # ---------------------------------------------------------------------------
@@ -610,14 +503,35 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _write(path: Path, data: bytes) -> None:
+def _publish(out_dir: Path, files: dict[str, bytes]) -> None:
+    """Write ``files`` into ``out_dir`` as one set: stage under temp names,
+    then rename, so an interrupted run never leaves a new ``comparison.json``
+    beside a stale ``report.md`` (the ``replay_frozen`` discipline). On
+    failure the whole set is removed rather than left half-new."""
     # NOSONAR pythonsecurity:S8707 -- --out-dir is the tool's explicit
     # user-chosen destination, as for replay_frozen.
-    path.parent.mkdir(parents=True, exist_ok=True)  # NOSONAR
-    path.write_bytes(data)  # NOSONAR
+    out_dir.mkdir(parents=True, exist_ok=True)  # NOSONAR
+    staged = {name: out_dir / f"{name}.tmp" for name in files}
+    try:
+        for name, data in files.items():
+            staged[name].write_bytes(data)  # NOSONAR
+        for name in files:
+            os.replace(staged[name], out_dir / name)
+    except OSError:
+        for name in files:
+            staged[name].unlink(missing_ok=True)
+            (out_dir / name).unlink(missing_ok=True)
+        raise
 
 
 def run(args: argparse.Namespace) -> tuple[Comparison, dict]:
+    if args.emit_checkpoint is not None and (args.k is not _K_UNSET or args.i_drive is not None):
+        # The bundle keeps the base checkpoint's k_wta and I_DRIVE, and the
+        # replay steps it with those, so its readout must be fit with them.
+        raise ParseError(
+            "--emit-checkpoint fits the bundle's readout with the checkpoint's "
+            "own k_wta and I_DRIVE; drop --k and --i-drive to emit a bundle"
+        )
     manifest = args.bank_manifest if args.bank_manifest is not None else SHIPPED_MANIFEST
     jsonl = args.jsonl if args.jsonl is not None else FIXTURE_JSONL
     bank = load_model_bank(manifest)
@@ -627,9 +541,9 @@ def run(args: argparse.Namespace) -> tuple[Comparison, dict]:
     k = default_k(grid) if args.k is _K_UNSET else args.k
     i_drive = default_i_drive(grid) if args.i_drive is None else args.i_drive
     comparison = Comparison(
-        bank=bank, entry=entry, raw=raw, grid=grid, splits=splits,
-        input_sha256=input_sha256, jsonl=jsonl, k=k, i_drive=i_drive,
-        gains=args.gains, input_label=args.input_label,
+        AttestedBase(bank=bank, entry=entry, raw=raw, grid=grid),
+        EvalInput(splits=splits, sha256=input_sha256, jsonl=jsonl, label=args.input_label),
+        Protocol(k=k, i_drive=i_drive, gains=args.gains),
     )
     comparison.step_all()
     comparison.score_all()
@@ -641,9 +555,11 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
         comparison, document = run(args)
-        _write(args.out_dir / "comparison.json", manifest_json(document))
-        _write(args.out_dir / "report.md", render_report(document).encode("utf-8"))
-        _write(args.out_dir / "timing.json", manifest_json(comparison.timing_document()))
+        _publish(args.out_dir, {
+            "comparison.json": manifest_json(document),
+            "report.md": render_report(document).encode("utf-8"),
+            "timing.json": manifest_json(comparison.timing_document()),
+        })
         if args.emit_checkpoint is not None:
             selected = document["selection"]["selected_rec_arm"]
             written = write_bundle(
@@ -655,7 +571,7 @@ def main(argv: list[str] | None = None) -> int:
                 provenance=comparison.bundle_provenance(selected),
                 training_dataset_digest=comparison.input_sha256,
             )
-            _write(args.emit_checkpoint / "bundle_digests.json", manifest_json(written))
+            _publish(args.emit_checkpoint, {"bundle_digests.json": manifest_json(written)})
     except (BankError, ParseError, DecisionError) as exc:
         print(f"recurrence_eval: {exc}", file=sys.stderr)
         return 2
@@ -665,8 +581,8 @@ def main(argv: list[str] | None = None) -> int:
         f"recurrence_eval: {len(document['arm_order'])} arms on "
         f"{document['input']['splits']['test']['n_ticks']} test ticks; selected "
         f"{sel['selected_rec_arm']} (val); vs ff-refit primary "
-        f"{verdict['primary_improvement']:+.2%}, worst head "
-        f"{verdict['worst_head_degradation']:+.2%}, promising={verdict['promising']}; "
+        f"{fmt_ratio(verdict['primary_improvement'])}, worst head "
+        f"{fmt_ratio(verdict['worst_head_degradation'])}, promising={verdict['promising']}; "
         f"wrote {args.out_dir}/comparison.json + report.md + timing.json"
     )
     return 0
