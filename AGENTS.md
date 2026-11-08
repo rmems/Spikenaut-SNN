@@ -81,7 +81,7 @@ python3 tools/recurrence_eval.py
 python3 -m tools.recurrence_eval
 python3 tools/verify_model_bank.py dataset/merged_v2_rec_v1/model_bank.json --select merged_v2_rec_v1
 python3 tools/replay_frozen.py --bank-manifest dataset/merged_v2_rec_v1/model_bank.json
-python3 -m unittest tests.test_recurrence -v
+python3 -m unittest tests.test_recurrence tests.test_recurrence_variant -v
 
 julia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'
 julia --startup-file=no --project=tools/anticipation tools/anticipation/test_train.jl
