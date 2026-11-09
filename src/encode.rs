@@ -247,8 +247,8 @@ impl TelemetrySource {
     /// network's pain receptors -- a damage signal rather than ordinary
     /// telemetry -- but that is design intent, not shipped behaviour. No
     /// reward signal or thermal penalty was wired into the training that
-    /// produced `merged_v2`, and the 85 C threshold belongs to the
-    /// `thalamic-relay` peer process, not to this network.
+    /// produced `merged_v2`, and configurable thermal and power safety policy
+    /// belongs to the `vahtisiru` peer process, not to this network.
     ///
     /// Use this to decide how a *caller* escalates a reading. It is not
     /// evidence that the model responds to one.
