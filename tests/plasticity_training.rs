@@ -196,3 +196,57 @@ fn plasticity_lab_resolves_from_crates_io_at_zero_two_one() {
         "plasticity-lab must resolve to the reviewed 0.2.1 release, got:\n{entry}"
     );
 }
+
+#[test]
+fn a_completed_session_exports_its_learned_q88_parameters() {
+    let mut session = HostTrainingSession::new(99, TrainingConfig::default());
+    let initial = session.export_q8_8().unwrap();
+    assert_eq!(initial.weights, vec![32; 16 * 16]);
+
+    session.run_session(&rewarded_batch()).unwrap();
+    let trained_weights = weights(&session);
+    let image = session.export_q8_8().unwrap();
+    assert_eq!(image.metadata.num_neurons, 16);
+    assert_eq!(image.metadata.num_channels, 16);
+    assert!(image.output_weights.is_none(), "do not invent a readout");
+    assert_ne!(image.weights, initial.weights, "real drift reaches Q8.8");
+    assert_eq!(image.thresholds.len(), 16);
+    assert_eq!(image.decay_rates.len(), 16);
+
+    for (row, neuron) in session.network().neurons.iter().enumerate() {
+        assert_eq!(
+            image.thresholds[row],
+            (neuron.threshold * 256.0).trunc() as i16
+        );
+        assert_eq!(
+            image.decay_rates[row],
+            ((1.0 - neuron.decay_rate) * 256.0).trunc() as i16
+        );
+        for (column, &weight) in neuron.weights.iter().enumerate() {
+            assert_eq!(
+                image.weights[row * 16 + column],
+                (weight * 256.0).trunc() as i16
+            );
+        }
+    }
+    assert_eq!(weights(&session), trained_weights);
+    assert_eq!(session.network().global_step, 2);
+    assert_eq!(session.export_q8_8().unwrap().weights, image.weights);
+
+    // Exporting between batches must not consume RNG or alter trainer state.
+    let mut uninterrupted = HostTrainingSession::new(99, TrainingConfig::default());
+    uninterrupted.run_session(&rewarded_batch()).unwrap();
+    assert_eq!(
+        session.run_session(&rewarded_batch()).unwrap(),
+        uninterrupted.run_session(&rewarded_batch()).unwrap()
+    );
+    assert_eq!(weights(&session), weights(&uninterrupted));
+
+    session.reset();
+    assert_eq!(session.export_q8_8().unwrap().weights, initial.weights);
+    session.run_session(&rewarded_batch()).unwrap();
+    let replay = session.export_q8_8().unwrap();
+    assert_eq!(replay.weights, image.weights);
+    assert_eq!(replay.thresholds, image.thresholds);
+    assert_eq!(replay.decay_rates, image.decay_rates);
+}

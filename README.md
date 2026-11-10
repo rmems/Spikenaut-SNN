@@ -501,14 +501,28 @@ let summary = session.run_session(&[
     TrainingExample { stimuli: vec![0.0; 16], reward: 10.0 },
 ])?;
 assert!(summary.weight_drifts.iter().flatten().any(|&delta| delta != 0.0));
-# Ok::<(), spikenaut_snn::TrainerError>(())
+let image = session.export_q8_8()?;
+assert_eq!(image.weights.len(), 16 * 16);
+assert!(image.output_weights.is_none());
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 Run it with `cargo test --locked --features training`. The feature is off by
 default: this is an M3 host experiment, not a runtime for the signed exp-025
-bank. It neither exports Q8.8 nor hands a checkpoint to `silicon-bridge`, so
-the Julia Distill sidecar remains the only artifact-producing trainer until a
-separately validated parity/export path exists.
+bank. `export_q8_8()` returns an owned, checked `silicon_bridge::FpgaParameters`
+snapshot of the current learned weights and thresholds, without mutating the
+session or writing files. Weights are neuron-by-input, with no invented readout.
+Neuromod's fractional loss becomes a keep multiplier (`1 - decay_rate`).
+The published bridge rejects non-finite/out-of-range values and truncates
+`value * 256` toward zero; unlike the shipped JSON decoder, it does not round
+to the nearest grid point.
+
+This is a synthetic parameter export, not a resumable training checkpoint or a
+replacement exp-025 bank. Dynamic state and RNG are excluded. Current scaling,
+integration order, and lateral inhibition differ from the FPGA path, so neither
+Julia trainer parity nor FPGA behavior parity is claimed. The
+Julia Distill sidecar remains the established trainer for the shipped artifacts, and nothing
+in `dataset/merged_v2/` is overwritten.
 
 ## Training provenance
 
@@ -610,7 +624,7 @@ Spikenaut-SNN is a weights and model repository that now also carries a thin Rus
 | [`synaptic-wiring`](https://crates.io/crates/synaptic-wiring) 0.3.0 | Deterministic topology, Dale polarity, delayed propagation | **Declared** from crates.io — parallel 16-neuron 12:4 recurrent proposal only; it does not reinterpret the shipped dense input matrix or change `.mem` layout — [#16](https://github.com/rmems/Spikenaut-SNN/issues/16) |
 | [`corpus-ipc`](https://crates.io/crates/corpus-ipc) 0.1.0 | Versioned stimulus, spike, and modulator wire messages | **Declared** from crates.io with transport features disabled — validated typed JSON only; no ZMQ/server, and no invented mapping between the two crates' different modulator vocabularies |
 | [`silicon-bridge`](https://crates.io/crates/silicon-bridge) 0.3.0 | Checked signed Q8.8 `.mem` export | **Declared** from crates.io with default features disabled — `export_shipped_fpga_image` rejects invalid shapes/ranges, preserves signed hidden and readout words, and explicitly adapts KxN exporter order to NxK silicon-hdl order; all four vault images match byte-for-byte. The UART feature stays disabled, and this does not prove live UART or FPGA parity — [#15](https://github.com/rmems/Spikenaut-SNN/issues/15) |
-| [`plasticity-lab`](https://crates.io/crates/plasticity-lab) 0.2.1 | Reproducible reward-modulated training sessions | **Declared** from crates.io as optional feature `training` — `HostTrainingSession` uses the synthetic seeded `HostNetwork` shape on neuromod 0.6 (the published trainer cannot accept the 0.7 `HostNetwork` engine), proves real in-memory weight deltas, and does not export or overwrite exp-025 artifacts — [#17](https://github.com/rmems/Spikenaut-SNN/issues/17) |
+| [`plasticity-lab`](https://crates.io/crates/plasticity-lab) 0.2.1 | Reproducible reward-modulated training sessions | **Declared** from crates.io as optional feature `training` — `HostTrainingSession` uses the synthetic seeded `HostNetwork` shape on neuromod 0.6 (the published trainer cannot accept the 0.7 `HostNetwork` engine), proves real weight deltas, and exports checked Q8.8 parameters through `silicon-bridge` without overwriting exp-025 artifacts or claiming parity — [#17](https://github.com/rmems/Spikenaut-SNN/issues/17) |
 | [`myelin-accelerator`](https://crates.io/crates/myelin-accelerator) 0.2.0 | Rust/CUDA compute layer (Poisson, STDP, ternary GEMV/GEMM) | **Declared** from crates.io as optional features `myelin` (CPU-safe stub, no toolkit/GPU) / `myelin-cuda` (forwards to the published `cuda` feature) — pinned `=0.2.0`; raw LIF symbols need direct `cust` launches and stay out of scope — [#73](https://github.com/rmems/Spikenaut-SNN/issues/73) |
 | `brainstem-daemon` | 1 kHz headless inference host | **Peer process, not a dependency** — [#11](https://github.com/rmems/Spikenaut-SNN/issues/11) |
 | [`vahtisiru`](https://github.com/rmems/vahtisiru) | NVML supervisor (formerly `thalamic-relay`); configurable `--safety-*` brakes — operator defaults 75/85 °C warn/critical and power warn/critical at 85%/100% of NVML's device default limit unless both watt overrides are set | **Peer process, not a dependency** — [#12](https://github.com/rmems/Spikenaut-SNN/issues/12) |
