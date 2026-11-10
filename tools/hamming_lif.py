@@ -151,16 +151,43 @@ def _weighted_input(bank: LifBank, stim: list[float]) -> list[float]:
     return inputs
 
 
-def keep_lif_step(bank: LifBank, stim: list[float], k: int | None) -> list[bool]:
+def _with_feedback(inputs: list[float], feedback: list[float]) -> list[float]:
+    """Add a per-neuron recurrent current, f32-snapped (``recurrent_lif``).
+
+    Only a caller that passes ``feedback`` reaches this; the default
+    ``None`` leaves the feed-forward path byte-identical. A wrong width or
+    a non-finite current is a contract error, not something to skip.
+    """
+    if len(feedback) != N_NEURONS:
+        raise ParseError(
+            f"feedback width {len(feedback)}, expected {N_NEURONS}"
+        )
+    return [f32(acc + f32(fb)) for acc, fb in zip(inputs, feedback, strict=True)]
+
+
+def keep_lif_step(
+    bank: LifBank,
+    stim: list[float],
+    k: int | None,
+    *,
+    feedback: list[float] | None = None,
+) -> list[bool]:
     """Advance one keep-LIF tick. Used only by this harness.
 
     ``stim`` is the 16-wide analog encoder output. Poisson pre-spikes exist
     in Distill only for STDP; ``learn=false`` (this measurement) injects
     analog current ``W @ stim``.
+
+    ``feedback`` is the optional recurrent current ``R @ s(t-1)`` of the
+    ``spikenaut.recurrence.v1`` variant (``tools/recurrent_lif.py``); it is
+    added after ``W @ stim`` and the Dale I bias. Every existing caller
+    leaves it ``None`` and gets the exp-025 feed-forward step unchanged.
     """
     if len(stim) != N_INPUTS:
         raise ParseError(f"stimulus width {len(stim)}, expected {N_INPUTS}")
     inputs = _weighted_input(bank, stim)
+    if feedback is not None:
+        inputs = _with_feedback(inputs, feedback)
     for n in range(N_NEURONS):
         bank.v[n] = f32(f32(bank.decay[n] * bank.v[n]) + inputs[n])
     spikes = [bank.v[n] >= bank.threshold[n] for n in range(N_NEURONS)]

@@ -53,6 +53,9 @@ docs/reseach/
 # Default tools/replay_frozen.py output (untracked so reruns stay deterministic)
 /replay_out/
 
+# Default tools/recurrence_eval.py output (same reason)
+/recurrence_out/
+
 # GitHub Actions runner
 /actions-runner/
 

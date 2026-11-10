@@ -1,0 +1,9 @@
+{
+  "model_bank.json": "sha256:b0312805a1a1644c8083dc496f6ec1698a3f4d81e5be722ab6470127b77f6010",
+  "parameters.mem": "sha256:2aff910820757f7015f7097dae0aa00f631fc49d2a5df912b35ba92e309f7a70",
+  "parameters_decay.mem": "sha256:bbb575d31ebd5e0386037c3421d17212b3645522f4e64d02272bb5d6abc0610d",
+  "parameters_output_weights.mem": "sha256:b84d315bca98f4c6d45e3502b7c14c63a7028064f7fdd076af1a6242d6e3bdcf",
+  "parameters_recurrent_weights.mem": "sha256:0cb0ea3c0c241a8b6a34a0bbf7e07d0d7cf354eafb37b564f8b24c429d276e63",
+  "parameters_weights.mem": "sha256:825969873444d215d09920e69592700a2cc8594d92e7b14c4059eef8919fe4f3",
+  "snn_model.json": "sha256:3f33923f881bc9d8c9f2ad92e234d9233685720e425dfa2c3a6db491bd46d51b"
+}

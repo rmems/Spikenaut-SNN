@@ -70,6 +70,13 @@ try:  # package import: `python3 -m tools.replay_frozen`
     from .hamming_encode import Sample
     from .hamming_lif import LifBank, keep_lif_step
     from .model_bank import AttestedEntry, ModelBank
+    from .recurrent_lif import (
+        Recurrence,
+        RecurrentState,
+        describe_recurrence,
+        recurrence_from_model,
+        recurrent_lif_step,
+    )
     from .replay_inputs import sha256_bytes
     from .q88_core import (
         ParseError,
@@ -99,6 +106,13 @@ except ImportError:  # direct script: `python3 tools/replay_frozen.py`
     from hamming_encode import Sample
     from hamming_lif import LifBank, keep_lif_step
     from model_bank import AttestedEntry, ModelBank
+    from recurrent_lif import (
+        Recurrence,
+        RecurrentState,
+        describe_recurrence,
+        recurrence_from_model,
+        recurrent_lif_step,
+    )
     from replay_inputs import sha256_bytes
     from q88_core import (
         ParseError,
@@ -168,6 +182,9 @@ class ReplayResult:
     steps_per_session: dict[str, int]
     missing_counts: dict[str, int]
     spikes_fired: int
+    # The checkpoint's validated recurrence block, or None for the
+    # feed-forward exp-025 step. Recorded on the manifest either way.
+    recurrence: Recurrence | None = None
 
 
 def _require_missing_policy(policy: str) -> None:
@@ -215,8 +232,11 @@ def replay(
         entry.numeric_format,
         entry.checkpoint_relative,
     )
+    recurrence = recurrence_from_model(model, entry.checkpoint_relative)
     bank = bank_from_model(model, entry.id, config.i_drive)
-    return _run_steps(bank, readout_from_model(model), samples, config)
+    return _run_steps(
+        bank, readout_from_model(model), samples, config, recurrence
+    )
 
 
 def _q88(value: Any, where: str) -> float:
@@ -272,23 +292,37 @@ def _run_steps(
     readout: list[float],
     samples: list[Sample],
     config: ReplayConfig,
+    recurrence: Recurrence | None = None,
 ) -> ReplayResult:
-    """The stepping loop: one trace row per sample, reset per session."""
+    """The stepping loop: one trace row per sample, reset per session.
+
+    With a ``recurrence`` block the step is ``recurrent_lif_step`` and the
+    previous-spike state resets with the membrane at every session
+    boundary; without one it is the unchanged feed-forward reference.
+    """
     rows: list[dict] = []
     sessions: list[str] = []
     steps_per_session: dict[str, int] = {}
     missing_counts: dict[str, int] = dict.fromkeys(LIVE_COLUMNS, 0)
     fired_total = 0
     prev: str | None = None
+    state = RecurrentState() if recurrence is not None else None
     bank.reset()
     for step, sample in enumerate(samples):
         if sample.episode_id != prev:
             bank.reset()
+            if state is not None:
+                state.reset()
             prev = sample.episode_id
             sessions.append(sample.episode_id)
             steps_per_session[sample.episode_id] = 0
         steps_per_session[sample.episode_id] += 1
-        spikes = keep_lif_step(bank, list(sample.stim), config.k)
+        if recurrence is None:
+            spikes = keep_lif_step(bank, list(sample.stim), config.k)
+        else:
+            spikes = recurrent_lif_step(
+                bank, list(sample.stim), config.k, recurrence, state
+            )
         scores = score_readout(readout, spikes)
         fired_total += sum(1 for s in spikes if s)
         for column in sample.missing:
@@ -311,6 +345,7 @@ def _run_steps(
         steps_per_session=steps_per_session,
         missing_counts=missing_counts,
         spikes_fired=fired_total,
+        recurrence=recurrence,
     )
 
 
@@ -437,6 +472,9 @@ def build_manifest(
             "i_drive": config.i_drive,
             "n_neurons": N_NEURONS,
             "session_reset": "LifBank.reset() at each episode_id boundary",
+            # None: feed-forward exp-025 step. Otherwise the checkpoint's
+            # spikenaut.recurrence.v1 block as replayed (tools/recurrent_lif.py).
+            "recurrence": describe_recurrence(result.recurrence),
         },
         "output": {
             "vocabulary": list(SHIPPED_VOCABULARY),

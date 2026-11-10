@@ -16,12 +16,13 @@ not a validated supervisor**, and FPGA parity is unproven. Don't claim otherwise
 |------|----------|
 | `src/` | Rust crate: model, encoding/stim, decision contract, NIR graph, IPC, Q8.8 memory, kinetic/silicon/neuromod glue, `training` |
 | `dataset/merged_v2/` | Shipped model bank: Q8.8 `.mem` parameter files, `snn_model.json`, `model_bank.json` |
+| `dataset/merged_v2_rec_v1/` | exp-026 research variant (GH #3): the shipped hidden parameters plus a `spikenaut.recurrence.v1` I->E lateral-inhibition block and a refit readout. Not the shipped bank; not loaded by the crate; regenerate only with `tools/recurrence_eval.py --emit-checkpoint` on the recorded input |
 | `config.json` | Machine-readable model header |
 | `tools/*.py` | Python verification tools (stdlib only): Q8.8 verifier, Hamming measurement, model-bank attestation, model-card check, parity and replay tools |
 | `tools/anticipation/` | Anticipation campaign (Python + Julia). `requirements-test.txt` pins CI tests (NumPy, pytest; not PyTorch or Matplotlib). Acquisition needs CUDA PyTorch; plots need Matplotlib |
 | `tests/` | Rust integration tests (`*.rs`, run by `cargo test`) and Python tests (pytest/unittest, `test_*.py` plus `model_bank_review_cases.py`, see `pytest.ini`) |
 | `examples/` | `myelin_timing.rs`; needs the `myelin-cuda` feature (GPU only, not built in CI) |
-| `docs/` | `anticipation/` campaign docs, `MYELIN_COMPATIBILITY.md`, `superpowers/plans/` |
+| `docs/` | `anticipation/` campaign docs, `recurrence/` (exp-026 comparison report and `comparison.json`), `MYELIN_COMPATIBILITY.md`, `superpowers/plans/` |
 
 ## Toolchain
 
@@ -48,7 +49,7 @@ cargo check --locked --no-default-features
 cargo test --locked --features myelin,training
 RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps --features myelin,training
 
-# Python: script and `python3 -m` where CI runs both. check_model_card.py is script-only; replay_frozen.py has no --self-test.
+# Python: script and `python3 -m` where CI runs both. check_model_card.py is script-only; replay_frozen.py and recurrence_eval.py have no --self-test.
 python3 tools/verify_q88.py
 python3 -m tools.verify_q88
 python3 tools/verify_q88.py --self-test
@@ -76,6 +77,11 @@ python3 -m unittest tests.model_bank_review_cases -v
 python3 tools/replay_frozen.py
 python3 -m tools.replay_frozen
 python3 -m unittest tests.test_replay_frozen -v
+python3 tools/recurrence_eval.py
+python3 -m tools.recurrence_eval
+python3 tools/verify_model_bank.py dataset/merged_v2_rec_v1/model_bank.json --select merged_v2_rec_v1
+python3 tools/replay_frozen.py --bank-manifest dataset/merged_v2_rec_v1/model_bank.json
+python3 -m unittest tests.test_recurrence tests.test_recurrence_variant -v
 
 julia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'
 julia --startup-file=no --project=tools/anticipation tools/anticipation/test_train.jl

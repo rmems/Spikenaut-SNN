@@ -25,6 +25,7 @@ from pathlib import Path
 try:  # package import
     from .hamming_imports import (
         CONDITION_EXP024,
+        CONDITION_SHIPPED,
         FIXTURE_DIR,
         KResult,
         LifBank,
@@ -49,6 +50,7 @@ try:  # package import
 except ImportError:
     from hamming_imports import (
         CONDITION_EXP024,
+        CONDITION_SHIPPED,
         FIXTURE_DIR,
         KResult,
         LifBank,
@@ -81,9 +83,9 @@ def _require(condition: bool, message: str) -> None:
 
 _require.calls = 0
 
-SELF_TEST_SECTIONS = 17
-EXPECTED_REQUIRE_CALLS = 38
-EXPECTED_GUARD_CHECKS = 12
+SELF_TEST_SECTIONS = 18
+EXPECTED_REQUIRE_CALLS = 39
+EXPECTED_GUARD_CHECKS = 13
 
 
 def _v3_row(episode: str, mem_util: float = 75.0, temp: float = 0.0) -> dict:
@@ -520,6 +522,29 @@ def exp024_delta_suppressed_for_partial_holdout(stream) -> int:
     return 3
 
 
+def recurrent_checkpoint_refused_feed_forward(stream) -> int:
+    """18 -- a checkpoint that declares recurrence must never be scored
+    feed-forward with the block silently dropped (GH #3 contract)."""
+    print("18. a recurrent checkpoint is refused by the feed-forward harness", file=stream)
+    variant = SHIPPED_DIR.parent / "merged_v2_rec_v1"
+    try:
+        measure(
+            float_json=variant / "snn_model.json",
+            mem_dir=variant,
+            jsonl=FIXTURE_DIR / "holdout.jsonl",
+            split="all",
+            condition=CONDITION_SHIPPED,
+            seed="n/a",
+            i_drive=0.05,
+            weights_label="must be refused",
+        )
+    except ParseError as exc:
+        _require("recurrence" in str(exc), f"wrong error: {exc}")
+    else:
+        raise SelfTestFailure("the Hamming harness scored a recurrent checkpoint feed-forward")
+    return 2
+
+
 def _scenarios() -> tuple[tuple[Callable[..., int], ...], tuple[Callable[..., int], ...]]:
     standalone = (
         method_fixture_matches_pin,
@@ -535,6 +560,7 @@ def _scenarios() -> tuple[tuple[Callable[..., int], ...], tuple[Callable[..., in
         mixed_live_forbidden_refused,
         exp024_delta_suppressed_for_wrong_split,
         exp024_delta_suppressed_for_partial_holdout,
+        recurrent_checkpoint_refused_feed_forward,
     )
     tempdir = (
         empty_holdout_is_parse_error,
@@ -596,8 +622,9 @@ def self_test(stream=sys.stdout) -> bool:
         "result; keep-LIF + K-WTA unit\nvectors hold; non-finite --i-drive, "
         "malformed expect-json, overflowing live\ncolumns, mixed forbidden "
         "sensors, and unpinned custom method-fixture paths\nare refused; "
-        "exp-024 deltas stay N/A on a different holdout; and the in-repo\n"
-        "method fixture still matches its pin.",
+        "exp-024 deltas stay N/A on a different holdout; a checkpoint that\n"
+        "declares recurrence is refused; and the in-repo method fixture still\n"
+        "matches its pin.",
         file=stream,
     )
     return True

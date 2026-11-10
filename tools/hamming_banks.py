@@ -19,6 +19,7 @@ try:
         loads_json,
         parse_mem,
     )
+    from .recurrent_lif import require_feed_forward
 except ImportError:
     from hamming_const import N_INPUTS, N_NEURONS, f32
     from hamming_lif import LifBank
@@ -34,6 +35,7 @@ except ImportError:
         loads_json,
         parse_mem,
     )
+    from recurrent_lif import require_feed_forward
 
 
 def _require_hidden_shape(
@@ -152,7 +154,14 @@ def bank_from_model(model: dict, name: str, i_drive: float) -> LifBank:
 
 
 def bank_from_json(path: Path, name: str, i_drive: float) -> tuple[LifBank, dict]:
-    model = load_model(path)
+    """Feed-forward bank from a float checkpoint file.
+
+    Refuses a checkpoint that declares ``recurrence``: this loader builds
+    the feed-forward stepper only, and the Hamming numbers it feeds would
+    otherwise be published under the recurrent model's name with the block
+    silently dropped.
+    """
+    model = require_feed_forward(load_model(path), path.name)
     return bank_from_model(model, name, i_drive), model
 
 

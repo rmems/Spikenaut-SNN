@@ -192,6 +192,20 @@ jobs:
           python3 -m tools.replay_frozen
           python3 -m unittest tests.test_replay_frozen -v
 
+      # Recurrence comparison (GH #3 / exp-026). Steps the feed-forward bank
+      # and the I->E lateral-inhibition variant on the committed synthetic
+      # fixture, refits Dale-constrained readouts and writes a deterministic
+      # comparison into the gitignored recurrence_out/. The recorded run on
+      # the Hub v3 shards lives in docs/recurrence/; the separately named
+      # variant bundle must attest and replay recurrently.
+      - name: Compare the recurrent variant on the method fixture
+        run: |
+          python3 tools/recurrence_eval.py
+          python3 -m tools.recurrence_eval
+          python3 tools/verify_model_bank.py dataset/merged_v2_rec_v1/model_bank.json --select merged_v2_rec_v1
+          python3 tools/replay_frozen.py --bank-manifest dataset/merged_v2_rec_v1/model_bank.json
+          python3 -m unittest tests.test_recurrence tests.test_recurrence_variant -v
+
   anticipation-julia:
     name: Anticipation Julia
     runs-on: ubuntu-latest
