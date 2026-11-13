@@ -77,6 +77,15 @@ fn plasticity_snapshot(session: &HostTrainingSession) -> PlasticitySnapshot {
     }
 }
 
+fn runtime_snapshot(session: &HostTrainingSession) -> (i64, Vec<i64>, Vec<f32>) {
+    let network = session.network();
+    (
+        network.global_step,
+        network.input_spike_times.clone(),
+        network.predictive_state.clone(),
+    )
+}
+
 #[test]
 fn a_seeded_session_reports_and_applies_real_weight_deltas() {
     let mut session = HostTrainingSession::new(99, TrainingConfig::default());
@@ -217,6 +226,20 @@ fn frozen_evaluation_preserves_every_plasticity_controlled_field() {
     // non-zero eligibility traces and retuned thresholds to protect.
     session.run_session(&rewarded_batch()).unwrap();
     let before = plasticity_snapshot(&session);
+    assert!(
+        before
+            .neurons
+            .iter()
+            .any(|neuron| neuron.eligibility.iter().any(|(value, _)| *value != 0.0)),
+        "training must leave non-zero eligibility traces to protect"
+    );
+    assert!(
+        before
+            .neurons
+            .iter()
+            .any(|neuron| neuron.threshold != neuron.base_threshold),
+        "training must leave retuned thresholds to protect"
+    );
     let step_before = session.network().global_step;
 
     let held_out = vec![
@@ -239,6 +262,28 @@ fn frozen_evaluation_preserves_every_plasticity_controlled_field() {
         summary.per_neuron_spikes.iter().sum::<u64>()
     );
 
+    // The held-out stimuli must drive the observation: the same trained
+    // state evaluated on quiet inputs cannot produce the same spike counts.
+    let mut quiet_reference = HostTrainingSession::new(seed, TrainingConfig::default());
+    quiet_reference.run_session(&rewarded_batch()).unwrap();
+    let quiet = vec![
+        EvaluationExample {
+            stimuli: vec![0.0; 16],
+        },
+        EvaluationExample {
+            stimuli: vec![0.0; 16],
+        },
+        EvaluationExample {
+            stimuli: vec![0.0; 16],
+        },
+    ];
+    let quiet_summary = quiet_reference.run_eval(&quiet, &modulators).unwrap();
+    assert!(
+        summary.total_spikes > quiet_summary.total_spikes,
+        "held-out stimuli must affect evaluation: {summary:?} vs {quiet_summary:?}"
+    );
+    assert_ne!(summary.per_neuron_spikes, quiet_summary.per_neuron_spikes);
+
     let after = plasticity_snapshot(&session);
     assert_eq!(
         after, before,
@@ -253,9 +298,13 @@ fn frozen_evaluation_preserves_every_plasticity_controlled_field() {
 #[test]
 fn an_invalid_eval_batch_is_atomic_and_leaves_plasticity_untouched() {
     let modulators = NeuroModulators::default();
-    let mut session = HostTrainingSession::new(0xe7a1, TrainingConfig::default());
+    let seed = 0xe7a1;
+    let mut session = HostTrainingSession::new(seed, TrainingConfig::default());
+    let mut reference = HostTrainingSession::new(seed, TrainingConfig::default());
     session.run_session(&rewarded_batch()).unwrap();
+    reference.run_session(&rewarded_batch()).unwrap();
     let before = plasticity_snapshot(&session);
+    let runtime_before = runtime_snapshot(&session);
 
     let invalid = vec![
         EvaluationExample {
@@ -271,6 +320,74 @@ fn an_invalid_eval_batch_is_atomic_and_leaves_plasticity_untouched() {
         "the later malformed example must fail eval admission: {error}"
     );
     assert_eq!(plasticity_snapshot(&session), before);
+    assert_eq!(runtime_snapshot(&session), runtime_before);
+
+    // A preflight rejection must not consume the RNG stream either: the next
+    // valid evaluation matches an untouched session exactly.
+    let held_out = vec![
+        EvaluationExample {
+            stimuli: vec![0.75; 16],
+        },
+        EvaluationExample {
+            stimuli: vec![0.25; 16],
+        },
+        EvaluationExample {
+            stimuli: vec![0.5; 16],
+        },
+    ];
+    let summary = session.run_eval(&held_out, &modulators).unwrap();
+    let reference_summary = reference.run_eval(&held_out, &modulators).unwrap();
+    assert_eq!(summary, reference_summary);
+    assert_eq!(runtime_snapshot(&session), runtime_snapshot(&reference));
+    assert_eq!(
+        plasticity_snapshot(&session),
+        plasticity_snapshot(&reference)
+    );
+}
+
+#[test]
+fn isolated_evaluation_preserves_the_training_trajectory() {
+    let seed = 0x150d;
+    let modulators = NeuroModulators::default();
+    let mut session = HostTrainingSession::new(seed, TrainingConfig::default());
+    let mut untouched = HostTrainingSession::new(seed, TrainingConfig::default());
+    let mut isolated_reference = HostTrainingSession::new(seed, TrainingConfig::default());
+    let training_batch = rewarded_batch();
+    session.run_session(&training_batch).unwrap();
+    untouched.run_session(&training_batch).unwrap();
+    isolated_reference.run_session(&training_batch).unwrap();
+    let before = plasticity_snapshot(&session);
+    let runtime_before = runtime_snapshot(&session);
+
+    let held_out = vec![
+        EvaluationExample {
+            stimuli: vec![0.75; 16],
+        },
+        EvaluationExample {
+            stimuli: vec![0.25; 16],
+        },
+        EvaluationExample {
+            stimuli: vec![0.5; 16],
+        },
+    ];
+    let isolated = session.run_eval_isolated(&held_out, &modulators).unwrap();
+    let expected = isolated_reference
+        .run_eval_isolated(&held_out, &modulators)
+        .unwrap();
+    assert_eq!(isolated, expected);
+    assert_eq!(plasticity_snapshot(&session), before);
+    assert_eq!(runtime_snapshot(&session), runtime_before);
+
+    // Continue training on both sides of the evaluation: identical summaries
+    // and weights prove the private eval did not consume network or RNG state.
+    let next_batch = vec![TrainingExample {
+        stimuli: vec![0.5; 16],
+        reward: 2.0,
+    }];
+    let session_summary = session.run_session(&next_batch).unwrap();
+    let untouched_summary = untouched.run_session(&next_batch).unwrap();
+    assert_eq!(session_summary, untouched_summary);
+    assert_eq!(weights(&session), weights(&untouched));
 }
 
 #[test]

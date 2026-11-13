@@ -13,7 +13,8 @@
 //! is claimed.
 //!
 //! The public API is the 0.3 surface: seeded sessions, frozen held-out
-//! evaluation, atomic batch admission, non-finite reward rejection, and
+//! evaluation (including an isolated variant that leaves runtime and RNG
+//! state untouched), atomic batch admission, non-finite reward rejection, and
 //! validated `RewardMapping`. The 0.3.0 release was validated here as a
 //! Git-pinned release candidate before it published (RM-1720).
 
@@ -34,6 +35,7 @@ pub struct HostTrainingSession {
     rng: StdRng,
     seed: u64,
     trainer: PlasticityTrainer,
+    isolated_eval_calls: u64,
 }
 
 impl HostTrainingSession {
@@ -49,6 +51,7 @@ impl HostTrainingSession {
             rng: StdRng::seed_from_u64(seed),
             seed,
             trainer: PlasticityTrainer::new(config),
+            isolated_eval_calls: 0,
         }
     }
 
@@ -58,8 +61,9 @@ impl HostTrainingSession {
     ///
     /// Any [`TrainerError`] from `plasticity-lab`: an empty batch, a sample
     /// that fails preflight admission, a non-finite reward, or a network
-    /// step failure. Rejected batches are atomic: neither the network nor
-    /// the RNG advances.
+    /// step failure. Batches rejected during admission are atomic: neither
+    /// the network nor the RNG advances. A step failure after admission can
+    /// leave earlier examples applied.
     pub fn run_session(
         &mut self,
         examples: &[TrainingExample],
@@ -80,8 +84,9 @@ impl HostTrainingSession {
     /// # Errors
     ///
     /// Any [`TrainerError`] from `plasticity-lab`: an empty batch, a sample
-    /// that fails preflight admission, or a frozen-step failure. Rejected
-    /// batches are atomic.
+    /// that fails preflight admission, or a frozen-step failure. Batches
+    /// rejected during admission are atomic; a frozen-step failure after
+    /// admission can leave earlier examples applied.
     pub fn run_eval(
         &mut self,
         examples: &[EvaluationExample],
@@ -89,6 +94,40 @@ impl HostTrainingSession {
     ) -> Result<EvaluationSummary, TrainerError> {
         self.trainer
             .run_eval_with_rng(&mut self.network, examples, modulators, &mut self.rng)
+    }
+
+    /// Run held-out evaluation on a private copy of the session state.
+    ///
+    /// The cloned network and a dedicated evaluation RNG derived from the
+    /// session seed are used, so neither the session network nor its training
+    /// RNG stream advances — including when evaluation fails after admission.
+    /// Use this when later training must resume from the exact pre-evaluation
+    /// state. The dedicated stream makes repeated isolated evaluations
+    /// deterministic for a given seed and successful-call order; it is not
+    /// the same RNG trajectory as [`Self::run_eval`].
+    ///
+    /// # Errors
+    ///
+    /// Any [`TrainerError`] from `plasticity-lab`, with the session left
+    /// unchanged.
+    pub fn run_eval_isolated(
+        &mut self,
+        examples: &[EvaluationExample],
+        modulators: &NeuroModulators,
+    ) -> Result<EvaluationSummary, TrainerError> {
+        let mut network = clone_network(&self.network);
+        let mut rng = StdRng::seed_from_u64(
+            self.seed
+                ^ 0x9e37_79b9_7f4a_7c15
+                ^ self.isolated_eval_calls.wrapping_mul(0x0000_0001_0000_01b3),
+        );
+        let result = self
+            .trainer
+            .run_eval_with_rng(&mut network, examples, modulators, &mut rng);
+        if result.is_ok() {
+            self.isolated_eval_calls = self.isolated_eval_calls.wrapping_add(1);
+        }
+        result
     }
 
     /// Inspect the mutable in-memory experiment after a training session.
@@ -141,6 +180,19 @@ impl HostTrainingSession {
     pub fn reset(&mut self) {
         let config = self.trainer.config;
         *self = Self::new(self.seed, config);
+    }
+}
+
+fn clone_network(network: &SpikingNetwork) -> SpikingNetwork {
+    SpikingNetwork {
+        neurons: network.neurons.clone(),
+        iz_neurons: network.iz_neurons.clone(),
+        modulators: network.modulators,
+        global_step: network.global_step,
+        num_channels: network.num_channels,
+        input_spike_times: network.input_spike_times.clone(),
+        predictive_state: network.predictive_state.clone(),
+        stdp_config: network.stdp_config,
     }
 }
 

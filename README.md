@@ -491,8 +491,10 @@ under RM-1720 before publication). `HostNetwork` and the session share the neuro
 uses one persistent RNG stream across the whole batch and returns the
 published `TrainingSummary`, including the exact per-weight deltas that were
 applied. It also exposes the 0.3 held-out evaluation (`run_eval`, frozen
-stepping that preserves weights, eligibility traces, thresholds, modulators,
-and the R-STDP config) and validated `RewardMapping` coefficients:
+stepping that preserves weights, eligibility traces, thresholds, decay
+parameters, modulators, and the R-STDP config) plus `run_eval_isolated` for a
+pass that leaves even runtime step and RNG state untouched, and validated
+`RewardMapping` coefficients:
 
 ```rust
 use spikenaut_snn::{HostTrainingSession, TrainingConfig, TrainingExample};

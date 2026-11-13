@@ -191,11 +191,12 @@ CLAIMS: tuple[Claim, ...] = (
         ),
         required=(
             "[`plasticity-lab`]",
-            # The crates.io link (not a bare "0.3.0") keeps this needle
-            # disjoint from the silicon-bridge claim's "0.3.0": the self-test
-            # strips required needles globally, so a shared substring would
-            # make one claim's break trip both.
-            "plasticity-lab`](https://crates.io/crates/plasticity-lab)",
+            # The versioned crates.io link keeps this needle disjoint from
+            # the silicon-bridge claim's "0.3.0": the self-test strips
+            # required needles globally, so a shared substring would make one
+            # claim's break trip both. The 0.3.0 pin also rejects a stale
+            # 0.2.x card that still carries the crates.io link.
+            "plasticity-lab`](https://crates.io/crates/plasticity-lab) 0.3.0",
             "optional feature `training`",
             "synthetic bank",
             "real weight deltas",
@@ -219,7 +220,10 @@ CLAIMS: tuple[Claim, ...] = (
         ),
         required=(
             "[`silicon-bridge`]",
-            "0.3.0",
+            # Keep the version attached to this crate's link: the self-test
+            # strips required needles globally, and a bare "0.3.0" would also
+            # break the plasticity-lab claim's versioned link.
+            "[`silicon-bridge`](https://crates.io/crates/silicon-bridge) 0.3.0",
             "Checked signed Q8.8",
             "**Declared** from crates.io with default features disabled",
             "adapts KxN exporter order to NxK silicon-hdl order",
