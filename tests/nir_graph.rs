@@ -749,7 +749,6 @@ fn nir_rs_resolves_from_crates_io() {
             "limbic-critic",
             "myelin-accelerator",
             "neuromod",
-            "neuromod",
             "nir-rs",
             "plasticity-lab",
             "silicon-bridge",
@@ -790,16 +789,16 @@ fn plasticity_training_remains_optional_and_off_by_default() {
         "the default feature set must stay empty",
     );
     assert!(
-        manifest.lines().any(|line| {
-            line.trim() == "training = [\"dep:plasticity-lab\", \"dep:neuromod06\"]"
-        }),
-        "the training feature must enable plasticity-lab and its neuromod 0.6 alias",
+        manifest
+            .lines()
+            .any(|line| { line.trim() == "training = [\"dep:plasticity-lab\"]" }),
+        "the training feature must enable plasticity-lab on the shared neuromod 0.7 engine",
     );
     assert!(
         manifest.lines().any(|line| {
-            line.trim() == "plasticity-lab = { version = \"0.2.1\", optional = true }"
+            line.trim() == "plasticity-lab = { version = \"0.3\", optional = true }"
         }),
-        "plasticity-lab must remain an optional 0.2.1 dependency",
+        "plasticity-lab must remain an optional 0.3 dependency",
     );
 }
 

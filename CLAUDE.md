@@ -7,8 +7,8 @@ Claude-specific notes only. Layout, toolchain, feature list, full CI command lis
 
 ## Commands
 
-Run from the repo root. "Verified" means it ran successfully in a fresh checkout on Rust 1.98.1 and Python 3.13 (Linux, CPU only).
-`rust-toolchain.toml` makes rustup install 1.98.1 on first use.
+Run from the repo root. "Verified" means it ran successfully in a fresh checkout on Rust 1.99.0 and Python 3.13 (Linux, CPU only).
+`rust-toolchain.toml` makes rustup install 1.99.0 on first use.
 
 | Command | Status |
 |---|---|

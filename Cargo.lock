@@ -428,16 +428,6 @@ dependencies = [
 
 [[package]]
 name = "neuromod"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e0a02908726636a6c0ce971df297923914a67766d497c5436facf743c68c329"
-dependencies = [
- "rand",
- "serde",
-]
-
-[[package]]
-name = "neuromod"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "24e8c6418345bd055f33bfb45d90cdb98f3caad2fd16c62b43fca6d91c1182d0"
@@ -498,11 +488,11 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "plasticity-lab"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "557c71ef72a6101f63ba7c1b845cc6b6ccdb5c2b8e1bc66149192d0eb4f6130d"
+checksum = "72f86eaaf1c5264396fccaa526e059a3435547e78d2c7220e938789d75a3a7c8"
 dependencies = [
- "neuromod 0.6.0",
+ "neuromod",
  "rand",
  "serde",
  "thiserror 2.0.20",
@@ -669,8 +659,7 @@ dependencies = [
  "kinetic-signals",
  "limbic-critic",
  "myelin-accelerator",
- "neuromod 0.6.0",
- "neuromod 0.7.0",
+ "neuromod",
  "nir-rs",
  "plasticity-lab",
  "silicon-bridge",

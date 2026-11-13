@@ -2,7 +2,7 @@
 name = "spikenaut-snn"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.99.0"
 description = "Loads the Spikenaut-SNN merged_v2 16-LIF model, builds a Neuromorphic Intermediate Representation (NIR) graph from it, and ships the live exp-025 5-column front end: LiveStimAdapter produces the analog stim vector the bank was trained on. The public TelemetryEncoder CHANNEL_MAP is a deprecated historical proposal, not that map."
 repository = "https://github.com/rmems/Spikenaut-SNN"
 license = "MIT OR Apache-2.0"
@@ -15,7 +15,7 @@ publish = false
 default = []
 myelin = ["dep:myelin-accelerator"]
 myelin-cuda = ["myelin", "myelin-accelerator/cuda"]
-training = ["dep:plasticity-lab", "dep:neuromod06"]
+training = ["dep:plasticity-lab"]
 
 # The only dependencies of this repository, all resolved from crates.io.
 # Deliberately unpinned to any checkout: the lockfile must resolve
@@ -28,9 +28,7 @@ training = ["dep:plasticity-lab", "dep:neuromod06"]
 # Default features are empty; the optional `serde`, `ndarray`, and `wasm-js`
 # features are left off.
 #
-# neuromod: 0.7.x is experimental pre-1.0, so `"0.7"` is `>=0.7.0, <0.8.0`.
-# Declared from crates.io (issue #5). Host-side experiments only — they do
-# not rewrite Spikenaut weights, Distill, FPGA, or training loops.
+# neuromod: 0.7.x is experimental pre-1.0, resolved from crates.io.
 #
 # kinetic-signals: same `"0.4"` bound. It is a causal temporal feature layer
 # *upstream* of axon-encoder (issue #14) and does not replace it. Host-side
@@ -49,9 +47,9 @@ training = ["dep:plasticity-lab", "dep:neuromod06"]
 #
 # plasticity-lab: optional host-side training/session orchestration over the
 # synthetic neuromod network. It never rewrites the shipped exp-025 artifacts.
-# 0.2.1 still requires neuromod ^0.6, so the training feature also names that
-# 0.6 crate (as `neuromod06`) and does not pass 0.7 `SpikingNetwork` values
-# into the published trainer.
+# 0.3 requires neuromod ^0.7 — the same engine `neuromod` already provides —
+# so the trainer wraps a real `SpikingNetwork` of the HostNetwork type and the
+# old neuromod 0.6 alias is gone.
 #
 # silicon-bridge: checked signed Q8.8 parameter encoding only. Its optional
 # UART feature stays disabled; live board transport remains a separate gate.
@@ -69,11 +67,8 @@ kinetic-signals = "0.4"
 limbic-critic = "0.3"
 myelin-accelerator = { version = "=0.2.0", default-features = false, optional = true }
 neuromod = "0.7"
-# Names plasticity-lab 0.2.1's neuromod 0.6.0 pin. Not a git checkout and not
-# a second host experiment; the default `neuromod` dependency is 0.7.0.
-neuromod06 = { package = "neuromod", version = "0.6", optional = true }
+plasticity-lab = { version = "0.3", optional = true }
 nir-rs = "0.4.4"
-plasticity-lab = { version = "0.2.1", optional = true }
 silicon-bridge = { version = "0.3", default-features = false }
 synaptic-wiring = "0.3"
 

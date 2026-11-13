@@ -1,26 +1,29 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Optional host-side training sessions through `plasticity-lab` 0.2.1.
+//! Optional host-side training sessions through `plasticity-lab` 0.3.
 //!
 //! [`HostTrainingSession`] is the optional trainer for the synthetic host
 //! experiment. [`crate::HostNetwork`] is the neuromod 0.7 network (16 LIF,
-//! uniform `2.0/16` weights). `plasticity-lab` 0.2.1 still requires neuromod
-//! 0.6, so this session cannot wrap that 0.7 [`neuromod::SpikingNetwork`]. It
-//! names the 0.6 crate (`neuromod06`) and builds a same-shape bank for the
-//! trainer only. Its learned parameters can be exported with
+//! uniform `2.0/16` weights). `plasticity-lab` 0.3 requires the same
+//! published neuromod 0.7, so this session trains a real
+//! [`neuromod::SpikingNetwork`] of that exact type — the same engine
+//! [`crate::HostNetwork`] wraps. Its learned parameters can be exported with
 //! [`HostTrainingSession::export_q8_8`]. It never loads, rewrites, or exports
 //! the shipped signed exp-025 bank; `SynapticDistill.jl` remains that bank's
 //! established trainer. Neither trainer parity nor FPGA parity is claimed.
 
-use neuromod06::{SeedableRng, SpikingNetwork, StdRng};
+use neuromod::{NeuroModulators, SeedableRng, SpikingNetwork, StdRng};
 use plasticity_lab::PlasticityTrainer;
-pub use plasticity_lab::{TrainerError, TrainingConfig, TrainingExample, TrainingSummary};
+pub use plasticity_lab::{
+    EvaluationExample, EvaluationSummary, TrainerError, TrainingConfig, TrainingExample,
+    TrainingSummary,
+};
 use silicon_bridge::{FpgaParameterExporter, FpgaParameters, ParameterShapeError};
 
 use crate::encode::CHANNEL_COUNT;
 use crate::neuromod_host::{HOST_NETWORK_INITIAL_WEIGHT, HOST_NETWORK_NEURONS};
 
-/// A caller-seeded `plasticity-lab` session over a synthetic neuromod 0.6 network.
+/// A caller-seeded `plasticity-lab` session over a synthetic neuromod 0.7 network.
 pub struct HostTrainingSession {
     network: SpikingNetwork,
     rng: StdRng,
@@ -50,13 +53,36 @@ impl HostTrainingSession {
     ///
     /// Any [`TrainerError`] from `plasticity-lab`: an empty batch, a sample
     /// that fails preflight admission (neither leaves the network or the RNG
-    /// advanced), or a network step failure.
+    /// advanced), a non-finite reward, or a network step failure.
     pub fn run_session(
         &mut self,
         examples: &[TrainingExample],
     ) -> Result<TrainingSummary, TrainerError> {
         self.trainer
             .run_session_with_rng(&mut self.network, examples, &mut self.rng)
+    }
+
+    /// Evaluate a caller-owned held-out batch without retaining plasticity.
+    ///
+    /// Delegates to `plasticity-lab`'s frozen stepping: runtime dynamics and
+    /// spike observations advance while weights, eligibility traces,
+    /// thresholds, adaptive decay state, persistent modulators, and other
+    /// plasticity-controlled state are preserved bit-for-bit. The whole batch
+    /// is admitted before the first step. Spike timestamps still advance, so
+    /// evaluate on a separate network if later training must be unaffected by
+    /// held-out stimuli. Uses the session's persistent seeded RNG stream.
+    ///
+    /// # Errors
+    ///
+    /// Any [`TrainerError`] from `plasticity-lab`: an empty batch, a stimulus
+    /// that fails preflight admission, or a network step failure.
+    pub fn run_eval(
+        &mut self,
+        examples: &[EvaluationExample],
+        modulators: &NeuroModulators,
+    ) -> Result<EvaluationSummary, TrainerError> {
+        self.trainer
+            .run_eval_with_rng(&mut self.network, examples, modulators, &mut self.rng)
     }
 
     /// Inspect the mutable in-memory experiment after a training session.

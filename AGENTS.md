@@ -26,10 +26,11 @@ not a validated supervisor**, and FPGA parity is unproven. Don't claim otherwise
 
 ## Toolchain
 
-- Rust **1.98.1** with rustfmt and clippy (`rust-toolchain.toml`, `rust-version`). It's pinned to the
-  highest MSRV among the crates.io dependencies, so don't loosen it.
-- Features are off by default. `training` pulls `plasticity-lab` and the neuromod 0.6 pin that
-  trainer needs. `myelin` pulls the CPU-safe `myelin-accelerator` stub. Do not pass
+- Rust **1.99.0** with rustfmt and clippy (`rust-toolchain.toml`, `rust-version`). It's pinned to the
+  highest MSRV among the locked dependencies (`plasticity-lab` 0.3.0 declares 1.99.0), so don't loosen it.
+- Features are off by default. `training` pulls `plasticity-lab` 0.3, which shares this crate's
+  `neuromod` 0.7 engine — there is no second neuromod pin. `myelin` pulls the CPU-safe
+  `myelin-accelerator` stub. Do not pass
   `--all-features`: that also enables `myelin-cuda`, which needs a CUDA 13.2+ toolkit. CI uses
   `--features myelin,training`.
 - Python **3.11** in CI. Top-level `tools/*.py` are stdlib only. `requirements-test.txt` pins
