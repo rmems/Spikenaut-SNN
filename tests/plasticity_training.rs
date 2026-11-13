@@ -9,8 +9,9 @@
 
 use neuromod::NeuroModulators;
 use spikenaut_snn::{
-    EvaluationExample, HOST_NETWORK_INITIAL_WEIGHT, HostNetwork, HostTrainingSession,
-    RewardMapping, RewardMappingError, TrainerError, TrainingConfig, TrainingExample,
+    EvaluationExample, EvaluationSummary, HOST_NETWORK_INITIAL_WEIGHT, HostNetwork,
+    HostTrainingSession, RewardMapping, RewardMappingError, TrainerError, TrainingConfig,
+    TrainingExample,
 };
 
 fn rewarded_batch() -> Vec<TrainingExample> {
@@ -84,6 +85,59 @@ fn runtime_snapshot(session: &HostTrainingSession) -> (i64, Vec<i64>, Vec<f32>) 
         network.input_spike_times.clone(),
         network.predictive_state.clone(),
     )
+}
+
+fn held_out_examples() -> Vec<EvaluationExample> {
+    vec![
+        EvaluationExample {
+            stimuli: vec![0.75; 16],
+        },
+        EvaluationExample {
+            stimuli: vec![0.25; 16],
+        },
+        EvaluationExample {
+            stimuli: vec![0.5; 16],
+        },
+    ]
+}
+
+fn quiet_examples() -> Vec<EvaluationExample> {
+    vec![
+        EvaluationExample {
+            stimuli: vec![0.0; 16],
+        },
+        EvaluationExample {
+            stimuli: vec![0.0; 16],
+        },
+        EvaluationExample {
+            stimuli: vec![0.0; 16],
+        },
+    ]
+}
+
+fn assert_protected_plasticity(before: &PlasticitySnapshot) {
+    assert!(
+        before
+            .neurons
+            .iter()
+            .any(|neuron| neuron.eligibility.iter().any(|(value, _)| *value != 0.0)),
+        "training must leave non-zero eligibility traces to protect"
+    );
+    assert!(
+        before
+            .neurons
+            .iter()
+            .any(|neuron| neuron.threshold != neuron.base_threshold),
+        "training must leave retuned thresholds to protect"
+    );
+}
+
+fn assert_held_out_eval_differs(summary: &EvaluationSummary, quiet_summary: &EvaluationSummary) {
+    assert!(
+        summary.total_spikes > quiet_summary.total_spikes,
+        "held-out stimuli must affect evaluation: {summary:?} vs {quiet_summary:?}"
+    );
+    assert_ne!(summary.per_neuron_spikes, quiet_summary.per_neuron_spikes);
 }
 
 #[test]
@@ -226,34 +280,10 @@ fn frozen_evaluation_preserves_every_plasticity_controlled_field() {
     // non-zero eligibility traces and retuned thresholds to protect.
     session.run_session(&rewarded_batch()).unwrap();
     let before = plasticity_snapshot(&session);
-    assert!(
-        before
-            .neurons
-            .iter()
-            .any(|neuron| neuron.eligibility.iter().any(|(value, _)| *value != 0.0)),
-        "training must leave non-zero eligibility traces to protect"
-    );
-    assert!(
-        before
-            .neurons
-            .iter()
-            .any(|neuron| neuron.threshold != neuron.base_threshold),
-        "training must leave retuned thresholds to protect"
-    );
+    assert_protected_plasticity(&before);
     let step_before = session.network().global_step;
 
-    let held_out = vec![
-        EvaluationExample {
-            stimuli: vec![0.75; 16],
-        },
-        EvaluationExample {
-            stimuli: vec![0.25; 16],
-        },
-        EvaluationExample {
-            stimuli: vec![0.5; 16],
-        },
-    ];
-    let summary = session.run_eval(&held_out, &modulators).unwrap();
+    let summary = session.run_eval(&held_out_examples(), &modulators).unwrap();
 
     assert_eq!(summary.steps_processed, 3);
     assert_eq!(summary.per_neuron_spikes.len(), 16);
@@ -266,23 +296,10 @@ fn frozen_evaluation_preserves_every_plasticity_controlled_field() {
     // state evaluated on quiet inputs cannot produce the same spike counts.
     let mut quiet_reference = HostTrainingSession::new(seed, TrainingConfig::default());
     quiet_reference.run_session(&rewarded_batch()).unwrap();
-    let quiet = vec![
-        EvaluationExample {
-            stimuli: vec![0.0; 16],
-        },
-        EvaluationExample {
-            stimuli: vec![0.0; 16],
-        },
-        EvaluationExample {
-            stimuli: vec![0.0; 16],
-        },
-    ];
-    let quiet_summary = quiet_reference.run_eval(&quiet, &modulators).unwrap();
-    assert!(
-        summary.total_spikes > quiet_summary.total_spikes,
-        "held-out stimuli must affect evaluation: {summary:?} vs {quiet_summary:?}"
-    );
-    assert_ne!(summary.per_neuron_spikes, quiet_summary.per_neuron_spikes);
+    let quiet_summary = quiet_reference
+        .run_eval(&quiet_examples(), &modulators)
+        .unwrap();
+    assert_held_out_eval_differs(&summary, &quiet_summary);
 
     let after = plasticity_snapshot(&session);
     assert_eq!(
@@ -324,17 +341,7 @@ fn an_invalid_eval_batch_is_atomic_and_leaves_plasticity_untouched() {
 
     // A preflight rejection must not consume the RNG stream either: the next
     // valid evaluation matches an untouched session exactly.
-    let held_out = vec![
-        EvaluationExample {
-            stimuli: vec![0.75; 16],
-        },
-        EvaluationExample {
-            stimuli: vec![0.25; 16],
-        },
-        EvaluationExample {
-            stimuli: vec![0.5; 16],
-        },
-    ];
+    let held_out = held_out_examples();
     let summary = session.run_eval(&held_out, &modulators).unwrap();
     let reference_summary = reference.run_eval(&held_out, &modulators).unwrap();
     assert_eq!(summary, reference_summary);
@@ -359,17 +366,7 @@ fn isolated_evaluation_preserves_the_training_trajectory() {
     let before = plasticity_snapshot(&session);
     let runtime_before = runtime_snapshot(&session);
 
-    let held_out = vec![
-        EvaluationExample {
-            stimuli: vec![0.75; 16],
-        },
-        EvaluationExample {
-            stimuli: vec![0.25; 16],
-        },
-        EvaluationExample {
-            stimuli: vec![0.5; 16],
-        },
-    ];
+    let held_out = held_out_examples();
     let isolated = session.run_eval_isolated(&held_out, &modulators).unwrap();
     let expected = isolated_reference
         .run_eval_isolated(&held_out, &modulators)
