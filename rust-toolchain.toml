@@ -1,9 +1,9 @@
 [toolchain]
 # kinetic-signals 0.4.0, nir-rs 0.4.4, and axon-encoder 0.5.0 declare
-# rust-version = "1.98.1" (edition 2024). neuromod 0.7.0 and plasticity-lab
-# 0.2.1 share that floor;
+# rust-version = "1.98.1" (edition 2024). plasticity-lab 0.3.0 declares
+# 1.99.0, which is now the highest floor;
 # silicon-bridge 0.3.0 declares 1.88.0. The pin is the highest MSRV among
-# crates.io dependencies so a stale default toolchain fails at `rustup`
+# dependencies so a stale default toolchain fails at `rustup`
 # resolution rather than deep inside dependency compilation.
-channel = "1.98.1"
+channel = "1.99.0"
 components = ["rustfmt", "clippy"]

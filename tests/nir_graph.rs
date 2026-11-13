@@ -637,7 +637,7 @@ fn dependency_tables(manifest: &str) -> (Vec<&str>, Vec<String>) {
             }
             continue;
         }
-        if line.is_empty() || !section.contains("dependencies") {
+        if line.is_empty() || !(section.contains("dependencies") || section.starts_with("patch")) {
             continue;
         }
         pinned.push(line);
@@ -740,6 +740,8 @@ fn nir_rs_resolves_from_crates_io() {
     // fails here. Sorted, so declaration order is not part of the contract.
     let mut names = runtime.clone();
     names.sort_unstable();
+    // Target-specific tables can repeat one crate; it is still one dependency.
+    names.dedup();
     assert_eq!(
         names,
         [
@@ -748,7 +750,6 @@ fn nir_rs_resolves_from_crates_io() {
             "kinetic-signals",
             "limbic-critic",
             "myelin-accelerator",
-            "neuromod",
             "neuromod",
             "nir-rs",
             "plasticity-lab",
@@ -790,17 +791,49 @@ fn plasticity_training_remains_optional_and_off_by_default() {
         "the default feature set must stay empty",
     );
     assert!(
-        manifest.lines().any(|line| {
-            line.trim() == "training = [\"dep:plasticity-lab\", \"dep:neuromod06\"]"
-        }),
-        "the training feature must enable plasticity-lab and its neuromod 0.6 alias",
+        manifest
+            .lines()
+            .any(|line| { line.trim() == "training = [\"dep:plasticity-lab\"]" }),
+        "the training feature must enable plasticity-lab",
     );
     assert!(
         manifest.lines().any(|line| {
-            line.trim() == "plasticity-lab = { version = \"0.2.1\", optional = true }"
+            line.trim() == "plasticity-lab = { version = \"0.3.0\", optional = true }"
         }),
-        "plasticity-lab must remain an optional 0.2.1 dependency",
+        "plasticity-lab must remain an optional 0.3.0 dependency",
     );
+}
+
+/// RM-1720's registry gate: the optional training pair must resolve to the
+/// published crates.io releases, not a Git candidate or sibling path.
+#[test]
+fn the_training_pair_resolves_from_crates_io() {
+    let lock_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock");
+    let lock = std::fs::read_to_string(&lock_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", lock_path.display()));
+
+    for (name, version) in [("plasticity-lab", "0.3.0"), ("neuromod", "0.7.0")] {
+        let entries: Vec<&str> = lock
+            .split("[[package]]")
+            .filter(|block| block.contains(&format!(r#"name = "{name}""#)))
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "{name} must resolve exactly once, got: {entries:?}"
+        );
+        assert!(
+            entries[0].contains(&format!(r#"version = "{version}""#)),
+            "{name} must resolve to {version}, got:\n{}",
+            entries[0]
+        );
+        assert!(
+            entries[0]
+                .contains("source = \"registry+https://github.com/rust-lang/crates.io-index\""),
+            "{name} must come from the crates.io registry, got:\n{}",
+            entries[0]
+        );
+    }
 }
 
 /// The Myelin consumer is intentionally opt-in with a CPU/CUDA split.

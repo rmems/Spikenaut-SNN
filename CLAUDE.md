@@ -7,8 +7,8 @@ Claude-specific notes only. Layout, toolchain, feature list, full CI command lis
 
 ## Commands
 
-Run from the repo root. "Verified" means it ran successfully in a fresh checkout on Rust 1.98.1 and Python 3.13 (Linux, CPU only).
-`rust-toolchain.toml` makes rustup install 1.98.1 on first use.
+Run from the repo root. "Verified" means it ran successfully in a fresh checkout on Rust 1.99.0 and Python 3.13 (Linux, CPU only).
+`rust-toolchain.toml` makes rustup install 1.99.0 on first use.
 
 | Command | Status |
 |---|---|
@@ -48,7 +48,7 @@ Run fmt and clippy before committing. Never pass `--all-features` (enables `myel
 
 - Research artifact, not a validated supervisor; FPGA parity is unproven (README "Status"). Do not write docs or comments that claim otherwise.
 - `Cargo.toml` has `publish = false`, so there is no `exclude`/`include` list to update.
-- Dependencies resolve from crates.io only; do not add git or path dependencies. `Cargo.lock` is tracked, so `--locked` is correct.
+- Dependencies resolve from crates.io only; do not add git or path dependencies. `Cargo.lock` is tracked, so `--locked` is correct. 
 - Q8.8 encoding is a shared contract with the FPGA side. Re-run the `tools/` verifiers after any encoding change.
 - Do not change the shipped `dataset/merged_v2/` weights as a side effect of other work. `dataset/merged_v2_rec_v1/` is a research variant, not a promotion; its three hidden `.mem` images must stay byte-identical to `merged_v2`'s (`tests/test_recurrence_variant.py` checks).
 - Recurrence exists only as the declared `spikenaut.recurrence.v1` block. Nothing may apply recurrent weights a checkpoint did not spell out, and the Rust crate and FPGA path do not implement the block (no board evidence; silicon-hdl#76).

@@ -1,31 +1,41 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Optional host-side training sessions through `plasticity-lab` 0.2.1.
+//! Optional host-side training sessions through `plasticity-lab` 0.3.
 //!
 //! [`HostTrainingSession`] is the optional trainer for the synthetic host
-//! experiment. [`crate::HostNetwork`] is the neuromod 0.7 network (16 LIF,
-//! uniform `2.0/16` weights). `plasticity-lab` 0.2.1 still requires neuromod
-//! 0.6, so this session cannot wrap that 0.7 [`neuromod::SpikingNetwork`]. It
-//! names the 0.6 crate (`neuromod06`) and builds a same-shape bank for the
-//! trainer only. Its learned parameters can be exported with
-//! [`HostTrainingSession::export_q8_8`]. It never loads, rewrites, or exports
-//! the shipped signed exp-025 bank; `SynapticDistill.jl` remains that bank's
-//! established trainer. Neither trainer parity nor FPGA parity is claimed.
+//! experiment. [`crate::HostNetwork`] and this session now share the same
+//! neuromod 0.7 [`neuromod::SpikingNetwork`] type (16 LIF, uniform
+//! `2.0/16` weights): the 0.3 trainer accepts the 0.7 engine directly, so the
+//! old `neuromod06` alias is gone. Its learned parameters can be exported
+//! with [`HostTrainingSession::export_q8_8`]. It never loads, rewrites, or
+//! exports the shipped signed exp-025 bank; `SynapticDistill.jl` remains
+//! that bank's established trainer. Neither trainer parity nor FPGA parity
+//! is claimed.
+//!
+//! The public API is the 0.3 surface: seeded sessions, frozen held-out
+//! evaluation (including an isolated variant that leaves runtime and RNG
+//! state untouched), atomic batch admission, non-finite reward rejection, and
+//! validated `RewardMapping`. The 0.3.0 release was validated here as a
+//! Git-pinned release candidate before it published (RM-1720).
 
-use neuromod06::{SeedableRng, SpikingNetwork, StdRng};
+use neuromod::{NeuroModulators, SeedableRng, SpikingNetwork, StdRng};
 use plasticity_lab::PlasticityTrainer;
-pub use plasticity_lab::{TrainerError, TrainingConfig, TrainingExample, TrainingSummary};
+pub use plasticity_lab::{
+    EvaluationExample, EvaluationSummary, RewardMapping, RewardMappingBuilder, RewardMappingError,
+    TrainerError, TrainingConfig, TrainingExample, TrainingSummary,
+};
 use silicon_bridge::{FpgaParameterExporter, FpgaParameters, ParameterShapeError};
 
 use crate::encode::CHANNEL_COUNT;
 use crate::neuromod_host::{HOST_NETWORK_INITIAL_WEIGHT, HOST_NETWORK_NEURONS};
 
-/// A caller-seeded `plasticity-lab` session over a synthetic neuromod 0.6 network.
+/// A caller-seeded `plasticity-lab` session over a synthetic neuromod 0.7 network.
 pub struct HostTrainingSession {
     network: SpikingNetwork,
     rng: StdRng,
     seed: u64,
     trainer: PlasticityTrainer,
+    isolated_eval_calls: u64,
 }
 
 impl HostTrainingSession {
@@ -41,6 +51,7 @@ impl HostTrainingSession {
             rng: StdRng::seed_from_u64(seed),
             seed,
             trainer: PlasticityTrainer::new(config),
+            isolated_eval_calls: 0,
         }
     }
 
@@ -49,14 +60,74 @@ impl HostTrainingSession {
     /// # Errors
     ///
     /// Any [`TrainerError`] from `plasticity-lab`: an empty batch, a sample
-    /// that fails preflight admission (neither leaves the network or the RNG
-    /// advanced), or a network step failure.
+    /// that fails preflight admission, a non-finite reward, or a network
+    /// step failure. Batches rejected during admission are atomic: neither
+    /// the network nor the RNG advances. A step failure after admission can
+    /// leave earlier examples applied.
     pub fn run_session(
         &mut self,
         examples: &[TrainingExample],
     ) -> Result<TrainingSummary, TrainerError> {
         self.trainer
             .run_session_with_rng(&mut self.network, examples, &mut self.rng)
+    }
+
+    /// Run a caller-owned held-out batch through frozen stepping.
+    ///
+    /// Delegates to `plasticity-lab`'s `run_eval_with_rng`: runtime dynamics
+    /// and spike observations advance, but weights, eligibility traces,
+    /// thresholds, decay parameters, persistent modulators, and the R-STDP
+    /// configuration are preserved bit-for-bit. Runtime timestamps still
+    /// advance and can influence a later training step, so evaluate on a
+    /// separate session when training must resume from the original state.
+    ///
+    /// # Errors
+    ///
+    /// Any [`TrainerError`] from `plasticity-lab`: an empty batch, a sample
+    /// that fails preflight admission, or a frozen-step failure. Batches
+    /// rejected during admission are atomic; a frozen-step failure after
+    /// admission can leave earlier examples applied.
+    pub fn run_eval(
+        &mut self,
+        examples: &[EvaluationExample],
+        modulators: &NeuroModulators,
+    ) -> Result<EvaluationSummary, TrainerError> {
+        self.trainer
+            .run_eval_with_rng(&mut self.network, examples, modulators, &mut self.rng)
+    }
+
+    /// Run held-out evaluation on a private copy of the session state.
+    ///
+    /// The cloned network and a dedicated evaluation RNG derived from the
+    /// session seed are used, so neither the session network nor its training
+    /// RNG stream advances — including when evaluation fails after admission.
+    /// Use this when later training must resume from the exact pre-evaluation
+    /// state. The dedicated stream makes repeated isolated evaluations
+    /// deterministic for a given seed and successful-call order; it is not
+    /// the same RNG trajectory as [`Self::run_eval`].
+    ///
+    /// # Errors
+    ///
+    /// Any [`TrainerError`] from `plasticity-lab`, with the session left
+    /// unchanged.
+    pub fn run_eval_isolated(
+        &mut self,
+        examples: &[EvaluationExample],
+        modulators: &NeuroModulators,
+    ) -> Result<EvaluationSummary, TrainerError> {
+        let mut network = clone_network(&self.network);
+        let mut rng = StdRng::seed_from_u64(
+            self.seed
+                ^ 0x9e37_79b9_7f4a_7c15
+                ^ self.isolated_eval_calls.wrapping_mul(0x0000_0001_0000_01b3),
+        );
+        let result = self
+            .trainer
+            .run_eval_with_rng(&mut network, examples, modulators, &mut rng);
+        if result.is_ok() {
+            self.isolated_eval_calls = self.isolated_eval_calls.wrapping_add(1);
+        }
+        result
     }
 
     /// Inspect the mutable in-memory experiment after a training session.
@@ -109,6 +180,19 @@ impl HostTrainingSession {
     pub fn reset(&mut self) {
         let config = self.trainer.config;
         *self = Self::new(self.seed, config);
+    }
+}
+
+fn clone_network(network: &SpikingNetwork) -> SpikingNetwork {
+    SpikingNetwork {
+        neurons: network.neurons.clone(),
+        iz_neurons: network.iz_neurons.clone(),
+        modulators: network.modulators,
+        global_step: network.global_step,
+        num_channels: network.num_channels,
+        input_spike_times: network.input_spike_times.clone(),
+        predictive_state: network.predictive_state.clone(),
+        stdp_config: network.stdp_config,
     }
 }
 

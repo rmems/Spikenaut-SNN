@@ -37,8 +37,8 @@
 //! [`LIVE_COLUMNS`]: encode::LIVE_COLUMNS
 //!
 //! Its direct dependencies are deliberate: [`nir_rs`],
-//! [`axon_encoder`], [`kinetic_signals`], [`neuromod`] (0.7 host engine, plus
-//! an optional crates.io 0.6 alias for the trainer), `limbic-critic`,
+//! [`axon_encoder`], [`kinetic_signals`], [`neuromod`] (0.7 host engine),
+//! `limbic-critic`,
 //! `synaptic-wiring`, `corpus-ipc`, `silicon-bridge`, the optional
 //! `plasticity-lab`, and the optional `myelin-accelerator` 0.2.0 consumer
 //! (`myelin` for the CPU-safe stub, `myelin-cuda` for real launches), all
@@ -62,8 +62,9 @@
 //! a sparse GIF layer. [`critic`] supplies checked TD modulators, [`wiring`]
 //! supplies a deterministic 12:4 Dale recurrent proposal, and [`ipc`] builds
 //! validated versioned messages without transport. With the `training` feature,
-//! `training` runs `plasticity-lab` 0.2.1 over a same-shape neuromod 0.6
-//! bank — that trainer cannot wrap the 0.7 [`HostNetwork`] engine. None of
+//! `training` runs `plasticity-lab` 0.3 over the same neuromod 0.7
+//! [`SpikingNetwork`](neuromod::SpikingNetwork) shape as [`HostNetwork`].
+//! None of
 //! these paths executes or rewrites the shipped signed bank, Distill, or FPGA
 //! artifacts. [`silicon`] is the distinct deployment boundary: it runs the
 //! shipped bank through `silicon-bridge`'s checked signed Q8.8 path and adapts
@@ -198,6 +199,7 @@ pub use silicon::{
 pub use stim::{LiveStimAdapter, NO_STIMULUS, UNUSED_AXONS};
 #[cfg(feature = "training")]
 pub use training::{
-    HostTrainingSession, TrainerError, TrainingConfig, TrainingExample, TrainingSummary,
+    EvaluationExample, EvaluationSummary, HostTrainingSession, RewardMapping, RewardMappingBuilder,
+    RewardMappingError, TrainerError, TrainingConfig, TrainingExample, TrainingSummary,
 };
 pub use wiring::{DaleMeshConfig, ExperimentalDaleMesh};

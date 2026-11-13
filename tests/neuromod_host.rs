@@ -54,8 +54,8 @@ fn a_subthreshold_step_leaks_without_firing() {
 
 /// Acceptance from issue #5: the direct `neuromod` dependency resolves to
 /// 0.7.x from crates.io, not from a git or sibling-path pin. The `"0.7"`
-/// caret is `>=0.7.0, <0.8.0`. `plasticity-lab` 0.2.1 still locks 0.6.0
-/// as a second registry copy; that pin is not this crate's host engine.
+/// caret is `>=0.7.0, <0.8.0`, and plasticity-lab 0.3 shares that one copy —
+/// the neuromod 0.6 alias is gone.
 #[test]
 fn neuromod_resolves_from_crates_io() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -65,16 +65,17 @@ fn neuromod_resolves_from_crates_io() {
         .split("[[package]]")
         .filter(|block| block.contains(r#"name = "neuromod""#))
         .collect();
-    assert!(
-        !entries.is_empty(),
-        "Cargo.lock has at least one neuromod package entry"
+    assert_eq!(
+        entries.len(),
+        1,
+        "the neuromod 0.6 alias is gone; exactly one neuromod may resolve, got {entries:?}"
     );
 
-    let neuromod_07 = entries
-        .iter()
-        .copied()
-        .find(|block| block.contains(r#"version = "0.7.0""#))
-        .expect("Cargo.lock must lock neuromod 0.7.0");
+    let neuromod_07 = entries[0];
+    assert!(
+        neuromod_07.contains(r#"version = "0.7.0""#),
+        "Cargo.lock must lock neuromod 0.7.0, got:\n{neuromod_07}",
+    );
     assert!(
         neuromod_07.contains(r#"source = "registry+https://github.com/rust-lang/crates.io-index""#),
         "neuromod 0.7.0 must come from the crates.io registry, got:\n{neuromod_07}",
@@ -85,8 +86,8 @@ fn neuromod_resolves_from_crates_io() {
         .find(|block| block.contains(r#"name = "spikenaut-snn""#))
         .expect("Cargo.lock has a spikenaut-snn package entry");
     assert!(
-        root_pkg.contains("neuromod 0.7.0"),
-        "spikenaut-snn must depend on neuromod 0.7.0, got:\n{root_pkg}",
+        root_pkg.lines().any(|line| line.trim() == "\"neuromod\","),
+        "spikenaut-snn must depend on neuromod, got:\n{root_pkg}",
     );
 
     assert!(
