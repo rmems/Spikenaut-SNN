@@ -831,22 +831,10 @@ fn axon_encoder_resolves_from_crates_io() {
         entry.contains(r#"version = "0.5.0"#),
         "axon-encoder must resolve to the reviewed 0.5.0 release, got:\n{entry}",
     );
-    // The `"0.5"` requirement is `>=0.5.0, <0.6.0`. RM-1720 draft gate: the
-    // only permitted non-registry sources are the two reviewed candidate pins
-    // (plasticity-lab 0.3.0 git rev and the neuromod v0.7.0 tag commit via
-    // [patch.crates-io]); everything else stays on the registry.
-    let mut git_sources: Vec<&str> = lock
-        .lines()
-        .filter(|line| line.contains("source = \"git+"))
-        .collect();
-    git_sources.sort_unstable();
-    assert_eq!(
-        git_sources,
-        [
-            "source = \"git+https://github.com/Limen-Neural/neuromod?rev=a897cc91f7e97efb465d41247fa907e2c1f2332d#a897cc91f7e97efb465d41247fa907e2c1f2332d\"",
-            "source = \"git+https://github.com/Limen-Neural/plasticity-lab?rev=95866e94ac505777e7c851035e8ef429b088829d#95866e94ac505777e7c851035e8ef429b088829d\"",
-        ],
-        "only the two RM-1720 candidate pins may leave the registry",
+    // The `"0.5"` requirement is `>=0.5.0, <0.6.0`; nothing may pin a checkout.
+    assert!(
+        !lock.contains("source = \"git+") && !lock.contains("[[patch"),
+        "every locked package must come from the registry",
     );
     assert!(
         !entry.contains("neuromod") && !entry.contains("silicon-bridge"),

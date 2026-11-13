@@ -191,10 +191,11 @@ CLAIMS: tuple[Claim, ...] = (
         ),
         required=(
             "[`plasticity-lab`]",
-            # "0.3.0" alone is not usable here: the silicon-bridge claim also
-            # requires it, and the self-test strips required needles globally,
-            # so a shared substring would make one claim's break trip both.
-            "release-candidate commit",
+            # The crates.io link (not a bare "0.3.0") keeps this needle
+            # disjoint from the silicon-bridge claim's "0.3.0": the self-test
+            # strips required needles globally, so a shared substring would
+            # make one claim's break trip both.
+            "plasticity-lab`](https://crates.io/crates/plasticity-lab)",
             "optional feature `training`",
             "synthetic bank",
             "real weight deltas",

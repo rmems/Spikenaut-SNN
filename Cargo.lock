@@ -429,7 +429,8 @@ dependencies = [
 [[package]]
 name = "neuromod"
 version = "0.7.0"
-source = "git+https://github.com/Limen-Neural/neuromod?rev=a897cc91f7e97efb465d41247fa907e2c1f2332d#a897cc91f7e97efb465d41247fa907e2c1f2332d"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24e8c6418345bd055f33bfb45d90cdb98f3caad2fd16c62b43fca6d91c1182d0"
 dependencies = [
  "rand",
  "serde",
@@ -488,7 +489,8 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 [[package]]
 name = "plasticity-lab"
 version = "0.3.0"
-source = "git+https://github.com/Limen-Neural/plasticity-lab?rev=95866e94ac505777e7c851035e8ef429b088829d#95866e94ac505777e7c851035e8ef429b088829d"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f86eaaf1c5264396fccaa526e059a3435547e78d2c7220e938789d75a3a7c8"
 dependencies = [
  "neuromod",
  "rand",

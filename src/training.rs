@@ -12,11 +12,10 @@
 //! that bank's established trainer. Neither trainer parity nor FPGA parity
 //! is claimed.
 //!
-//! Until the 0.3.0 release publishes, `plasticity-lab` resolves from the
-//! pinned release-candidate commit and `neuromod` from the v0.7.0 tag
-//! commit (see `Cargo.toml`); the public API validated here is the 0.3
-//! surface: seeded sessions, frozen held-out evaluation, atomic batch
-//! admission, non-finite reward rejection, and validated `RewardMapping`.
+//! The public API is the 0.3 surface: seeded sessions, frozen held-out
+//! evaluation, atomic batch admission, non-finite reward rejection, and
+//! validated `RewardMapping`. The 0.3.0 release was validated here as a
+//! Git-pinned release candidate before it published (RM-1720).
 
 use neuromod::{NeuroModulators, SeedableRng, SpikingNetwork, StdRng};
 use plasticity_lab::PlasticityTrainer;

@@ -42,8 +42,7 @@
 //! `synaptic-wiring`, `corpus-ipc`, `silicon-bridge`, the optional
 //! `plasticity-lab`, and the optional `myelin-accelerator` 0.2.0 consumer
 //! (`myelin` for the CPU-safe stub, `myelin-cuda` for real launches), all
-//! from crates.io except the two temporary RM-1720 candidate git pins
-//! documented in `Cargo.toml`.
+//! from crates.io.
 //! The bound is the claim, not the number: `tests/nir_graph.rs` asserts the
 //! manifest's exact *runtime* dependency set, so adopting a crate this library
 //! links against fails that test until the adoption is deliberate. Dev- and

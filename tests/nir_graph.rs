@@ -730,37 +730,12 @@ fn nir_rs_resolves_from_crates_io() {
     let (pinned, runtime) = dependency_tables(&manifest);
     let dependencies = pinned.join("\n");
 
-    // RM-1720 draft gate: exactly two git pins are allowed, both reviewed
-    // release candidates — plasticity-lab 0.3.0 (PR #127 head) and the
-    // neuromod v0.7.0 tag commit via [patch.crates-io]. Every other git or
-    // path pin, in any table including patch tables, is still forbidden.
-    let allowed_git_pins = [
-        "plasticity-lab = { git = \"https://github.com/Limen-Neural/plasticity-lab\", rev = \"95866e94ac505777e7c851035e8ef429b088829d\", optional = true }",
-        "neuromod = { git = \"https://github.com/Limen-Neural/neuromod\", rev = \"a897cc91f7e97efb465d41247fa907e2c1f2332d\" }",
-    ];
-    for pin in &allowed_git_pins {
+    for forbidden in ["git =", "path =", "git=", "path="] {
         assert!(
-            pinned.iter().any(|line| line.trim() == *pin),
-            "the RM-1720 candidate pin must be declared verbatim, missing:\n{pin}"
+            !dependencies.contains(forbidden),
+            "no dependency in any table may be pinned with `{forbidden}`, found in:\n{dependencies}",
         );
     }
-    let mut git_or_path_lines: Vec<&str> = pinned
-        .iter()
-        .copied()
-        .filter(|line| {
-            line.contains("git =")
-                || line.contains("git=")
-                || line.contains("path =")
-                || line.contains("path=")
-        })
-        .collect();
-    git_or_path_lines.sort_unstable();
-    let mut expected: Vec<&str> = allowed_git_pins.to_vec();
-    expected.sort_unstable();
-    assert_eq!(
-        git_or_path_lines, expected,
-        "only the two RM-1720 candidate git pins may appear; found:\n{dependencies}"
-    );
     // The allowed set is exact, so an undeclared addition or a rename still
     // fails here. Sorted, so declaration order is not part of the contract.
     let mut names = runtime.clone();
@@ -821,9 +796,9 @@ fn plasticity_training_remains_optional_and_off_by_default() {
     );
     assert!(
         manifest.lines().any(|line| {
-            line.trim() == "plasticity-lab = { git = \"https://github.com/Limen-Neural/plasticity-lab\", rev = \"95866e94ac505777e7c851035e8ef429b088829d\", optional = true }"
+            line.trim() == "plasticity-lab = { version = \"0.3.0\", optional = true }"
         }),
-        "plasticity-lab must remain an optional dependency pinned to the 0.3.0 candidate commit",
+        "plasticity-lab must remain an optional 0.3.0 dependency",
     );
 }
 

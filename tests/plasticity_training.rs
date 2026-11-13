@@ -2,8 +2,8 @@
 
 //! Feature-gated host training contract for `plasticity-lab` 0.3.
 //!
-//! Validates the RM-1720 consumer pair: the pinned 0.3.0 release candidate
-//! over the neuromod 0.7 engine (v0.7.0 tag commit via the crates.io patch).
+//! Validates the RM-1720 consumer pair: the published 0.3.0 release over
+//! the neuromod 0.7 engine, both resolved from crates.io.
 
 #![cfg(feature = "training")]
 
@@ -397,7 +397,7 @@ fn an_empty_batch_is_rejected_without_advancing_anything() {
 }
 
 #[test]
-fn plasticity_lab_resolves_from_the_pinned_candidate_commit() {
+fn plasticity_lab_resolves_from_crates_io_at_zero_three() {
     let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"))
         .expect("read Cargo.lock");
     let entry = lock
@@ -405,16 +405,13 @@ fn plasticity_lab_resolves_from_the_pinned_candidate_commit() {
         .find(|block| block.contains(r#"name = "plasticity-lab""#))
         .expect("Cargo.lock has plasticity-lab");
 
-    // Draft-gate pin (RM-1720): the 0.3.0 release candidate commit, not a
-    // registry release. The follow-up PR replaces this with the published
-    // 0.3.0 registry assertion.
     assert!(
-        entry.contains("95866e94ac505777e7c851035e8ef429b088829d"),
-        "plasticity-lab must resolve to the reviewed 0.3.0 candidate commit, got:\n{entry}"
+        entry.contains("source = \"registry+https://github.com/rust-lang/crates.io-index\""),
+        "plasticity-lab must resolve from crates.io, got:\n{entry}"
     );
     assert!(
-        entry.contains("source = \"git+https://github.com/Limen-Neural/plasticity-lab"),
-        "plasticity-lab must come from the Limen-Neural git pin, got:\n{entry}"
+        entry.contains("version = \"0.3.0\""),
+        "plasticity-lab must resolve to the published 0.3.0 release, got:\n{entry}"
     );
 
     let neuromod_entries: Vec<&str> = lock
@@ -427,8 +424,14 @@ fn plasticity_lab_resolves_from_the_pinned_candidate_commit() {
         "the neuromod 0.6 alias is gone; exactly one neuromod may resolve"
     );
     assert!(
-        neuromod_entries[0].contains("a897cc91f7e97efb465d41247fa907e2c1f2332d"),
-        "neuromod must resolve to the v0.7.0 tag commit via the crates.io patch, got:\n{}",
+        neuromod_entries[0].contains("version = \"0.7.0\""),
+        "neuromod must resolve to the published 0.7.0 release, got:\n{}",
+        neuromod_entries[0]
+    );
+    assert!(
+        neuromod_entries[0]
+            .contains("source = \"registry+https://github.com/rust-lang/crates.io-index\""),
+        "neuromod must come from the crates.io registry, got:\n{}",
         neuromod_entries[0]
     );
 }

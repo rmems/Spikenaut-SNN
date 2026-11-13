@@ -53,12 +53,11 @@ fn a_subthreshold_step_leaks_without_firing() {
 }
 
 /// Acceptance from issue #5: the direct `neuromod` dependency resolves to
-/// 0.7.x — one copy for the whole graph. During the RM-1720 draft gate the
-/// crates.io patch pins that copy to the exact v0.7.0 tag commit; the
-/// follow-up PR restores the registry-source assertion once plasticity-lab
-/// 0.3.0 publishes.
+/// 0.7.x from crates.io, not from a git or sibling-path pin. The `"0.7"`
+/// caret is `>=0.7.0, <0.8.0`, and plasticity-lab 0.3 shares that one copy —
+/// the neuromod 0.6 alias is gone.
 #[test]
-fn neuromod_resolves_from_the_pinned_candidate_commit() {
+fn neuromod_resolves_from_crates_io() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let lock = std::fs::read_to_string(root.join("Cargo.lock")).expect("read Cargo.lock");
 
@@ -78,8 +77,8 @@ fn neuromod_resolves_from_the_pinned_candidate_commit() {
         "Cargo.lock must lock neuromod 0.7.0, got:\n{neuromod_07}",
     );
     assert!(
-        neuromod_07.contains("a897cc91f7e97efb465d41247fa907e2c1f2332d"),
-        "neuromod must resolve to the v0.7.0 tag commit via the crates.io patch, got:\n{neuromod_07}",
+        neuromod_07.contains(r#"source = "registry+https://github.com/rust-lang/crates.io-index""#),
+        "neuromod 0.7.0 must come from the crates.io registry, got:\n{neuromod_07}",
     );
 
     let root_pkg = lock
@@ -87,7 +86,12 @@ fn neuromod_resolves_from_the_pinned_candidate_commit() {
         .find(|block| block.contains(r#"name = "spikenaut-snn""#))
         .expect("Cargo.lock has a spikenaut-snn package entry");
     assert!(
-        root_pkg.contains("neuromod"),
+        root_pkg.lines().any(|line| line.trim() == "\"neuromod\","),
         "spikenaut-snn must depend on neuromod, got:\n{root_pkg}",
+    );
+
+    assert!(
+        !lock.contains("source = \"git+") && !lock.contains("[[patch"),
+        "every locked package must come from the registry",
     );
 }

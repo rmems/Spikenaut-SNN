@@ -27,10 +27,9 @@ not a validated supervisor**, and FPGA parity is unproven. Don't claim otherwise
 ## Toolchain
 
 - Rust **1.99.0** with rustfmt and clippy (`rust-toolchain.toml`, `rust-version`). It's pinned to the
-  highest MSRV among the dependencies (the plasticity-lab 0.3 candidate declares 1.99.0), so don't loosen it.
-- Features are off by default. `training` pulls `plasticity-lab` 0.3 (currently the pinned
-  release-candidate git rev for RM-1720, plus a `[patch.crates-io]` pin of `neuromod` to the
-  v0.7.0 tag commit; both are temporary until 0.3.0 publishes). `myelin` pulls the CPU-safe
+  highest MSRV among the dependencies (plasticity-lab 0.3.0 declares 1.99.0), so don't loosen it.
+- Features are off by default. `training` pulls `plasticity-lab` 0.3 and the
+  shared neuromod 0.7 engine. `myelin` pulls the CPU-safe
   `myelin-accelerator` stub. Do not pass
   `--all-features`: that also enables `myelin-cuda`, which needs a CUDA 13.2+ toolkit. CI uses
   `--features myelin,training`.
