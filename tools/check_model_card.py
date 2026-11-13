@@ -191,9 +191,12 @@ CLAIMS: tuple[Claim, ...] = (
         ),
         required=(
             "[`plasticity-lab`]",
-            "0.2.1",
+            # "0.3.0" alone is not usable here: the silicon-bridge claim also
+            # requires it, and the self-test strips required needles globally,
+            # so a shared substring would make one claim's break trip both.
+            "release-candidate commit",
             "optional feature `training`",
-            "synthetic seeded `HostNetwork`",
+            "synthetic bank",
             "real weight deltas",
             "exports checked Q8.8 parameters through `silicon-bridge`",
             "without overwriting exp-025 artifacts or claiming parity",
