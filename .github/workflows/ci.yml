@@ -96,10 +96,10 @@ jobs:
       # relies on CPython's 4300-digit integer-string limit, which only
       # exists from 3.11. On an older interpreter that scenario still passes,
       # but by way of a different ParseError, so it would stop exercising the
-      # mechanism it is named for.
+      # mechanism it is named for. Pinned to the latest stable release.
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.11'
+          python-version: '3.15'
 
       # Verifiers are standard library only. There is nothing to install.
 
@@ -231,7 +231,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.11'
+          # numpy>=2.5 requires Python >=3.12; the hash-pinned requirements
+          # cover cp312-cp315 wheels, so track the latest stable interpreter.
+          python-version: '3.15'
       - name: Install the Python verifier sandbox
         run: |
           sudo apt-get update

@@ -8,7 +8,7 @@
 # Installs only what this repo's CI and manifests need:
 #   - apt: build-essential, pkg-config, bubblewrap, libseccomp2, curl, ca-certificates
 #   - Rust 1.98.1 (+rustfmt, clippy) [default]
-#   - uv + Python 3.11 venv with tools/anticipation/requirements-test.txt (hash-pinned)
+#   - uv + Python 3.15 venv with tools/anticipation/requirements-test.txt (hash-pinned)
 #   - juliaup 1.12.7 + Pkg.instantiate() for tools/anticipation
 #   - cargo fetch --locked
 #   - tool directories exposed to later shells (/etc/profile.d + /usr/local/bin links)
@@ -74,12 +74,12 @@ fi
 exclude_file="$(git rev-parse --git-path info/exclude)"
 mkdir -p "$(dirname "$exclude_file")"
 grep -qxF '/.venv/' "$exclude_file" 2>/dev/null || echo '/.venv/' >>"$exclude_file"
-# ci.yml Python jobs use 3.11. An executable .venv from another interpreter
-# (the base image ships 3.14) must be recreated, not reused.
-uv python install 3.11
-if ! .venv/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)' 2>/dev/null; then
+# ci.yml Python jobs use 3.15 and numpy>=2.5 needs >=3.12. An executable
+# .venv from another interpreter must be recreated, not reused.
+uv python install 3.15
+if ! .venv/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 15) else 1)' 2>/dev/null; then
   rm -rf .venv
-  uv venv --python 3.11 .venv
+  uv venv --python 3.15 .venv
 fi
 # sync, not install: install keeps packages the requirements file no longer lists.
 uv pip sync --python .venv/bin/python --require-hashes --only-binary=:all: tools/anticipation/requirements-test.txt
