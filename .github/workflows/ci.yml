@@ -96,10 +96,10 @@ jobs:
       # relies on CPython's 4300-digit integer-string limit, which only
       # exists from 3.11. On an older interpreter that scenario still passes,
       # but by way of a different ParseError, so it would stop exercising the
-      # mechanism it is named for.
+      # mechanism it is named for. Pinned to the latest stable release.
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.11'
+          python-version: '3.15'
 
       # Verifiers are standard library only. There is nothing to install.
 

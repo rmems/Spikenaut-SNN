@@ -74,8 +74,8 @@ fi
 exclude_file="$(git rev-parse --git-path info/exclude)"
 mkdir -p "$(dirname "$exclude_file")"
 grep -qxF '/.venv/' "$exclude_file" 2>/dev/null || echo '/.venv/' >>"$exclude_file"
-# The anticipation-python CI job uses 3.15 and numpy>=2.5 needs >=3.12. An
-# executable .venv from another interpreter must be recreated, not reused.
+# ci.yml Python jobs use 3.15 and numpy>=2.5 needs >=3.12. An executable
+# .venv from another interpreter must be recreated, not reused.
 uv python install 3.15
 if ! .venv/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 15) else 1)' 2>/dev/null; then
   rm -rf .venv
