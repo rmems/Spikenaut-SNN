@@ -39,7 +39,8 @@ Don't claim otherwise in docs or comments.
   `myelin-accelerator` stub. Do not pass
   `--all-features`: that also enables `myelin-cuda`, which needs a CUDA 13.2+ toolkit. CI uses
   `--features myelin,training`.
-- Python **3.11** in CI. Top-level `tools/*.py` are stdlib only. `requirements-test.txt` pins
+- Python **3.11** for the verifier jobs and **3.15** for the anticipation tests in CI (numpy 2.5
+  requires >=3.12). Top-level `tools/*.py` are stdlib only. `requirements-test.txt` pins
   NumPy and pytest for anticipation tests; it does not install PyTorch or Matplotlib.
 - Julia **1.12.7** for `tools/anticipation` (CI).
 - Hermes tests need the `bwrap` preflight in the command block (`bubblewrap`, `libseccomp2`, AppArmor). The `sysctl` changes `kernel.apparmor_restrict_unprivileged_userns` for the whole host and is not restored automatically.
