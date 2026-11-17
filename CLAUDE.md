@@ -46,7 +46,7 @@ Run fmt and clippy before committing. Never pass `--all-features` (enables `myel
 
 ## Invariants and non-goals
 
-- Research artifact, not a validated supervisor; FPGA parity is unproven (README "Status"). Do not write docs or comments that claim otherwise.
+- See `AGENTS.md` for the research-artifact status, live-session evidence, and parity limits.
 - `Cargo.toml` has `publish = false`, so there is no `exclude`/`include` list to update.
 - Dependencies resolve from crates.io only; do not add git or path dependencies. `Cargo.lock` is tracked, so `--locked` is correct. 
 - Q8.8 encoding is a shared contract with the FPGA side. Re-run the `tools/` verifiers after any encoding change.
