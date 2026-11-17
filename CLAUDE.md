@@ -46,7 +46,7 @@ Run fmt and clippy before committing. Never pass `--all-features` (enables `myel
 
 ## Invariants and non-goals
 
-- Research artifact, not a validated supervisor; FPGA parity is unproven (README "Status"). Do not write docs or comments that claim otherwise.
+- Research artifact, not a validated supervisor. A live Basys 3 UART host session is recorded PASS (silicon-bridge smoke note, 2026-11-13) and a live telemetry→UART→on-chip-STDP loop ran during a GTA IV session on 2026-11-16/17. Strict software↔FPGA spike/action/membrane parity remains unmeasured — do not write docs or comments that claim otherwise.
 - `Cargo.toml` has `publish = false`, so there is no `exclude`/`include` list to update.
 - Dependencies resolve from crates.io only; do not add git or path dependencies. `Cargo.lock` is tracked, so `--locked` is correct. 
 - Q8.8 encoding is a shared contract with the FPGA side. Re-run the `tools/` verifiers after any encoding change.
