@@ -18,7 +18,11 @@ def _resolve_worker_paths(prepared=None, output=None):
     if not invocation_path.is_relative_to(cwd):
         raise ValueError("worker invocation path escapes output directory")
     invocation = json.loads(invocation_path.read_text(encoding="utf-8"))
-    return Path(invocation["prepared"]).resolve(), cwd
+    # worker-invocation.json is written by the orchestrator into the private
+    # output dir immediately before spawn; `prepared` is an operator campaign
+    # artifact, not request data, and legitimately lives outside the output
+    # tree, so it cannot be confined to `output`.
+    return Path(invocation["prepared"]).resolve(), cwd  # NOSONAR
 
 
 def run(stage, prepared=None, output=None):

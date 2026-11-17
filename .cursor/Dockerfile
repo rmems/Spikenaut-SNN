@@ -62,7 +62,11 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # profile, so root links the launchers onto /usr/local/bin. Switching user
 # avoids sudo (hadolint DL3004).
 RUN curl --proto '=https' --tlsv1.2 -fsSL https://install.julialang.org \
-        | sh -s -- --yes --default-channel 1.12.7
+        -o /tmp/juliaup-install.sh \
+    && echo "1d511625586b747272a9ce7008d38a622ed38ca58431cee8d42452e457ae5168  /tmp/juliaup-install.sh" \
+        | sha256sum -c - \
+    && sh /tmp/juliaup-install.sh --yes --default-channel 1.12.7 \
+    && rm /tmp/juliaup-install.sh
 USER root
 RUN ln -sf /home/ubuntu/.juliaup/bin/julia /home/ubuntu/.juliaup/bin/juliaup /usr/local/bin/
 USER ubuntu
