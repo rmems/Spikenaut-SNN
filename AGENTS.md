@@ -8,7 +8,13 @@ Spikenaut-SNN-v2 is a 16-neuron LIF network that learns a compact temporal repre
 machine state from live hardware and node telemetry, targeting a Xilinx Artix-7 FPGA (see
 `README.md`). It is the small-supervisor layer of the Artificial Interoception / Neuromorphic
 Supervisor program. Per the README's "Status — read this first", it is a **research artifact,
-not a validated supervisor**, and FPGA parity is unproven. Don't claim otherwise in docs or comments.
+not a validated supervisor**. A live Basys 3 UART host session is recorded as PASS
+(silicon-bridge `docs/hardware-smoke-note.md`, 2026-11-13), and a live host loop streaming
+real GPU telemetry into the flashed array with on-chip STDP (SW14) ran continuously during
+a GTA IV session on 2026-11-16/17 (silicon-bridge `examples/live_telemetry_loop.rs`).
+What remains unproven is strict software↔FPGA spike/action/membrane **parity** — the
+numerical agreement measurement against the shipped software bank has not been run.
+Don't claim otherwise in docs or comments.
 
 ## Layout
 
