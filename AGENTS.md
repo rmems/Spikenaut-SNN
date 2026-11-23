@@ -11,7 +11,13 @@ Supervisor program. Per the README's "Status — read this first", it is a **res
 not a validated supervisor**. A live Basys 3 UART host session is recorded as PASS
 (silicon-bridge `docs/hardware-smoke-note.md`, 2026-11-13), and a live host loop streaming
 real GPU telemetry into the flashed array with on-chip STDP (SW14) ran continuously during
-a GTA IV session on 2026-11-16/17 (silicon-bridge `examples/live_telemetry_loop.rs`).
+a GTA IV session on 2026-11-16/17 (silicon-bridge `examples/live_telemetry_loop.rs`). A second
+live session streamed Kingdom Come: Deliverance 2 telemetry for ~5.2h / 37,664 exchanges on
+2026-11-22 with on-chip STDP enabled (SW14), and that recorded session completed a full
+offline replay through the board via silicon-bridge `examples/replay_log.rs` — the first
+full-session replay pass (37,664/37,664 ticks, 0 errors; a replay record, not parity
+evidence). The dataset lives at
+`rmems/kingdom-come-deliverance-2-hardware-telemetry` on Hugging Face.
 What remains unproven is strict software↔FPGA spike/action/membrane **parity** — the
 numerical agreement measurement against the shipped software bank has not been run.
 Don't claim otherwise in docs or comments.
