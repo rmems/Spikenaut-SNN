@@ -15,7 +15,7 @@ bank as the analog reference when comparing event encodings.
 | `temporal_weight` | Host reference; possible FPGA approximation | Computes `exp(-abs(dt)/τ)` in Float32 for finite differences and positive finite τ. An HDL lookup table would need a time range, scale, rounding rule and error bound. |
 | `spike_attention_discrete` | Host candidate | Accumulates products of values with the same ID, ignoring time, then applies a readout. Multiple context events contribute multiple times. AER routing only selects a destination. |
 | `spike_attention_temporal` | Host candidate | Weights each matching-ID pair by temporal distance. An offline comparison at tick t must exclude future context to remain causal. |
-| `spike_attention_continuous` | Host candidate | Applies the temporal kernel within the smaller of two buffer windows. A hardware implementation would need a bounded history, overflow policy and accumulator-width analysis. |
+| `spike_attention_continuous` | Host candidate | Bounds the gap between paired events by the smaller buffer window. Old pairs can still contribute until the caller prunes each buffer at the scoring tick. Hardware would need a bounded history, overflow policy and accumulator-width analysis. |
 | `normalize_l1!`, `normalize_max!` | Host diagnostics only | Divide by a positive sum or positive maximum respectively. Empty vectors or nonpositive denominators pass through. Both change activation scale and are inapplicable to the shipped sensor min–max transform. |
 
 The kernels apply a readout with one row per source neuron and one column per
@@ -39,8 +39,9 @@ context event at tick 1, a unit readout yields 1 for discrete attention and
 Preserve 16 lanes in the logical stimulus. The current silicon consumes the
 lowest nonzero lane, so at most one of lanes 0–4 may carry an event in each
 frame of a board-compatible candidate. Lanes 5–15 stay zero. Encode the selected
-amplitude on the signed Q8.8 grid. Two positive words addressing the same lane
-can produce the same binary event on this decoder. Board comparisons therefore
+amplitude on the signed Q8.8 grid. Every nonzero word on the selected lane
+produces the same binary event regardless of sign or magnitude. Julia's event
+value can retain both. Board comparisons therefore
 need the emitted lane/tick sequence as well as the numeric frame values.
 SpikeStream supplies event-stream features; converting raw telemetry into an
 event sequence is a separate experimental choice under #97. Board spike,
