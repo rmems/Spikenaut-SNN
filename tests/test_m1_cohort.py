@@ -1,23 +1,36 @@
 """CPU CLI coverage for the M1 session cohort contract."""
 
+import io
 import json
-import subprocess
-import sys
 import tempfile
 import unittest
+from collections.abc import Callable
+from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import dataclass
 from pathlib import Path
 
-from tools.m1_cohort import FIXTURE_SPLIT
+from tools.m1_cohort import FIXTURE_SPLIT, main
 
-ROOT = Path(__file__).resolve().parents[1]
+@dataclass(frozen=True)
+class CliResult:
+    returncode: int
+    stdout: str
+    stderr: str
 
 
-def invoke(*args: str, module: bool = False) -> subprocess.CompletedProcess[str]:
-    entry = ["-m", "tools.m1_cohort"] if module else ["tools/m1_cohort.py"]
-    return subprocess.run(
-        [sys.executable, *entry, *args], cwd=ROOT, text=True, capture_output=True, check=False
-    )
+def invoke_main(main_function: Callable[[list[str]], int], *args: str) -> CliResult:
+    """Exercise argument parsing and the CLI's stdout/stderr contract in process."""
+    out, err = io.StringIO(), io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        try:
+            code = main_function(list(args))
+        except SystemExit as exc:
+            code = int(exc.code)
+    return CliResult(code, out.getvalue(), err.getvalue())
 
+
+def invoke(*args: str) -> CliResult:
+    return invoke_main(main, *args)
 
 class CohortTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -36,7 +49,7 @@ class CohortTest(unittest.TestCase):
             '{"episode_id":"gpu-000171","gpu_temp_c":20}',
         ]
 
-    def local(self) -> subprocess.CompletedProcess[str]:
+    def local(self) -> CliResult:
         self.data.write_text("\n".join(self.rows) + "\n", encoding="utf-8")
         self.manifest.write_text(json.dumps(self.split), encoding="utf-8")
         return invoke("--jsonl", str(self.data), "--split-manifest", str(self.manifest))
@@ -48,12 +61,11 @@ class CohortTest(unittest.TestCase):
         self.assertEqual(result.stdout, "")
 
     def test_default_cli_is_deterministic_and_names_fixture(self) -> None:
-        script = invoke()
-        module = invoke(module=True)
-        self.assertEqual(script.returncode, 0, script.stderr)
-        self.assertEqual(module.returncode, 0, module.stderr)
-        self.assertEqual(script.stdout, module.stdout)
-        report = json.loads(script.stdout)
+        first = invoke()
+        second = invoke()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(first, second)
+        report = json.loads(first.stdout)
         self.assertEqual(report["evidence"], "synthetic-method-fixture")
         self.assertEqual(report["splits"]["test"]["rows"], 64)
         self.assertEqual(invoke("--source-revision", "unverified").returncode, 2)
