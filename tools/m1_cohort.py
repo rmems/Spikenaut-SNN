@@ -9,7 +9,7 @@ import json
 import re
 import sys
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 if __package__:
@@ -57,6 +57,8 @@ class Cohort:
     samples: list[Sample]
     split_by_episode: dict[str, str]
     report: dict
+    # Sensor units before the shipped analog adapter clips or rescales them.
+    measurements: list[tuple] = field(default_factory=list)
 
 
 def _require_ascii_episode(episode: object, where: str) -> None:
@@ -192,7 +194,8 @@ def preflight(jsonl: Path, split_manifest: Path, source_revision: str | None) ->
         },
         "splits": _summarize(samples, split_by_episode, temperature_dropouts),
     }
-    return Cohort(samples, split_by_episode, report)
+    measurements = [tuple(row.get(name) for name in LIVE_COLUMNS) for _, row in records]
+    return Cohort(samples, split_by_episode, report, measurements)
 
 
 def add_cohort_args(parser: argparse.ArgumentParser) -> None:
