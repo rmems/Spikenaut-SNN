@@ -48,3 +48,50 @@ membrane and action agreement remains unmeasured for this integration.
 [UART decoder issue](https://github.com/rmems/silicon-hdl/issues/112)
 · [Silicon reference and simulation harness](https://github.com/rmems/silicon-hdl/pull/116)
 · [SpikeStream package](https://github.com/rmems/SpikeStream.jl/tree/a44980763558df083070dac7aeb2471d03a0df6c)
+
+## Prepare a paired replay for SpikeStream
+
+```sh
+python -m tools.temporal_replay capture.jsonl --encoding logged > logged.jsonl
+python -m tools.temporal_replay capture.jsonl --encoding delta > delta.jsonl
+python -m tools.temporal_replay capture.jsonl --encoding delta --format events > delta.tsv
+```
+
+Use one contiguous live-loop capture with five measured `raw` values, the five
+recorded wire `stim` values, gain and a tick index on each row. The command
+checks the whole input before emitting frames. A missing sample, tick reset,
+or legacy capture without raw values requires a different input. Both JSONLs
+retain all ticks, including silence. The bridge's `replay_log` reads their
+five compact stimulus entries and zero-fills the other eleven lanes. Match
+the recording's tick interval explicitly when replaying it.
+[Replay reader](https://github.com/rmems/silicon-bridge/blob/b0cdcf8776dbe98fcb1519185edddbc4ce74fb5e/examples/replay_log.rs)
+
+`logged` preserves each recorded wire stimulus. The experimental `delta`
+encoder applies frozen binary32 min–max scaling to the raw measurements. Its
+first tick initializes all five anchors and emits silence. On later ticks it
+sends a unit pulse for the lane with the largest absolute change from its
+anchor if that change reaches 1/32. Ties select the lowest lane. Only the
+winning lane updates its anchor, so a persistent change on another lane
+remains eligible at the next tick. This threshold is an experimental setting.
+
+The TSV contains integer `tick<TAB>axon` pairs for nonzero inputs. SpikeStream
+accepts a zero-based ID as an opaque label and its constructor takes time first.
+Use the full capture's start and exclusive end to count silent ticks in rates.
+
+```julia
+using SpikeStream
+events = map(readlines("delta.tsv")) do line
+    tick, axon = parse.(Int, split(line))
+    SpikeEvent(tick, axon)
+end
+population_spike_features(events; t_start=1, t_end=4908, n_total_units=16)
+```
+
+On the 4,907-tick `live-fpga-log-cyberpunk2077-run1.jsonl` capture (SHA-256
+`20f99b1bafae84e76c00f40311df9c056881696976ff6bc17c88fe2364489efb`),
+the logged sequence drove 4,907 input events. The delta sequence drove 199,
+distributed across lanes 0–4 as 7, 103, 61, 17 and 11. SpikeStream reported
+five active units and 0.04055 input events per frame on the delta stream.
+These measurements characterize the prepared inputs. Adopting a candidate
+under #97 still requires paired board spike and membrane responses.
+[SpikeStream revision used for the measurement](https://github.com/rmems/SpikeStream.jl/tree/c7b8cf6bcd40da9ae116c3d69d4c0cda2641d240)
