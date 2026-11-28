@@ -101,7 +101,9 @@ cmp "${TMPDIR:-/tmp}/m1-cohort-script.json" "${TMPDIR:-/tmp}/m1-cohort-module.js
 python3 -m unittest tests.test_m1_cohort -v
 python3 tools/m1_arm_plan.py
 python3 -m tools.m1_arm_plan
-python3 -m unittest tests.test_m1_arm_plan -v
+python3 tools/m1_features.py
+python3 -m tools.m1_features
+python3 -m unittest tests.test_m1_arm_plan tests.test_m1_features -v
 
 julia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'
 julia --startup-file=no --project=tools/anticipation tools/anticipation/test_train.jl

@@ -75,3 +75,13 @@ to run that bank on spikes, and no checkpoint or measured result is produced.
 
 Run the arm-planning regression tests with
 `python3 -m unittest tests.test_m1_arm_plan -v`.
+
+### Extract the paired rows
+
+Run `python3 -m tools.m1_features` with the same projection and split flags.
+It emits one JSON object per common row, with split, episode, original line number,
+five RAW values in live-column order, two KINETIC values (trailing eight-sample
+mean in °C and W), and their concatenation as HYBRID. The arithmetic uses the
+original sensor units before normalization or clipping. Missing measurements break
+the affected window, and each episode starts with empty history. The default
+input is the synthetic fixture. No checkpoint is required for feature extraction.
