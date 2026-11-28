@@ -94,10 +94,9 @@ CLAIMS: tuple[Claim, ...] = (
     Claim(
         name="measured-input-channels",
         why=(
-            "Every figure quoted across #2, #3, #4 and #13 was measured on five "
-            "live GPU sensors. A cofire or Hamming number is unreadable without "
-            "knowing it was five channels and not sixteen. The unqualified "
-            "16-channel specification row is the claim the correction removed."
+            "The exp-025 cofire and Hamming measurements use five live GPU "
+            "sensors. The historical bank in issue #2 used a separate dataset. "
+            "The sixteen physical axons describe model width."
         ),
         required=(
             "mem_util_pct",
@@ -106,7 +105,10 @@ CLAIMS: tuple[Claim, ...] = (
             "sm_clock_mhz",
             "mem_clock_mhz",
         ),
-        forbidden=(STALE_INPUT_CHANNELS_ROW,),
+        forbidden=(
+            STALE_INPUT_CHANNELS_ROW,
+            "was measured on these five GPU sensors",
+        ),
     ),
     Claim(
         name="neuromod-is-a-declared-dependency",
