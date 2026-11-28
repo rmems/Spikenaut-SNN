@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import sys
 import tomllib
 from collections import Counter
@@ -29,6 +30,8 @@ else:  # python3 tools/m1_arm_plan.py
 
 ROOT = Path(__file__).resolve().parents[1]
 CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index"
+CRATE_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?")
+CRATE_CHECKSUM = re.compile(r"[a-f0-9]{64}")
 SCHEMA = "spikenaut.m1-arm-plan.v1"
 # Proposed eligibility only: the existing Rust KineticPipeline returns partial SMAs.
 SMA_WINDOW = 8
@@ -43,23 +46,44 @@ UNITS = {
 }
 
 
-def _dependencies() -> dict:
-    payload = (ROOT / "Cargo.lock").read_bytes()
-    packages = tomllib.loads(payload.decode("utf-8"))["package"]
-    versions = {}
+def _dependency_pins(payload: bytes) -> dict:
+    try:
+        packages = tomllib.loads(payload.decode("utf-8")).get("package")
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise ParseError(f"invalid Cargo.lock: {exc}") from exc
+    if not isinstance(packages, list) or not packages or any(
+        not isinstance(item, dict) or not isinstance(item.get("name"), str)
+        for item in packages
+    ):
+        raise ParseError("Cargo.lock must contain named [[package]] entries")
+
+    versions: dict[str, str] = {}
+    checksums: dict[str, str] = {}
     for name in ("kinetic-signals", "axon-encoder"):
         found = [item for item in packages if item["name"] == name]
         if len(found) != 1 or found[0].get("source") != CRATES_IO:
             raise ParseError(f"Cargo.lock must pin exactly one crates.io {name} version")
-        versions[name] = found[0]["version"]
-    return {"versions": versions, "cargo_lock_sha256": sha256_bytes(payload)}
+        version, checksum = found[0].get("version"), found[0].get("checksum")
+        if not isinstance(version, str) or not CRATE_VERSION.fullmatch(version):
+            raise ParseError(f"Cargo.lock has an invalid {name} version")
+        if not isinstance(checksum, str) or not CRATE_CHECKSUM.fullmatch(checksum):
+            raise ParseError(f"Cargo.lock has an invalid {name} checksum")
+        versions[name], checksums[name] = version, checksum
+    return {
+        "versions": versions,
+        "checksums": checksums,
+        "cargo_lock_sha256": sha256_bytes(payload),
+    }
 
+
+def _dependencies() -> dict:
+    return _dependency_pins((ROOT / "Cargo.lock").read_bytes())
 
 def row_eligibility(cohort: Cohort) -> Iterator[tuple[str, str, int, bool, bool]]:
     """Yield RAW and KINETIC readiness after only the current/previous rows.
 
     Missing measurements break only the affected sensor's run. Every new
-    episode starts a fresh run. An observed zero is a finite measurement.
+    episode starts a fresh run. The cohort has already masked v3 thermal dropouts.
     """
     previous = None
     runs = {name: 0 for name in SMA_SOURCES}
@@ -86,7 +110,7 @@ def _coverage(cohort: Cohort) -> dict:
         counts[split]["KINETIC"] += kinetic
         if raw and kinetic:
             counts[split]["HYBRID"] += 1
-            common[split].update(f"{episode},{line}\n".encode("ascii"))
+            common[split].update(f"{episode},{line}\n".encode("utf-8"))
     return {
         split: {
             "available_rows": dict(counts[split]),
@@ -146,7 +170,7 @@ def build_plan(cohort: Cohort) -> dict:
         "proposed_encoder": "axon-encoder/rate",
         "sampling": "source row order; physical cadence must be established separately",
         "normalization": "not fitted; later fit on train only",
-        "missing_policy": "no imputation; mask unrunnable rows and reset SMA history across gaps",
+        "missing_policy": "no imputation; mask unrunnable rows and reset SMA history across missing readings or v3 thermal dropouts",
         "measurement_status": "no features computed, encoding run, or checkpoint evaluated",
         "paired_coverage": availability,
         "splits_without_common_rows": [
@@ -161,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         report = build_plan(cohort_from_args(args))
-    except (ParseError, BankError, OSError, tomllib.TOMLDecodeError, OverflowError) as exc:
+    except (ParseError, BankError, OSError, OverflowError) as exc:
         print(f"M1 arm plan refused: {exc}", file=sys.stderr)
         return 2
     sys.stdout.write(dumps_manifest(report))

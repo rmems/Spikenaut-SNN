@@ -2,13 +2,17 @@
 
 import hashlib
 import json
+import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from tests.test_m1_cohort import CliResult, invoke_main
 from tools.hamming_encode import Sample
 from tools.m1_arm_plan import SMA_WINDOW, build_plan, main, row_eligibility
 from tools.m1_cohort import Cohort, FIXTURE_JSONL
+from tools.model_bank import SHIPPED_MANIFEST, load_model_bank
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -92,7 +96,73 @@ class ArmPlanTest(unittest.TestCase):
         self.assertEqual(plan["paired_coverage"]["test"]["available_rows"]["RAW"], 1)
         self.assertEqual(plan["paired_coverage"]["test"]["common_rows"], 0)
 
-    def test_no_switch_can_route_spikes_into_shipped_reference(self) -> None:
-        result = run_cli("--model-id", "merged_v2")
-        self.assertEqual(result.returncode, 2)
+    def test_reference_rejects_a_different_attested_input_contract(self) -> None:
+        bank = load_model_bank(SHIPPED_MANIFEST)
+        entry = replace(bank.select("merged_v2"), feature_map_id="spikenaut.m1.raw-rate.v1")
+        with patch("tools.m1_arm_plan.load_model_bank", return_value=replace(bank, entries=(entry,))):
+            result = run_cli()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("feature_map_id", result.stderr)
+        self.assertIn("not the replayed contract", result.stderr)
         self.assertEqual(result.stdout, "")
+
+    def test_invalid_lock_metadata_refuses_cleanly(self) -> None:
+        valid = (
+            b'[[package]]\nname = "kinetic-signals"\nversion = "1.0.0"\n'
+            b'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+            b'checksum = "' + b"a" * 64 + b'"\n'
+        )
+        cases = (
+            (b"version = 4", "named [[package]] entries"),
+            (b"package = [1]", "named [[package]] entries"),
+            (b"package = [\xff", "invalid Cargo.lock"),
+            (b"package = [", "invalid Cargo.lock"),
+            (valid.replace(b'version = "1.0.0"', b'version = "bad"'), "invalid kinetic-signals version"),
+            (valid.replace(b"a" * 64, b"bad"), "invalid kinetic-signals checksum"),
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with patch("tools.m1_arm_plan.ROOT", root):
+                for payload, expected in cases:
+                    with self.subTest(expected=expected):
+                        (root / "Cargo.lock").write_bytes(payload)
+                        result = run_cli()
+                        self.assertEqual(result.returncode, 2, result.stderr)
+                        self.assertIn(expected, result.stderr)
+                        self.assertNotIn("Traceback", result.stderr)
+                        self.assertEqual(result.stdout, "")
+
+    def test_v3_thermal_dropout_breaks_the_candidate_window(self) -> None:
+        splits = {"train": ["gpu-000001"], "val": ["gpu-000140"], "test": ["gpu-000170"]}
+        temperatures = {
+            "train": [35] * (SMA_WINDOW - 1) + [0, 35],
+            "val": [35] * SMA_WINDOW,
+            "test": [35] * SMA_WINDOW,
+        }
+        records = [
+            {
+                "episode_id": episodes[0],
+                "mem_util_pct": 0,
+                "power_w": 50,
+                "gpu_temp_c": temperature,
+                "sm_clock_mhz": 180,
+                "mem_clock_mhz": 405,
+            }
+            for split, episodes in splits.items()
+            for temperature in temperatures[split]
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            data, manifest = root / "telemetry.jsonl", root / "splits.json"
+            data.write_text("\n".join(map(json.dumps, records)), encoding="utf-8")
+            manifest.write_text(
+                json.dumps({"schema_version": "spikenaut.split-manifest.v1", "splits": splits}),
+                encoding="utf-8",
+            )
+            result = run_cli("--jsonl", str(data), "--split-manifest", str(manifest))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        train = report["paired_coverage"]["train"]
+        self.assertEqual(train["available_rows"], {"RAW": SMA_WINDOW, "KINETIC": 0, "HYBRID": 0})
+        self.assertEqual(report["paired_coverage"]["val"]["common_rows"], 1)
+        self.assertEqual(report["splits_without_common_rows"], ["train"])
