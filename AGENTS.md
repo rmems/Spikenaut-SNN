@@ -95,9 +95,9 @@ python3 -m tools.recurrence_eval
 python3 tools/verify_model_bank.py dataset/merged_v2_rec_v1/model_bank.json --select merged_v2_rec_v1
 python3 tools/replay_frozen.py --bank-manifest dataset/merged_v2_rec_v1/model_bank.json
 python3 -m unittest tests.test_recurrence tests.test_recurrence_variant -v
-python3 tools/m1_cohort.py > "$TMPDIR/m1-cohort-script.json"
-python3 -m tools.m1_cohort > "$TMPDIR/m1-cohort-module.json"
-cmp "$TMPDIR/m1-cohort-script.json" "$TMPDIR/m1-cohort-module.json"
+python3 tools/m1_cohort.py > "${TMPDIR:-/tmp}/m1-cohort-script.json"
+python3 -m tools.m1_cohort > "${TMPDIR:-/tmp}/m1-cohort-module.json"
+cmp "${TMPDIR:-/tmp}/m1-cohort-script.json" "${TMPDIR:-/tmp}/m1-cohort-module.json"
 python3 -m unittest tests.test_m1_cohort -v
 
 julia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'
