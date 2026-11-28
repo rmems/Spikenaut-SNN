@@ -58,7 +58,7 @@ class Cohort:
     split_by_episode: dict[str, str]
     report: dict
     # Sensor units before the shipped analog adapter clips or rescales them.
-    measurements: list[tuple] = field(default_factory=list)
+    measurements: list[tuple[float | None, ...]] = field(default_factory=list)
 
 
 def _require_ascii_episode(episode: object, where: str) -> None:
@@ -194,7 +194,13 @@ def preflight(jsonl: Path, split_manifest: Path, source_revision: str | None) ->
         },
         "splits": _summarize(samples, split_by_episode, temperature_dropouts),
     }
-    measurements = [tuple(row.get(name) for name in LIVE_COLUMNS) for _, row in records]
+    if len(samples) != len(records):
+        raise ParseError("preflight must retain every source row for physical-unit features")
+    measurements = []
+    for sample, (line, row) in zip(samples, records, strict=True):
+        if sample.source_line != line:
+            raise ParseError(f"feature measurement and selected sample disagree at line {line}")
+        measurements.append(tuple(row.get(name) for name in LIVE_COLUMNS))
     return Cohort(samples, split_by_episode, report, measurements)
 
 
