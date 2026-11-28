@@ -5,14 +5,17 @@
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import sys
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 if __package__:
     from .hamming_const import LIVE_COLUMNS
     from .hamming_encode import Sample, parse_jsonl_text, select_samples
+    from .model_bank_errors import BankParseError
     from .model_bank_json import dumps_manifest
     from .q88_core import ParseError
     from .replay_inputs import (
@@ -25,6 +28,7 @@ if __package__:
 else:  # python3 tools/m1_cohort.py
     from hamming_const import LIVE_COLUMNS
     from hamming_encode import Sample, parse_jsonl_text, select_samples
+    from model_bank_errors import BankParseError
     from model_bank_json import dumps_manifest
     from q88_core import ParseError
     from replay_inputs import (
@@ -41,6 +45,11 @@ FIXTURE_SPLIT = ROOT / "fixtures" / "m1" / "splits.json"
 SCHEMA_VERSION = "spikenaut.m1-cohort.v1"
 PROJECTION = "spikenaut.state-telemetry.v3.live-five-projection.v1"
 PROJECTION_COLUMNS = frozenset(("episode_id", *LIVE_COLUMNS))
+EPISODE_ID = re.compile(r"gpu-[0-9]{6}")
+TEMPERATURE = "gpu_temp_c"
+# Recognize exact fixture rows independently of filename, whitespace, or line endings.
+FIXTURE_ROWS = 160
+FIXTURE_FINGERPRINT = "sha256:51e4173a155e7321afcf07d3a31f5e2e2988051c4dd206d993657a5017febd4f"
 
 
 @dataclass(frozen=True)
@@ -50,26 +59,70 @@ class Cohort:
     report: dict
 
 
+def _require_ascii_episode(episode: object, where: str) -> None:
+    if not isinstance(episode, str) or not EPISODE_ID.fullmatch(episode):
+        raise ParseError(f"{where}: expected an ASCII gpu-NNNNNN episode ID, got {episode!r}")
+
+
 def _split_lookup(path: Path, payload: bytes) -> dict[str, str]:
-    splits = _split_manifest_entries(
-        path, _utf8_or_refuse(payload, path, "split manifest")
-    )
+    try:
+        splits = _split_manifest_entries(
+            path, _utf8_or_refuse(payload, path, "split manifest")
+        )
+    except BankParseError as exc:
+        raise ParseError(f"invalid split manifest: {exc}") from exc
     for split in SPLIT_NAMES:
         if not splits.get(split):
             raise ParseError(f"split {split!r} must declare at least one episode")
+    # The shared validator rejects duplicate and cross-split assignments.
+    for split, episodes in splits.items():
+        for episode in sorted(episodes):
+            _require_ascii_episode(episode, f"split {split!r}")
     return {
         episode: split for split, episodes in splits.items() for episode in episodes
     }
 
 
-def _check_projection(records: list[tuple[int, dict]]) -> None:
+def _is_fixture(jsonl: Path, records: list[tuple[int, dict]]) -> bool:
+    if jsonl.resolve() == FIXTURE_JSONL:
+        return True
+    if len(records) != FIXTURE_ROWS:
+        return False
+    canonical = json.dumps(
+        [record for _, record in records],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("ascii")
+    return sha256_bytes(canonical) == FIXTURE_FINGERPRINT
+
+
+def _project_rows(
+    records: list[tuple[int, dict]],
+) -> tuple[list[Sample], set[int]]:
+    """Keep caller order and all ticks; mask only the documented v3 sentinel."""
+    projected: list[tuple[int, dict]] = []
+    temperature_dropouts: set[int] = set()
     for lineno, record in records:
         extra = record.keys() - PROJECTION_COLUMNS
         if extra:
             raise ParseError(
                 f"line {lineno}: unsupported projected columns: {', '.join(sorted(extra))}"
             )
+        _require_ascii_episode(record.get("episode_id"), f"line {lineno}")
+        if len(record) == 1:
+            # Every sensor is absent; preserve the tick for missing-run accounting.
+            record = {**record, LIVE_COLUMNS[0]: None}
+        if type(record.get(TEMPERATURE)) in (int, float) and record[TEMPERATURE] == 0:
+            temperature_dropouts.add(lineno)
+        projected.append((lineno, record))
 
+    samples = select_samples(projected, "all")
+    for index, sample in enumerate(samples):
+        if sample.source_line in temperature_dropouts:
+            samples[index] = replace(sample, missing=(*sample.missing, TEMPERATURE))
+    return samples, temperature_dropouts
 
 def _verify_coverage(samples: list[Sample], split_by_episode: dict[str, str]) -> None:
     observed = {sample.episode_id for sample in samples}
@@ -84,22 +137,29 @@ def _verify_coverage(samples: list[Sample], split_by_episode: dict[str, str]) ->
 
 
 def _summarize(
-    samples: list[Sample], split_by_episode: dict[str, str]
+    samples: list[Sample], split_by_episode: dict[str, str], temperature_dropouts: set[int]
 ) -> dict[str, dict]:
     rows: Counter[str] = Counter()
+    sentinel_count: Counter[str] = Counter()
     missing: dict[str, Counter[str]] = {name: Counter() for name in SPLIT_NAMES}
     episodes: dict[str, set[str]] = {name: set() for name in SPLIT_NAMES}
     for sample in samples:
         split = split_by_episode[sample.episode_id]
         rows[split] += 1
         missing[split].update(sample.missing)
+        if sample.source_line in temperature_dropouts:
+            sentinel_count[split] += 1
         episodes[split].add(sample.episode_id)
     return {
         split: {
             "episodes": sorted(episodes[split]),
             "rows": rows[split],
             "observed": {name: rows[split] - missing[split][name] for name in LIVE_COLUMNS},
-            "missing_or_null": {name: missing[split][name] for name in LIVE_COLUMNS},
+            "missing_or_null": {
+                name: missing[split][name] - (sentinel_count[split] if name == TEMPERATURE else 0)
+                for name in LIVE_COLUMNS
+            },
+            "dropout_sentinel": {TEMPERATURE: sentinel_count[split]},
         }
         for split in SPLIT_NAMES
     }
@@ -115,10 +175,9 @@ def preflight(jsonl: Path, split_manifest: Path, source_revision: str | None) ->
         jsonl.name,
         strict_keys=True,
     )
-    _check_projection(records)
-    samples = select_samples(records, "all")
+    samples, temperature_dropouts = _project_rows(records)
     _verify_coverage(samples, split_by_episode)
-    is_fixture = payload == FIXTURE_JSONL.read_bytes()
+    is_fixture = _is_fixture(jsonl, records)
     if is_fixture and source_revision is not None:
         raise ParseError("the bundled synthetic fixture cannot declare a source revision")
     report = {
@@ -131,7 +190,7 @@ def preflight(jsonl: Path, split_manifest: Path, source_revision: str | None) ->
             "jsonl": sha256_bytes(payload),
             "split_manifest": sha256_bytes(split_bytes),
         },
-        "splits": _summarize(samples, split_by_episode),
+        "splits": _summarize(samples, split_by_episode, temperature_dropouts),
     }
     return Cohort(samples, split_by_episode, report)
 

@@ -208,8 +208,9 @@ jobs:
 
       - name: Preflight the M1 session cohort (method fixture)
         run: |
-          python3 tools/m1_cohort.py
-          python3 -m tools.m1_cohort
+          python3 tools/m1_cohort.py > "$RUNNER_TEMP/m1-cohort-script.json"
+          python3 -m tools.m1_cohort > "$RUNNER_TEMP/m1-cohort-module.json"
+          cmp "$RUNNER_TEMP/m1-cohort-script.json" "$RUNNER_TEMP/m1-cohort-module.json"
           python3 -m unittest tests.test_m1_cohort -v
 
   anticipation-julia:

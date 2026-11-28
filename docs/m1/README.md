@@ -15,19 +15,25 @@ then pass:
 
 ```sh
 python3 tools/m1_cohort.py --jsonl state_telemetry.jsonl \
-  --split-manifest cohort-splits.json --source-revision <dataset-revision>
+  --split-manifest cohort-splits.json --source-revision "DATASET_REVISION"
 ```
 
 Use schema `spikenaut.split-manifest.v1` and set `train`, `val`, and `test`
-to nonempty lists of whole `gpu-NNNNNN` episode IDs. Include every input episode
+to nonempty lists of whole ASCII `gpu-NNNNNN` episode IDs. Include every input episode
 exactly once. Unlike replay's slice selector, preflight refuses silently dropped
 rows or manifest-only episodes, as well as cross-split overlap, interleaved
 sessions, duplicate row keys, nonfinite sensor inputs, and columns outside the
-five-sensor projection. For valid rows it reports session/tick counts and sensor
-availability, counting null/absent readings separately from observed zero.
-The SHA-256 values cover the exact bytes consumed. A supplied source revision is
-a declaration; the tool does not access the dataset provider or authenticate
-measurement provenance. The fixture cannot be relabeled by setting a revision.
+five-sensor projection. File order within each episode is retained; no clock
+or chronological order is inferred. For valid rows it reports session/tick
+counts and sensor availability. Null/absent readings and the v3 temperature
+zero-dropout sentinel are counted separately from observed readings. Zero on
+other sensor columns is an observation. A tick with all five sensors absent is
+kept with all five marked missing.
+
+The SHA-256 values cover the exact bytes consumed. Replace `DATASET_REVISION`
+with the dataset revision you used; it is optional and is not authenticated.
+The fixture, including equivalent copies with re-ordered JSON keys or different
+line endings, cannot be relabeled by setting a revision.
 
 This only checks the five-sensor projection. It does not qualify the full #20
 state contract, estimate stale data without trustworthy timestamps, fit
