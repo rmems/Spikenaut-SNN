@@ -223,6 +223,10 @@ jobs:
       - name: Test the time-resolved SynapticDistill trainer
         run: |
           julia --startup-file=no --project=tools/anticipation tools/anticipation/test_train.jl
+      - name: Check the shipped readout against frozen replay
+        run: |
+          python3 -m tools.replay_frozen --out-dir "$RUNNER_TEMP/distill-replay"
+          julia --startup-file=no --project=tools/anticipation tests/distill_readout.jl "$RUNNER_TEMP/distill-replay"
 
   anticipation-python:
     name: Anticipation Python

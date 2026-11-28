@@ -84,7 +84,7 @@ No learned SNN, LLM, FPGA controller, or online-training loop may disable or rai
 | Neurons | 16 |
 | Input channels | 16 wide; **live** exp-025 map is five legal sensors on axons 0–4 with axons 5–15 held at zero (game-blind). Front end is `stim::LiveStimAdapter` (analog current). Public `TelemetryEncoder` / `CHANNEL_MAP` is a deprecated historical coin proposal and **must not** be paired with this bank — see [Inputs](#inputs--live-exp-025-map-primary) |
 | Weight format | Q8.8 fixed-point |
-| Learning rules | **Live bank (exp-025):** reward-modulated STDP on the hidden layer (STDP plus a signed-reward eligibility term the trainer labels "e-prop eligibility"; the library `update_eprop!` / `update_ottt!` are stubs and not called) and a supervised delta-rule readout onto same-tick `(comfort, temp, power)`, with no anticipation target. **Historical (previous bank):** E-prop + OTTT, externally reported. See [Training provenance](#training-provenance) |
+| Learning rules | **Live bank (exp-025):** sidecar reward-modulated STDP on the hidden layer and a supervised delta-rule readout onto same-tick `(comfort, temp, power)`. The separate SynapticDistill library implements E-prop and OTTT for compatible model steps. **Historical (previous bank):** E-prop + OTTT, externally reported. See [Training provenance](#training-provenance) |
 | Clock | 1 kHz (1 ms resolution) |
 | Training speed | 35 µs/tick — externally reported |
 | Memory footprint | 672 bytes (336 Q8.8 codes) |
@@ -529,6 +529,10 @@ Julia Distill sidecar remains the established trainer for the documented exp-025
 and nothing in `dataset/merged_v2/` is overwritten.
 
 ## Training provenance
+
+The [SynapticDistill readout check](docs/distill-readout.md) maps frozen software
+replay to the library's model-step interface and checks all three scores against
+the shipped signed Q8.8 readout.
 
 **Live bank (exp-025).** Distill sidecar `scripts/spikenaut_train.jl` at `a1fa491`, seed **123**, **20** epochs, Hub v3 JSONL sha `26d7d7442605a32b11330f53f55e621750f31e775465209991f73f94a6c72c09` (805781 lines), legal 5 columns, frozen minmax lineage `74acdd0f`, episode split train `gpu-000000..138` / test `gpu-000170..198`. This repository still does not run that script. The [exp-025 provenance manifest](dataset/merged_v2/provenance.json) pins the five bank artifacts and their verified Hugging Face mirror. The original run has no independently verified byte-level attestation; the September 15 rerun reproduced the reported health and Hamming measurements but did not record its scratch artifact hashes. That script trains the hidden layer with reward-modulated STDP (STDP plus a signed-reward eligibility term) and the readout with a supervised delta rule onto same-tick `sample_readout_target` `(comfort, temp, power)`; there is no anticipation target.
 
