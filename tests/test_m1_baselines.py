@@ -1,7 +1,8 @@
 import unittest
 from dataclasses import replace
 
-from tools.m1_baselines import evaluate
+from tools.m1_baselines import RIDGE, evaluate, fit
+from tools.m1_features import paired_rows
 from tools.m1_cohort import FIXTURE_JSONL, FIXTURE_SPLIT, preflight
 from tools.q88_core import ParseError
 from tools.recurrence_core import readout_target
@@ -36,3 +37,12 @@ class BaselineTest(unittest.TestCase):
                 self.cohort.samples[i] = replace(sample, missing=("gpu_temp_c",))
         with self.assertRaisesRegex(ParseError, "no paired rows"):
             evaluate(self.cohort)
+
+    def test_two_point_ridge_has_known_intercept_and_slope(self):
+        row = next(paired_rows(self.cohort))
+        rows = [replace(row, raw=(v,)) for v in (0.0, 1.0)]
+        model = fit(rows, [(0, 0, 0), (1, 1, 1)], "RAW")
+        slope = 1 / (1 + 2 * RIDGE)
+        for weight, intercept in model["weights"]:
+            self.assertAlmostEqual(weight, slope)
+            self.assertAlmostEqual(intercept, (1 - slope) / 2)
