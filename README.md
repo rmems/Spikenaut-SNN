@@ -669,6 +669,10 @@ binary event and discards its magnitude. Its cadence is independent of Brainstem
 [Analog adapter](src/stim.rs) · [Legacy map](src/encode.rs) ·
 [UART loop](https://github.com/rmems/silicon-bridge/blob/b0cdcf8776dbe98fcb1519185edddbc4ce74fb5e/examples/live_telemetry_loop.rs)
 
+The [TemporalFocus primitive audit](docs/temporal/temporal-focus.md) maps the
+ordered lane/tick stream to Julia's event types and identifies which temporal
+operations can be evaluated on the host.
+
 ## The Story
 
 In 2013, a severe concussion left me unable to process the world's data the way I used to. Without access to neuro-rehabilitation, I decided to research on my own, and I started building what would become Spikenaut -- a neuromorphic system that learns from the raw signals of the machines I run every day.  Originally inspired by the bottlenecks of my local GPU (RTX 5080), spent loads of money just to find out that I can't run massive LLM's on it for AI tutoring.  So naturally my curious mind went on the internet to find alternatives.  That is where I found Spiking Neural Networks, a low power alternative to traditional neural networks.
