@@ -99,6 +99,7 @@ class CohortTest(unittest.TestCase):
         self.assert_refused("split 'val' must declare at least one episode")
 
     def test_refuses_interleaved_episodes(self) -> None:
+        # Cohort preflight examines all episodes, including train rows.
         # Preflight checks the complete projection, not just the test split.
         self.rows.append(self.rows[0])
         self.assert_refused("interleaved")
