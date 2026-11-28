@@ -212,6 +212,12 @@ jobs:
           python3 -m tools.m1_cohort
           python3 -m unittest tests.test_m1_cohort -v
 
+      - name: Audit the M1 feature ablation coverage (method fixture)
+        run: |
+          python3 tools/m1_arm_plan.py
+          python3 -m tools.m1_arm_plan
+          python3 -m unittest tests.test_m1_arm_plan -v
+
   anticipation-julia:
     name: Anticipation Julia
     runs-on: ubuntu-latest

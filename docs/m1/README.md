@@ -33,3 +33,36 @@ This only checks the five-sensor projection. It does not qualify the full #20
 state contract, estimate stale data without trustworthy timestamps, fit
 normalization, evaluate an encoder, or run a checkpoint. No hardware,
 training, or safety-action result is produced.
+
+
+## RAW / KINETIC / HYBRID coverage
+
+[GitHub #14](https://github.com/rmems/Spikenaut-SNN/issues/14) /
+[RM-2319](https://linear.app/rpd-34/issue/RM-2319/research-consume-kinetic-signals-before-axon-encoder-and-benchmark-raw)
+uses the same preflight input. Run `python3 tools/m1_arm_plan.py` (or
+`python3 -m tools.m1_arm_plan`) with the same input flags. The plan audits
+how many identical ticks could be scored by all three arms before any
+encoding or training is attempted.
+
+- RAW: the five observed hardware sensors at the current row.
+- KINETIC: eight-row trailing SMAs of temperature and power, matching the
+  current Rust SMA window; eligibility requires full windows, not its
+  partial warm-up estimates. No feature values are computed in this audit.
+- HYBRID: raw and kinetic inputs side by side. A row is eligible only when
+  all features in both families are available.
+
+The availability pass uses only the current and earlier rows and resets
+at episode boundaries. An absent/null reading resets the affected SMA
+history; zero is observed data. It reports per-split common row counts
+and a digest over the eligible episode/source-line sequence, so a
+subsequent evaluation can check that all arms used the same rows. An
+empty split is visible in `splits_without_common_rows`; it is not ready
+for evaluation.
+
+All three experimental inputs propose the same rate encoder so the arms
+vary by feature family. The lockfile records dependency versions. Physical
+cadence must be established separately; row counts do not imply a clock.
+Normalization must be fitted on train only by a future run. Each spike arm
+requires a separate compatible checkpoint. The attested exp-025 digest is
+recorded solely as an analog reference. There is no route through this tool
+to run that bank on spikes, and no checkpoint or measured result is produced.
