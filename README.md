@@ -643,6 +643,32 @@ Published crates are pinned from crates.io only — no `git` or `path` pins for 
 
 What live mode loads is narrower than "merged_v2". Its accepted artifact is a Distill sidecar `snn_model.json` — the shape this repository publishes as `dataset/merged_v2/snn_model.json` — restored into `neuromod` 0.7, and it **rejects FPGA Q8.8 `.mem` dumps by design**; `model_path` accepts a sidecar JSON file, a hub `config.json`, or a directory containing one. The acceptance gate is narrower still than the artifact shape: `neuromod` 0.7 has no Distill readout matrix, so restore fails closed on any sidecar carrying an `output_weights` key — and the shipped merged_v2 sidecar carries per-neuron `output_weights`. Pointing `model_path` at it stops startup with no fallback, so the checkpoint the daemon actually ticks on today is its own committed synthetic fixture (not a trained model), configured separately. Live mode is LIF-only (`izh_count = 0`), matching this bank. `Cargo.toml` intentionally does not list the daemon: `tests/nir_graph.rs` holds the declared-dependency rows above equal to the manifest's `[dependencies]` under `cargo test` — adding a resolvable daemon dependency fails that test, not `cargo build`, which never runs it.
 
+### Vahtisiru feeder and live input lanes
+
+Vahtisiru owns NVML collection and the deterministic thermal/power brake. Brainstem
+owns the software network tick. A stalled publisher or absent neural consumer
+does not suspend the brake. Vahtisiru publishes a best-effort four-value sensory
+batch over UDP (default `127.0.0.1:9900`), in the order GPU temperature, power,
+graphics clock, memory utilization, with a validity mask. Its old neural control
+listener on port 9898 was retired. Connecting this publisher to Brainstem's
+ZeroMQ ingress would require a transport and schema adapter. Reproducing the
+bank's inputs would also require compatible normalization, an SM-clock reading
+and a memory-clock reading. Reordering the four published values cannot supply
+either missing clock measurement.
+[Feeder wire contract](https://github.com/rmems/vahtisiru/blob/f90eb115ec96fc5dd5b4d4ca2351764da2f7fc88/docs/ipc.md)
+· [Host ingress](https://github.com/Limen-Neural/brainstem-daemon/blob/08cebc20adfe9fa1ca3d65b62e3d4deba9b7da07/README.md)
+
+For `merged_v2`, zero-based axons **0–4** receive memory utilization, power,
+GPU temperature, SM clock and memory clock, in that order. Axons **5–15** are
+zero. In particular, temperature enters on axon 2. The historical coin encoder's
+power/temperature pair at 14–15 applies only to explicit legacy frames. Neither
+the four-value UDP publication nor the five-sensor live adapter maps a reading
+onto those two lanes. The Basys 3 host loop samples its own GPU fields and rotates
+one live lane per exchange. The current decoder uses the selected lane as a
+binary event and discards its magnitude. Its cadence is independent of Brainstem's 1 kHz tick.
+[Analog adapter](src/stim.rs) · [Legacy map](src/encode.rs) ·
+[UART loop](https://github.com/rmems/silicon-bridge/blob/b0cdcf8776dbe98fcb1519185edddbc4ce74fb5e/examples/live_telemetry_loop.rs)
+
 ## The Story
 
 In 2013, a severe concussion left me unable to process the world's data the way I used to. Without access to neuro-rehabilitation, I decided to research on my own, and I started building what would become Spikenaut -- a neuromorphic system that learns from the raw signals of the machines I run every day.  Originally inspired by the bottlenecks of my local GPU (RTX 5080), spent loads of money just to find out that I can't run massive LLM's on it for AI tutoring.  So naturally my curious mind went on the internet to find alternatives.  That is where I found Spiking Neural Networks, a low power alternative to traditional neural networks.
