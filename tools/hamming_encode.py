@@ -152,7 +152,18 @@ def load_jsonl(path: Path) -> list[tuple[int, dict]]:
     return parse_jsonl_text(read_utf8_text(path), path.name)
 
 
-def parse_jsonl_text(text: str, name: str) -> list[tuple[int, dict]]:
+def _unique_object(pairs: list[tuple[str, object]]) -> dict:
+    result: dict = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def parse_jsonl_text(
+    text: str, name: str, *, strict_keys: bool = False
+) -> list[tuple[int, dict]]:
     """``load_jsonl`` on already-read text; ``name`` labels errors.
 
     Callers that must hash the exact bytes they replayed read the file
@@ -169,7 +180,9 @@ def parse_jsonl_text(text: str, name: str) -> list[tuple[int, dict]]:
         if not line:
             continue
         try:
-            parsed = json.loads(line)
+            parsed = json.loads(
+                line, object_pairs_hook=_unique_object if strict_keys else None
+            )
         except json.JSONDecodeError as exc:
             raise ParseError(
                 f"{name}:{lineno}: not a JSON object ({exc})"
