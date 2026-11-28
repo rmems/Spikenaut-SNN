@@ -13,10 +13,11 @@ def sample(tick, raw):
 
 
 class TemporalReplayTest(unittest.TestCase):
-    def convert(self, rows, encoding, fmt="replay"):
+    def convert(self, rows, encoding, fmt="replay", separator="\n"):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "capture.jsonl"
-            path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+            path.write_text(separator.join(json.dumps(r, ensure_ascii=False) for r in rows),
+                            encoding="utf-8")
             out, err = io.StringIO(), io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):
                 code = main([str(path), "--encoding", encoding, "--format", fmt])
@@ -44,3 +45,15 @@ class TemporalReplayTest(unittest.TestCase):
                 code, out, err = self.convert([first, bad], "delta")
                 self.assertEqual((code, out), (2, ""))
                 self.assertIn("line 2", err)
+
+    def test_only_lf_or_crlf_delimits_capture_rows(self):
+        first = sample(1, [1, 20, 30, 400, 500])
+        first["note"] = "literal\u2028separator inside JSON string"
+        second = {**first, "tick": 2}
+        for separator in ("\n", "\r\n"):
+            code, out, err = self.convert([first, second], "logged", separator=separator)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(len(out.splitlines()), 2)
+        code, out, err = self.convert([first, second], "logged", separator="\v")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("line 1", err)

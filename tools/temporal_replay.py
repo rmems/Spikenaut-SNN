@@ -1,6 +1,7 @@
 """Prepare single-lane replay frames or SpikeStream events from one live capture."""
 
 import argparse
+from io import StringIO
 import json
 from pathlib import Path
 import sys
@@ -25,7 +26,8 @@ def unit_values(raw):
     unit = []
     for name, value in zip(LIVE_COLUMNS, raw, strict=True):
         lo, hi = FROZEN_MINMAX[name]
-        # Match the bridge's binary32 subtraction and division.
+        # Match the live UART bridge's f32 arithmetic. The software-only
+        # frozen replay adapter keeps wider affine intermediates.
         scaled = f32(f32(value - lo) / f32(hi - lo))
         unit.append(max(0.0, min(1.0, scaled)))
     return unit
@@ -72,7 +74,7 @@ def frames(source: Path, encoding: str):
     prior_tick = None
     anchors = []
     payload = _read_input_bytes(source, "live capture")
-    lines = _utf8_or_refuse(payload, source, "live capture").splitlines()
+    lines = StringIO(_utf8_or_refuse(payload, source, "live capture"))
     for line_no, line in enumerate(lines, 1):
         try:
             row = _parse_json(line, source=source)

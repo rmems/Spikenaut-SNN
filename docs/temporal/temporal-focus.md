@@ -43,6 +43,9 @@ amplitude on the signed Q8.8 grid. Every nonzero word on the selected lane
 produces the same binary event regardless of sign or magnitude. Julia's event
 value can retain both. Board comparisons therefore
 need the emitted lane/tick sequence as well as the numeric frame values.
+Compare against the FPGA's consumption tick. A new UART frame can replace a
+pending event before the FPGA consumes it, so arrival order alone cannot
+establish event alignment.
 SpikeStream supplies event-stream features; converting raw telemetry into an
 event sequence is a separate experimental choice under #97. Board spike,
 membrane and action agreement remains unmeasured for this integration.
