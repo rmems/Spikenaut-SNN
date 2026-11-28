@@ -20,7 +20,8 @@ class PairedFeaturesTest(unittest.TestCase):
         first = rows[0]
         readings = cohort.measurements[:8]
         self.assertEqual(first.raw, readings[-1])
-        self.assertEqual(first.kinetic, tuple(sum(r[i] for r in readings) / 8 for i in (2, 1)))
+        for value, index in zip(first.kinetic, (2, 1), strict=True):
+            self.assertAlmostEqual(value, sum(r[index] for r in readings) / 8)
         self.assertEqual(first.arms()["HYBRID"], first.raw + first.kinetic)
 
     def test_dropout_discards_old_window(self):
@@ -29,4 +30,4 @@ class PairedFeaturesTest(unittest.TestCase):
         cohort.samples[8] = replace(cohort.samples[8], missing=("gpu_temp_c",))
         rows = list(paired_rows(cohort))
         self.assertEqual([r.sample.source_line for r in rows[:2]], [8, 17])
-        self.assertEqual(rows[1].kinetic[0], sum(v[2] for v in cohort.measurements[9:17]) / 8)
+        self.assertAlmostEqual(rows[1].kinetic[0], sum(v[2] for v in cohort.measurements[9:17]) / 8)

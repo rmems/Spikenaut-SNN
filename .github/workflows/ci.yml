@@ -219,6 +219,9 @@ jobs:
           python3 -m tools.m1_arm_plan > "$RUNNER_TEMP/m1-arm-module.json"
           cmp "$RUNNER_TEMP/m1-arm-script.json" "$RUNNER_TEMP/m1-arm-module.json"
           python3 -m unittest tests.test_m1_arm_plan tests.test_m1_features -v
+          python3 tools/m1_features.py > "$RUNNER_TEMP/m1-feature-script.jsonl"
+          python3 -m tools.m1_features > "$RUNNER_TEMP/m1-feature-module.jsonl"
+          cmp "$RUNNER_TEMP/m1-feature-script.jsonl" "$RUNNER_TEMP/m1-feature-module.jsonl"
 
   anticipation-julia:
     name: Anticipation Julia
