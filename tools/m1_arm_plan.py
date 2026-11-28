@@ -46,7 +46,7 @@ UNITS = {
 }
 
 
-def _dependency_pins(payload: bytes) -> dict:
+def _lock_packages(payload: bytes) -> list[dict]:
     try:
         packages = tomllib.loads(payload.decode("utf-8")).get("package")
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
@@ -56,19 +56,27 @@ def _dependency_pins(payload: bytes) -> dict:
         for item in packages
     ):
         raise ParseError("Cargo.lock must contain named [[package]] entries")
+    return packages
 
+
+def _registry_pin(packages: list[dict], name: str) -> tuple[str, str]:
+    found = [item for item in packages if item["name"] == name]
+    if len(found) != 1 or found[0].get("source") != CRATES_IO:
+        raise ParseError(f"Cargo.lock must pin exactly one crates.io {name} version")
+    version, checksum = found[0].get("version"), found[0].get("checksum")
+    if not isinstance(version, str) or not CRATE_VERSION.fullmatch(version):
+        raise ParseError(f"Cargo.lock has an invalid {name} version")
+    if not isinstance(checksum, str) or not CRATE_CHECKSUM.fullmatch(checksum):
+        raise ParseError(f"Cargo.lock has an invalid {name} checksum")
+    return version, checksum
+
+
+def _dependency_pins(payload: bytes) -> dict:
+    packages = _lock_packages(payload)
     versions: dict[str, str] = {}
     checksums: dict[str, str] = {}
     for name in ("kinetic-signals", "axon-encoder"):
-        found = [item for item in packages if item["name"] == name]
-        if len(found) != 1 or found[0].get("source") != CRATES_IO:
-            raise ParseError(f"Cargo.lock must pin exactly one crates.io {name} version")
-        version, checksum = found[0].get("version"), found[0].get("checksum")
-        if not isinstance(version, str) or not CRATE_VERSION.fullmatch(version):
-            raise ParseError(f"Cargo.lock has an invalid {name} version")
-        if not isinstance(checksum, str) or not CRATE_CHECKSUM.fullmatch(checksum):
-            raise ParseError(f"Cargo.lock has an invalid {name} checksum")
-        versions[name], checksums[name] = version, checksum
+        versions[name], checksums[name] = _registry_pin(packages, name)
     return {
         "versions": versions,
         "checksums": checksums,

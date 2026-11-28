@@ -41,8 +41,9 @@ class BaselineTest(unittest.TestCase):
     def test_two_point_ridge_has_known_intercept_and_slope(self):
         row = next(paired_rows(self.cohort))
         rows = [replace(row, raw=(v,)) for v in (0.0, 1.0)]
-        model = fit(rows, [(0, 0, 0), (1, 1, 1)], "RAW")
-        slope = 1 / (1 + 2 * RIDGE)
-        for weight, intercept in model["weights"]:
+        starts, ends = (0, 2, 7), (1, 5, 3)
+        model = fit(rows, [starts, ends], "RAW")
+        for (weight, intercept), start, end in zip(model["weights"], starts, ends, strict=True):
+            slope = (end - start) / (1 + 2 * RIDGE)
             self.assertAlmostEqual(weight, slope)
-            self.assertAlmostEqual(intercept, (1 - slope) / 2)
+            self.assertAlmostEqual(intercept, (start + end - slope) / 2)

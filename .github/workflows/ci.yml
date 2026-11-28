@@ -222,6 +222,7 @@ jobs:
           python3 tools/m1_features.py > "$RUNNER_TEMP/m1-feature-script.jsonl"
           python3 -m tools.m1_features > "$RUNNER_TEMP/m1-feature-module.jsonl"
           cmp "$RUNNER_TEMP/m1-feature-script.jsonl" "$RUNNER_TEMP/m1-feature-module.jsonl"
+          python3 -m tools.m1_baselines > "$RUNNER_TEMP/m1-baselines.json"
 
   anticipation-julia:
     name: Anticipation Julia
