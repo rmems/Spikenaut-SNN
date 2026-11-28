@@ -5,7 +5,7 @@ import unittest
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 
-from tools.temporal_replay import MAX_TICK, main
+from tools.temporal_replay import main
 
 
 def sample(tick, raw):
@@ -60,7 +60,8 @@ class TemporalReplayTest(unittest.TestCase):
 
     def test_tick_and_exclusive_end_fit_julia_int64(self):
         raw = [1, 20, 30, 400, 500]
-        self.assertEqual(self.convert([sample(MAX_TICK, raw)], "logged")[0], 0)
-        code, out, err = self.convert([sample(MAX_TICK + 1, raw)], "logged")
+        last = 9_223_372_036_854_775_806
+        self.assertEqual(self.convert([sample(last, raw)], "logged")[0], 0)
+        code, out, err = self.convert([sample(last + 1, raw)], "logged")
         self.assertEqual((code, out), (2, ""))
-        self.assertIn(str(MAX_TICK), err)
+        self.assertIn(str(last), err)
