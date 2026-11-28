@@ -64,7 +64,9 @@ checks the whole input before emitting frames. A missing sample, tick reset,
 or legacy capture without raw values requires a different input. Both JSONLs
 retain all ticks, including silence. The bridge's `replay_log` reads their
 five compact stimulus entries and zero-fills the other eleven lanes. Match
-the recording's tick interval explicitly when replaying it.
+the recording's tick interval explicitly when replaying it. The bridge numbers
+its response ticks afresh; use frame position within each pass to align them
+to the original capture ticks.
 [Replay reader](https://github.com/rmems/silicon-bridge/blob/b0cdcf8776dbe98fcb1519185edddbc4ce74fb5e/examples/replay_log.rs)
 
 `logged` preserves each recorded wire stimulus. The experimental `delta`
@@ -78,6 +80,7 @@ remains eligible at the next tick. This threshold is an experimental setting.
 The TSV contains integer `tick<TAB>axon` pairs for nonzero inputs. SpikeStream
 accepts a zero-based ID as an opaque label and its constructor takes time first.
 Use the full capture's start and exclusive end to count silent ticks in rates.
+The example bounds below are specific to the Cyberpunk recording.
 
 ```julia
 using SpikeStream

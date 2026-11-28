@@ -75,6 +75,7 @@ python3 tools/live_stim_parity.py
 python3 -m tools.live_stim_parity
 python3 tools/live_stim_parity.py --self-test
 python3 -m tools.live_stim_parity --self-test
+python3 -m unittest tests.test_temporal_replay -v
 python3 tools/decision_parity.py
 python3 -m tools.decision_parity
 python3 tools/decision_parity.py --self-test

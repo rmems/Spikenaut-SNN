@@ -9,6 +9,7 @@ from .hamming_const import FROZEN_MINMAX, LIVE_COLUMNS, f32
 from .model_bank_errors import BankParseError
 from .model_bank_json import _parse_json
 from .q88_core import ParseError, Q88RangeError, as_finite_float, decode_q88, encode_q88
+from .replay_inputs import _read_input_bytes, _utf8_or_refuse
 
 DELTA = 1 / 32
 
@@ -30,44 +31,60 @@ def unit_values(raw):
     return unit
 
 
+def sample_tick(row, previous):
+    if not isinstance(row, dict) or "event" in row:
+        raise ParseError("expected a successful capture sample")
+    tick = row.get("tick")
+    if isinstance(tick, bool) or not isinstance(tick, int) or tick < 0:
+        raise ParseError("tick must be a nonnegative integer")
+    if previous is not None and tick != previous + 1:
+        raise ParseError("tick gap or reset; supply one contiguous capture")
+    return tick
+
+
+def logged_frame(row):
+    stim = five(row, "stim")
+    gain = as_finite_float(row.get("gain"), "gain")
+    if gain < 0 or sum(value != 0 for value in stim) > 1:
+        raise ParseError("expected a nonnegative gain and single-lane baseline")
+    if any(value != decode_q88(encode_q88(value)) for value in stim):
+        raise ParseError("baseline stim must contain the recorded Q8.8 wire values")
+    return stim, gain
+
+
+def delta_frame(raw, anchors):
+    current = unit_values(raw)
+    stim = [0.0] * len(current)
+    if not anchors:
+        anchors.extend(current)
+        return stim
+    changes = [abs(value - ref) for value, ref in zip(current, anchors, strict=True)]
+    lane = max(range(len(changes)), key=changes.__getitem__)
+    if changes[lane] >= DELTA:
+        stim[lane] = 1.0
+        anchors[lane] = current[lane]
+    return stim
+
+
 def frames(source: Path, encoding: str):
     """Validate the complete capture before its frames can reach a replay file."""
     result = []
     prior_tick = None
-    anchors = None
-    with source.open(encoding="utf-8") as lines:
-        for line_no, line in enumerate(lines, 1):
-            try:
-                row = _parse_json(line, source=source)
-                if not isinstance(row, dict) or "event" in row:
-                    raise ParseError("expected a successful capture sample")
-                tick = row.get("tick")
-                if type(tick) is not int or tick < 0:
-                    raise ParseError("tick must be a nonnegative integer")
-                if prior_tick is not None and tick != prior_tick + 1:
-                    raise ParseError("tick gap or reset; supply one contiguous capture")
-                prior_tick = tick
-                raw = five(row, "raw")
-                stim = five(row, "stim")
-                gain = as_finite_float(row.get("gain"), "gain")
-                if gain < 0 or sum(value != 0 for value in stim) > 1:
-                    raise ParseError("expected a nonnegative gain and single-lane baseline")
-                if any(value != decode_q88(encode_q88(value)) for value in stim):
-                    raise ParseError("baseline stim must contain the recorded Q8.8 wire values")
-                if encoding == "delta":
-                    current = unit_values(raw)
-                    if anchors is None:
-                        anchors = current.copy()
-                    changes = [abs(value - ref) for value, ref in zip(current, anchors, strict=True)]
-                    lane = max(range(len(changes)), key=changes.__getitem__)
-                    stim = [0.0] * len(current)
-                    if changes[lane] >= DELTA:
-                        stim[lane] = 1.0
-                        anchors[lane] = current[lane]
-                    gain = 1.0
-                result.append((tick, stim, gain))
-            except (ParseError, BankParseError, Q88RangeError, OverflowError) as exc:
-                raise ParseError(f"line {line_no}: {exc}") from exc
+    anchors = []
+    payload = _read_input_bytes(source, "live capture")
+    lines = _utf8_or_refuse(payload, source, "live capture").splitlines()
+    for line_no, line in enumerate(lines, 1):
+        try:
+            row = _parse_json(line, source=source)
+            tick = sample_tick(row, prior_tick)
+            raw = five(row, "raw")
+            stim, gain = logged_frame(row)
+            if encoding == "delta":
+                stim, gain = delta_frame(raw, anchors), 1.0
+            result.append((tick, stim, gain))
+            prior_tick = tick
+        except (ParseError, BankParseError, Q88RangeError, OverflowError) as exc:
+            raise ParseError(f"line {line_no}: {exc}") from exc
     if not result:
         raise ParseError("empty capture")
     return result
