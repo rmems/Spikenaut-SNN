@@ -99,6 +99,8 @@ python3 -m unittest tests.test_recurrence tests.test_recurrence_variant -v
 
 julia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'
 julia --startup-file=no --project=tools/anticipation tools/anticipation/test_train.jl
+python3 -m tools.replay_frozen --out-dir replay_out
+julia --startup-file=no --project=tools/anticipation tests/distill_readout.jl replay_out
 sudo apt-get update
 sudo apt-get install --yes bubblewrap libseccomp2
 sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
