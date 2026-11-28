@@ -213,6 +213,13 @@ jobs:
           cmp "$RUNNER_TEMP/m1-cohort-script.json" "$RUNNER_TEMP/m1-cohort-module.json"
           python3 -m unittest tests.test_m1_cohort -v
 
+      - name: Audit the M1 feature ablation coverage (method fixture)
+        run: |
+          python3 tools/m1_arm_plan.py > "$RUNNER_TEMP/m1-arm-script.json"
+          python3 -m tools.m1_arm_plan > "$RUNNER_TEMP/m1-arm-module.json"
+          cmp "$RUNNER_TEMP/m1-arm-script.json" "$RUNNER_TEMP/m1-arm-module.json"
+          python3 -m unittest tests.test_m1_arm_plan -v
+
   anticipation-julia:
     name: Anticipation Julia
     runs-on: ubuntu-latest
