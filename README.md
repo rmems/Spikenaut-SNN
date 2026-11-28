@@ -649,9 +649,12 @@ Vahtisiru owns NVML collection and the deterministic thermal/power brake. Brains
 owns the software network tick. A stalled publisher or absent neural consumer
 does not suspend the brake. Vahtisiru publishes a best-effort four-value sensory
 batch over UDP (default `127.0.0.1:9900`), in the order GPU temperature, power,
-GPU clock, memory utilization, with a validity mask. Its old neural control
+graphics clock, memory utilization, with a validity mask. Its old neural control
 listener on port 9898 was retired. Connecting this publisher to Brainstem's
-ZeroMQ ingress would require a transport and schema adapter.
+ZeroMQ ingress would require a transport and schema adapter. Reproducing the
+bank's inputs would also require compatible normalization, an SM-clock reading
+and a memory-clock reading. Reordering the four published values cannot supply
+either missing clock measurement.
 [Feeder wire contract](https://github.com/rmems/vahtisiru/blob/f90eb115ec96fc5dd5b4d4ca2351764da2f7fc88/docs/ipc.md)
 · [Host ingress](https://github.com/Limen-Neural/brainstem-daemon/blob/08cebc20adfe9fa1ca3d65b62e3d4deba9b7da07/README.md)
 
@@ -661,7 +664,8 @@ zero. In particular, temperature enters on axon 2. The historical coin encoder's
 power/temperature pair at 14–15 applies only to explicit legacy frames. Neither
 the four-value UDP publication nor the five-sensor live adapter maps a reading
 onto those two lanes. The Basys 3 host loop samples its own GPU fields and rotates
-one live lane per exchange. Its cadence is independent of Brainstem's 1 kHz tick.
+one live lane per exchange. The current decoder uses the selected lane as a
+binary event and discards its magnitude. Its cadence is independent of Brainstem's 1 kHz tick.
 [Analog adapter](src/stim.rs) · [Legacy map](src/encode.rs) ·
 [UART loop](https://github.com/rmems/silicon-bridge/blob/b0cdcf8776dbe98fcb1519185edddbc4ce74fb5e/examples/live_telemetry_loop.rs)
 
