@@ -85,3 +85,42 @@ mean in °C and W), and their concatenation as HYBRID. The arithmetic uses the
 original sensor units before normalization or clipping. Missing measurements break
 the affected window, and each episode starts with empty history. The default
 input is the synthetic fixture. No checkpoint is required for feature extraction.
+
+### Conventional baselines on the recorded v3 projection
+
+Reproduce the [exp-026 five-sensor projection](../recurrence/README.md#held-out-data)
+and run the following from the repository root.
+
+```sh
+python3 -m tools.m1_baselines --jsonl state_telemetry.jsonl \
+  --split-manifest docs/m1/v3-splits.json \
+  --source-revision 74acdd0f22190a40a043b65c67946f6d904ee650 > result.json
+```
+
+The projection SHA-256 was `b1e601077100aabcc24021bcf86b8eeabbd9f5c1140623cdbc4ea08d946372da`.
+The 805,781 rows span 197 disjoint episodes. Common coverage was 568,277 train,
+118,581 validation and 105,460 test rows. All 29 validation sessions and 27 of
+29 test sessions contributed. Episodes `gpu-000196` and `gpu-000197` had no
+common row. The test row-identity digest was
+`a0eda4d123359d694153a7bd6c019989ffac2a20a96fcd655784a48abad19dcd`.
+
+| Predictor | Validation MAE | Test MAE |
+|---|---:|---:|
+| Training mean | 0.011804 | 0.066256 |
+| Previous observed target | 0.000448 | 0.000750 |
+| Linear ridge on RAW | 2.08e-8 | 1.09e-7 |
+| Linear ridge on KINETIC | 0.001197 | 0.002193 |
+| Linear ridge on HYBRID | 7.70e-8 | 1.84e-7 |
+
+The score equally weights each contributing session, then each of the three
+heads. Sensor scaling and weights use paired training rows only. Ridge uses
+a fixed penalty of 0.001, a free intercept and zero for train-constant
+features. Persistence uses the preceding source tick in the same episode or
+the training mean if its target is unavailable.
+
+The target is the exp-025 same-tick comfort, normalized temperature and
+normalized power. RAW contains the sensors used to construct all three, which
+explains its near-zero error. KINETIC alone loses current-tick information.
+These measurements establish conventional reference errors for #21. Future
+spike-arm comparisons require compatible checkpoints. The JSON report includes
+the fitted models, per-head and per-session errors, counts and input digests.

@@ -103,7 +103,8 @@ python3 tools/m1_arm_plan.py
 python3 -m tools.m1_arm_plan
 python3 tools/m1_features.py
 python3 -m tools.m1_features
-python3 -m unittest tests.test_m1_arm_plan tests.test_m1_features -v
+python3 -m tools.m1_baselines
+python3 -m unittest tests.test_m1_arm_plan tests.test_m1_features tests.test_m1_baselines -v
 
 julia --startup-file=no --project=tools/anticipation -e 'using Pkg; Pkg.instantiate()'
 julia --startup-file=no --project=tools/anticipation tools/anticipation/test_train.jl

@@ -110,7 +110,7 @@ def row_eligibility(cohort: Cohort) -> Iterator[tuple[str, str, int, bool, bool]
         )
 
 
-def _coverage(cohort: Cohort) -> dict:
+def paired_coverage(cohort: Cohort) -> dict:
     counts = {split: Counter(dict.fromkeys(ARMS, 0)) for split in SPLIT_NAMES}
     common = {split: hashlib.sha256() for split in SPLIT_NAMES}
     for split, episode, line, raw, kinetic in row_eligibility(cohort):
@@ -167,7 +167,7 @@ def _reference() -> dict:
 
 
 def build_plan(cohort: Cohort) -> dict:
-    availability = _coverage(cohort)
+    availability = paired_coverage(cohort)
     return {
         "schema_version": SCHEMA,
         "status": "method-preflight-only",
