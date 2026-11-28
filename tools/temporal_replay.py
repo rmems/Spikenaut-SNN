@@ -13,6 +13,7 @@ from .q88_core import ParseError, Q88RangeError, as_finite_float, decode_q88, en
 from .replay_inputs import _read_input_bytes, _utf8_or_refuse
 
 DELTA = 1 / 32
+MAX_TICK = (1 << 63) - 2  # Julia Int64 must also hold the exclusive end.
 
 
 def five(row, field):
@@ -37,8 +38,8 @@ def sample_tick(row, previous):
     if not isinstance(row, dict) or "event" in row:
         raise ParseError("expected a successful capture sample")
     tick = row.get("tick")
-    if isinstance(tick, bool) or not isinstance(tick, int) or tick < 0:
-        raise ParseError("tick must be a nonnegative integer")
+    if isinstance(tick, bool) or not isinstance(tick, int) or not 0 <= tick <= MAX_TICK:
+        raise ParseError(f"tick must be an integer from 0 to {MAX_TICK}")
     if previous is not None and tick != previous + 1:
         raise ParseError("tick gap or reset; supply one contiguous capture")
     return tick

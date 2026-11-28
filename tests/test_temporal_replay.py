@@ -5,7 +5,7 @@ import unittest
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 
-from tools.temporal_replay import main
+from tools.temporal_replay import MAX_TICK, main
 
 
 def sample(tick, raw):
@@ -17,7 +17,7 @@ class TemporalReplayTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "capture.jsonl"
             path.write_text(separator.join(json.dumps(r, ensure_ascii=False) for r in rows),
-                            encoding="utf-8")
+                            encoding="utf-8", newline="")
             out, err = io.StringIO(), io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):
                 code = main([str(path), "--encoding", encoding, "--format", fmt])
@@ -57,3 +57,10 @@ class TemporalReplayTest(unittest.TestCase):
         code, out, err = self.convert([first, second], "logged", separator="\v")
         self.assertEqual((code, out), (2, ""))
         self.assertIn("line 1", err)
+
+    def test_tick_and_exclusive_end_fit_julia_int64(self):
+        raw = [1, 20, 30, 400, 500]
+        self.assertEqual(self.convert([sample(MAX_TICK, raw)], "logged")[0], 0)
+        code, out, err = self.convert([sample(MAX_TICK + 1, raw)], "logged")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn(str(MAX_TICK), err)
