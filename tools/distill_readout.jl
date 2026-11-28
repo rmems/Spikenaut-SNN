@@ -56,7 +56,7 @@ function check_replay(directory)
     manifest.model.id == "merged_v2" && manifest.model.checkpoint_digest == digest &&
         manifest.model.numeric_format == "q8.8-fixed-point" &&
         manifest.model.feature_map_id == "spikenaut.feature-map.live-exp-025.v1" &&
-        manifest.output.vocabulary == HEADS || error("replay does not name the shipped readout")
+        collect(manifest.output.vocabulary) == HEADS || error("replay does not name the shipped readout")
     trace = read(joinpath(directory, "trace.jsonl"))
     "sha256:" * bytes2hex(sha256(trace)) == manifest.trace_sha256 || error("trace digest mismatch")
     ticks = labeled = 0
