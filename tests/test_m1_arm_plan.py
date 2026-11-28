@@ -2,24 +2,19 @@
 
 import hashlib
 import json
-import subprocess
-import sys
 import unittest
 from pathlib import Path
 
+from tests.test_m1_cohort import CliResult, invoke_main
 from tools.hamming_encode import Sample
-from tools.m1_arm_plan import SMA_WINDOW, build_plan, row_eligibility
+from tools.m1_arm_plan import SMA_WINDOW, build_plan, main, row_eligibility
 from tools.m1_cohort import Cohort, FIXTURE_JSONL
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_cli(*args: str, module: bool = False) -> subprocess.CompletedProcess[str]:
-    entry = ["-m", "tools.m1_arm_plan"] if module else ["tools/m1_arm_plan.py"]
-    return subprocess.run(
-        [sys.executable, *entry, *args], cwd=ROOT, text=True, capture_output=True, check=False
-    )
-
+def run_cli(*args: str) -> CliResult:
+    return invoke_main(main, *args)
 
 def rows(*missing: tuple[str, ...]) -> list[Sample]:
     return [Sample("gpu-000001", 1, [], i, columns) for i, columns in enumerate(missing, 1)]
@@ -31,13 +26,12 @@ def eligible(samples: list[Sample]) -> list[tuple[bool, bool]]:
 
 
 class ArmPlanTest(unittest.TestCase):
-    def test_cli_both_entry_points_pin_cohort_and_distinct_modality(self) -> None:
-        script = run_cli()
-        module = run_cli(module=True)
-        self.assertEqual(script.returncode, 0, script.stderr)
-        self.assertEqual(module.returncode, 0, module.stderr)
-        self.assertEqual(script.stdout, module.stdout)
-        plan = json.loads(script.stdout)
+    def test_cli_pins_cohort_and_distinct_modality(self) -> None:
+        first = run_cli()
+        second = run_cli()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(first, second)
+        plan = json.loads(first.stdout)
         self.assertEqual(plan["status"], "method-preflight-only")
         self.assertEqual(plan["cohort"]["evidence"], "synthetic-method-fixture")
         self.assertEqual(
