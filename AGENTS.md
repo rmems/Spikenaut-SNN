@@ -82,6 +82,7 @@ python3 -m tools.decision_parity --self-test
 python3 tools/check_model_card.py
 python3 tools/check_model_card.py --self-test
 python3 tools/verify_model_bank.py --select merged_v2
+python3 -m tools.verify_exp025_provenance
 python3 -m tools.verify_model_bank --select merged_v2
 python3 tools/verify_model_bank.py --self-test
 python3 -m tools.verify_model_bank --self-test

@@ -139,7 +139,7 @@ A live 5-column **kinetic** encode path exists on top of `LiveTelemetryEncoder`:
 
 Non-finite samples are rejected whole and never substituted, by the analog adapter, by both rate encoders, and by the kinetic front end: a single `NaN` sensor rejects the five-wide reading before any estimator or accumulator moves. Dropout **sentinels** are a different problem and none of the three front ends solves it — `gpu_temp_c == 0` is a finite number and passes straight through. Masking it is the caller's job under the state contract in [#20](https://github.com/rmems/Spikenaut-SNN/issues/20).
 
-Every figure quoted across [#2](https://github.com/rmems/Spikenaut-SNN/issues/2), [#3](https://github.com/rmems/Spikenaut-SNN/issues/3), [#4](https://github.com/rmems/Spikenaut-SNN/issues/4) and [#13](https://github.com/rmems/Spikenaut-SNN/issues/13) was measured on these five GPU sensors. A cofire or Hamming figure is unreadable without knowing it was five channels rather than sixteen.
+The exp-025 cofire and Hamming measurements use these five GPU sensors. The historical measurements in #2 describe an earlier bank associated with an eight-record Kaspa/Monero dataset. [Exp-025 provenance](#training-provenance) · [Historical bank issue](https://github.com/rmems/Spikenaut-SNN/issues/2)
 
 Two consequences worth being explicit about. `vram_temp_c` is excluded because it is exactly `gpu_temp_c + 8` on every non-dropout row, so admitting it would leak the thermal signal into itself. And `gpu_temp_c == 0` is a dropout sentinel, not a cold GPU — it must be masked, which is the same rule the state adapter below states.
 
