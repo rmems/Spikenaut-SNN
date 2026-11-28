@@ -149,8 +149,7 @@ def _summarize(
         split = split_by_episode[sample.episode_id]
         rows[split] += 1
         missing[split].update(sample.missing)
-        if sample.source_line in temperature_dropouts:
-            sentinel_count[split] += 1
+        sentinel_count[split] += sample.source_line in temperature_dropouts
         episodes[split].add(sample.episode_id)
     return {
         split: {
