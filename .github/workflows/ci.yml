@@ -206,6 +206,12 @@ jobs:
           python3 tools/replay_frozen.py --bank-manifest dataset/merged_v2_rec_v1/model_bank.json
           python3 -m unittest tests.test_recurrence tests.test_recurrence_variant -v
 
+      - name: Preflight the M1 session cohort (method fixture)
+        run: |
+          python3 tools/m1_cohort.py
+          python3 -m tools.m1_cohort
+          python3 -m unittest tests.test_m1_cohort -v
+
   anticipation-julia:
     name: Anticipation Julia
     runs-on: ubuntu-latest

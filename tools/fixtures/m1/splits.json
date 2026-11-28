@@ -1,0 +1,8 @@
+{
+  "schema_version": "spikenaut.split-manifest.v1",
+  "splits": {
+    "train": ["gpu-000001", "gpu-000002"],
+    "val": ["gpu-000140"],
+    "test": ["gpu-000170", "gpu-000171"]
+  }
+}
